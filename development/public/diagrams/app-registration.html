@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --ink: #1b1b1b;
+        --muted: #565c65;
+        --line: #dfe1e2;
+        --blue: #005ea8;
+        --green: #2e7044;
+        --gold: #ffbe2e;
+        --red: #d83933;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        overflow: hidden;
+      }
+
+      body {
+        color: var(--ink);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 18px;
+      }
+
+      .pipeline {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: 1.1fr 1fr 1fr 1fr 1.1fr;
+        position: relative;
+      }
+
+      .pipeline::before {
+        background: var(--line);
+        content: "";
+        height: 4px;
+        left: 8%;
+        position: absolute;
+        right: 8%;
+        top: 64px;
+      }
+
+      .packet {
+        animation: pass 6s linear infinite;
+        background: var(--gold);
+        border: 2px solid #7d5f00;
+        height: 20px;
+        left: 7%;
+        position: absolute;
+        top: 56px;
+        width: 28px;
+        z-index: 3;
+      }
+
+      .stage {
+        background: #fff;
+        border: 2px solid var(--line);
+        min-height: 148px;
+        padding: 16px;
+        position: relative;
+        z-index: 2;
+      }
+
+      .stage::before {
+        background: #fff;
+        border: 2px solid currentColor;
+        border-radius: 999px;
+        content: attr(data-step);
+        display: grid;
+        font-weight: 700;
+        height: 34px;
+        place-items: center;
+        width: 34px;
+      }
+
+      .stage strong {
+        display: block;
+        font-size: 16px;
+        margin: 12px 0 8px;
+      }
+
+      .stage span {
+        color: var(--muted);
+        display: block;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .stage:nth-child(2) {
+        color: var(--blue);
+        background: #e7f6f8;
+        border-color: var(--blue);
+      }
+
+      .stage:nth-child(3) {
+        color: var(--red);
+      }
+
+      .stage:nth-child(4) {
+        color: var(--green);
+        background: #ecf3ec;
+        border-color: var(--green);
+      }
+
+      .stage:nth-child(5) {
+        color: #7d5f00;
+        background: #fff5c2;
+        border-color: var(--gold);
+      }
+
+      .stage:nth-child(6) {
+        color: var(--blue);
+      }
+
+      @keyframes pass {
+        0% {
+          transform: translateX(0);
+        }
+        22% {
+          transform: translateX(17vw);
+        }
+        44% {
+          transform: translateX(34vw);
+        }
+        66% {
+          transform: translateX(51vw);
+        }
+        88%,
+        100% {
+          transform: translateX(68vw);
+        }
+      }
+
+      @media (max-width: 760px) {
+        .pipeline {
+          grid-template-columns: 1fr;
+        }
+
+        .pipeline::before,
+        .packet {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="pipeline" aria-label="アプリ登録フロー">
+      <div class="packet" aria-hidden="true"></div>
+      <div class="stage" data-step="1">
+        <strong>APK受領</strong>
+        <span>CIまたは開発者がAPKとchangelog、build情報を登録する。</span>
+      </div>
+      <div class="stage" data-step="2">
+        <strong>メタデータ抽出</strong>
+        <span>packageName、versionCode、署名、sha256、サイズを確定する。</span>
+      </div>
+      <div class="stage" data-step="3">
+        <strong>受け入れ判定</strong>
+        <span>署名互換性、downgrade、既存releaseとの重複を確認する。</span>
+      </div>
+      <div class="stage" data-step="4">
+        <strong>Release化</strong>
+        <span>artifact storageとrelease catalogに登録し、配信対象にできる状態にする。</span>
+      </div>
+      <div class="stage" data-step="5">
+        <strong>AMAPI準備</strong>
+        <span>Managed端末向けにCUSTOM設定とfingerprintの整合性を確認する。</span>
+      </div>
+    </div>
+    <script>
+      (() => {
+        const sendSize = () => {
+          const body = document.body;
+          const height = Math.ceil(
+            Math.max(body.scrollHeight, body.offsetHeight, body.getBoundingClientRect().height)
+          );
+          window.parent.postMessage(
+            { type: "diagram-frame-size", path: window.location.pathname, height },
+            window.location.origin
+          );
+        };
+
+        window.addEventListener("load", sendSize);
+        window.addEventListener("resize", sendSize);
+        window.addEventListener("message", (event) => {
+          if (event.origin === window.location.origin && event.data?.type === "diagram-frame-size-request") {
+            sendSize();
+          }
+        });
+        if (typeof ResizeObserver !== "undefined") {
+          new ResizeObserver(sendSize).observe(document.body);
+        }
+        sendSize();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+ruby ">= 4.0.0"
+
+gem "aws-sdk-s3", "~> 1.193"
+gem "activerecord", "~> 8.1"
+gem "mysql2", "~> 0.5.7"
+gem "puma", "~> 6.0"
+gem "rackup", "~> 2.2"
+gem "rexml", "~> 3.4"
+gem "ridgepole", "~> 3.2"
+gem "sinatra", "~> 4.1"

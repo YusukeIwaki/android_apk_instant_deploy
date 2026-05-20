@@ -1,0 +1,125 @@
+services:
+  server:
+    build:
+      context: .
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_REGION: us-east-1
+      AWS_SECRET_ACCESS_KEY: test
+      DATABASE_HOST: mysql
+      DATABASE_NAME: apk_instant_deploy
+      DATABASE_PASSWORD: apk
+      DATABASE_PORT: "3306"
+      DATABASE_SSL_CA: /mysql-certs/ca.pem
+      DATABASE_USERNAME: apk
+      RACK_ENV: development
+      S3_BUCKET: apk-artifacts
+      S3_DOWNLOAD_URL_EXPIRES_IN: "900"
+      S3_ENDPOINT: http://floci:4566
+      S3_FORCE_PATH_STYLE: "true"
+      S3_UPLOAD_URL_EXPIRES_IN: "900"
+    ports:
+      - "4567:4567"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      floci:
+        condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
+    volumes:
+      - mysql-certs:/mysql-certs:ro
+
+  migrate:
+    build:
+      context: .
+    command:
+      - bundle
+      - exec
+      - ridgepole
+      - --config
+      - config/database.yml
+      - --env
+      - development
+      - --file
+      - db/Schemafile
+      - --apply
+    environment:
+      DATABASE_HOST: mysql
+      DATABASE_NAME: apk_instant_deploy
+      DATABASE_PASSWORD: apk
+      DATABASE_PORT: "3306"
+      DATABASE_SSL_CA: /mysql-certs/ca.pem
+      DATABASE_USERNAME: apk
+      RACK_ENV: development
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - mysql-certs:/mysql-certs:ro
+    profiles:
+      - tools
+
+  mysql:
+    image: mysql:8.4
+    entrypoint:
+      - /bin/sh
+      - /usr/local/bin/apk-mysql-entrypoint.sh
+    environment:
+      MYSQL_DATABASE: apk_instant_deploy
+      MYSQL_PASSWORD: apk
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: apk
+    volumes:
+      - ./docker/mysql-entrypoint.sh:/usr/local/bin/apk-mysql-entrypoint.sh:ro
+      - mysql-certs:/etc/mysql/certs
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uapk -papk --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  floci:
+    image: floci/floci:latest
+    environment:
+      FLOCI_HOSTNAME: floci
+      FLOCI_STORAGE_MODE: hybrid
+      FLOCI_STORAGE_PERSISTENT_PATH: /app/data
+    volumes:
+      - floci-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4566/_localstack/health >/dev/null || curl -fsS http://localhost:4566/_localstack/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  create-bucket:
+    image: amazon/aws-cli:latest
+    depends_on:
+      floci:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_SECRET_ACCESS_KEY: test
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        aws --endpoint-url=http://floci:4566 s3api create-bucket --bucket apk-artifacts || true
+
+  swagger-ui:
+    image: swaggerapi/swagger-ui
+    environment:
+      SWAGGER_JSON: /openapi.yaml
+    ports:
+      - "8000:8080"
+    volumes:
+      - ./openapi.yaml:/openapi.yaml:ro
+
+volumes:
+  floci-data:
+  mysql-certs:
+  mysql-data:

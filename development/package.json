@@ -1,0 +1,16 @@
+{
+  "name": "apk-remote-distribution-docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev --host 127.0.0.1",
+    "build": "astro build",
+    "preview": "astro preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@uswds/uswds": "3.13.0",
+    "astro": "6.3.4",
+    "mermaid": "11.15.0"
+  }
+}

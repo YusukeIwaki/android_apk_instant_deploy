@@ -1,0 +1,7 @@
+.bundle/
+.ruby-lsp/
+log/
+tmp/
+vendor/bundle/
+
+.DS_Store

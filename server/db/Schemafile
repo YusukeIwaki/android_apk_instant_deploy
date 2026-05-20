@@ -1,0 +1,50 @@
+create_table "devices", id: { type: :string, limit: 191 }, collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.string "name"
+  t.boolean "amapi_managed", null: false, default: false
+  t.string "model"
+  t.integer "sdk_int"
+  t.datetime "last_seen_at", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+end
+
+create_table "releases", id: { type: :string, limit: 191 }, collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.string "package_name", null: false
+  t.integer "version_code", null: false
+  t.string "version_name"
+  t.string "s3_key"
+  t.text "artifact_url"
+  t.string "sha256"
+  t.text "changelog"
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["package_name", "version_code"], name: "index_releases_on_package_and_version"
+end
+
+create_table "rollout_jobs", id: { type: :string, limit: 191 }, collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.string "release_id", null: false, limit: 191
+  t.string "device_id", null: false, limit: 191
+  t.string "state", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["device_id"], name: "index_rollout_jobs_on_device_id"
+  t.index ["release_id"], name: "index_rollout_jobs_on_release_id"
+end
+
+create_table "install_results", id: { type: :string, limit: 191 }, collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.string "rollout_job_id", null: false, limit: 191
+  t.string "state", null: false
+  t.text "reason"
+  t.integer "installed_version_code"
+  t.datetime "reported_at", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["rollout_job_id"], name: "index_install_results_on_rollout_job_id"
+end
+
+add_foreign_key "rollout_jobs", "devices", column: "device_id"
+add_foreign_key "rollout_jobs", "releases", column: "release_id"
+add_foreign_key "install_results", "rollout_jobs", column: "rollout_job_id"

@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --ink: #1b1b1b;
+        --muted: #565c65;
+        --line: #dfe1e2;
+        --blue: #005ea8;
+        --green: #2e7044;
+        --gold: #ffbe2e;
+        --bg: #f7f9fa;
+        --chrome: #eef1f4;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        overflow: hidden;
+      }
+
+      body {
+        color: var(--ink);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 14px;
+      }
+
+      .chrome {
+        background: #fff;
+        border: 1px solid #c9cdd1;
+        border-radius: 10px;
+        box-shadow: 0 10px 26px rgba(27, 27, 27, 0.12);
+        margin: 0 auto;
+        max-width: 920px;
+        overflow: hidden;
+      }
+
+      .chrome-top {
+        background: var(--chrome);
+        border-bottom: 1px solid #c9cdd1;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: auto minmax(8rem, 13rem) minmax(0, 1fr);
+        padding: 9px 12px;
+      }
+
+      .traffic {
+        align-items: center;
+        display: flex;
+        gap: 6px;
+      }
+
+      .traffic span {
+        border-radius: 50%;
+        display: block;
+        height: 11px;
+        width: 11px;
+      }
+
+      .traffic span:nth-child(1) {
+        background: #d83933;
+      }
+
+      .traffic span:nth-child(2) {
+        background: var(--gold);
+      }
+
+      .traffic span:nth-child(3) {
+        background: var(--green);
+      }
+
+      .tab {
+        align-items: center;
+        background: #fff;
+        border-radius: 8px 8px 0 0;
+        color: #3d4551;
+        display: flex;
+        font-size: 13px;
+        font-weight: 700;
+        padding: 7px 10px;
+      }
+
+      .address {
+        background: #fff;
+        border: 1px solid #c9cdd1;
+        border-radius: 999px;
+        color: #3d4551;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        overflow: hidden;
+        padding: 7px 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .admin {
+        display: grid;
+        grid-template-columns: 190px minmax(0, 1fr);
+        min-height: 390px;
+      }
+
+      .nav {
+        background: var(--bg);
+        border-right: 1px solid var(--line);
+        padding: 18px;
+      }
+
+      .nav b,
+      .main h1 {
+        display: block;
+        font-size: 18px;
+        margin: 0 0 18px;
+      }
+
+      .nav span {
+        border-left: 4px solid transparent;
+        color: var(--muted);
+        display: block;
+        font-size: 14px;
+        padding: 8px 0 8px 10px;
+      }
+
+      .nav span.active {
+        border-left-color: var(--blue);
+        color: var(--blue);
+        font-weight: 700;
+      }
+
+      .main {
+        padding: 20px;
+      }
+
+      .layout {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(0, 1fr) 280px;
+      }
+
+      .terminal {
+        background: #1b1b1b;
+        color: #f7f9fa;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.55;
+        min-height: 190px;
+        padding: 14px;
+      }
+
+      .terminal b {
+        color: #9bdaf1;
+        font-weight: 700;
+      }
+
+      .progress {
+        background: #dfe1e2;
+        height: 18px;
+        margin: 14px 0;
+        overflow: hidden;
+      }
+
+      .progress span {
+        background: var(--green);
+        display: block;
+        height: 100%;
+        width: 100%;
+      }
+
+      .check {
+        border: 1px solid var(--line);
+      }
+
+      .row {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 26px minmax(0, 1fr);
+        padding: 10px;
+      }
+
+      .row + .row {
+        border-top: 1px solid var(--line);
+      }
+
+      .icon {
+        background: var(--green);
+        color: #fff;
+        display: grid;
+        font-size: 12px;
+        font-weight: 700;
+        height: 26px;
+        place-items: center;
+        width: 26px;
+      }
+
+      .row span {
+        color: var(--muted);
+        display: block;
+        font-size: 12px;
+        margin-top: 2px;
+      }
+
+      .note {
+        background: #fff5c2;
+        border-left: 4px solid var(--gold);
+        color: #3d4551;
+        font-size: 13px;
+        line-height: 1.45;
+        margin-top: 12px;
+        padding: 9px 10px;
+      }
+
+      @media (max-width: 720px) {
+        .chrome-top {
+          grid-template-columns: auto minmax(0, 1fr);
+        }
+
+        .tab {
+          display: none;
+        }
+
+        .admin,
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="chrome" aria-label="Chrome風の管理画面でAPKをartifact storageへアップロード">
+      <div class="chrome-top" aria-hidden="true">
+        <div class="traffic"><span></span><span></span><span></span></div>
+        <div class="tab">Distribution Admin</div>
+        <div class="address">https://distribution.example.test/admin/apps/releases/uploading</div>
+      </div>
+      <div class="admin">
+        <aside class="nav">
+          <b>Distribution Admin</b>
+          <span class="active">Apps</span>
+          <span>Devices</span>
+          <span>Rollouts</span>
+          <span>Audit log</span>
+        </aside>
+        <main class="main">
+          <h1>APKをShrine cacheへアップロード</h1>
+          <div class="layout">
+            <section>
+              <div class="terminal">
+                <b>$</b> uppy upload qa-camera-2.4.0-42.apk<br />
+                Requesting Shrine multipart parameters...<br />
+                Uploading parts to cache storage in parallel...<br />
+                Completing multipart upload through Shrine...<br />
+                uploaded_file_data:<br />
+                { "storage": "cache",<br />
+                &nbsp;&nbsp;"id": "apk_uploads/01HX9J6/qa-camera-2.4.0-42.apk",<br />
+                &nbsp;&nbsp;"metadata": { "filename": "qa-camera-2.4.0-42.apk" } }
+              </div>
+              <div class="progress" aria-hidden="true"><span></span></div>
+              <div class="note">Shrine cache upload完了だけではartifactsは作成しません。POST /api/artifactsでuploaded file dataを渡します。</div>
+            </section>
+            <aside class="check">
+              <div class="row">
+                <div class="icon">OK</div>
+                <div><b>Shrine cache file</b><span>storage=cacheとして保存</span></div>
+              </div>
+              <div class="row">
+                <div class="icon">OK</div>
+                <div><b>uploaded file data</b><span>POST /api/artifactsの入力</span></div>
+              </div>
+              <div class="row">
+                <div class="icon">--</div>
+                <div><b>artifacts / releases</b><span>配信対象としては未登録</span></div>
+              </div>
+            </aside>
+          </div>
+        </main>
+      </div>
+    </div>
+    <script>
+      (() => {
+        const sendSize = () => {
+          const body = document.body;
+          const height = Math.ceil(Math.max(body.scrollHeight, body.offsetHeight, body.getBoundingClientRect().height));
+          window.parent.postMessage({ type: "diagram-frame-size", path: window.location.pathname, height }, window.location.origin);
+        };
+        window.addEventListener("load", sendSize);
+        window.addEventListener("resize", sendSize);
+        window.addEventListener("message", (event) => {
+          if (event.origin === window.location.origin && event.data?.type === "diagram-frame-size-request") sendSize();
+        });
+        if (typeof ResizeObserver !== "undefined") new ResizeObserver(sendSize).observe(document.body);
+        sendSize();
+      })();
+    </script>
+  </body>
+</html>

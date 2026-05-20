@@ -1,0 +1,375 @@
+---
+import DiagramFrame from "../../../components/DiagramFrame.astro";
+import Mermaid from "../../../components/Mermaid.astro";
+import BaseLayout from "../../../layouts/BaseLayout.astro";
+
+const updatePolicyCurl = `curl -X PUT https://distribution.example.test/api/devices/drt_01HX9A2W.../policy \\
+  -H "Authorization: Bearer $ADMIN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "entries": [
+      { "packageName": "com.example.appa", "release": { "id": 301 }, "installMode": "FORCE_INSTALLED" },
+      { "packageName": "com.example.appb", "release": { "id": 302 }, "installMode": "FORCE_INSTALLED" },
+      { "packageName": "com.example.appc", "release": { "id": 303 }, "installMode": "FORCE_INSTALLED" },
+      { "packageName": "com.example.appd", "release": { "id": 304 }, "installMode": "AVAILABLE" }
+    ]
+  }'`;
+
+const updatePolicyResponse = `HTTP/1.1 200 OK
+{
+  "devicePolicy": {
+    "uniqueIdentifier": "drt_01HX9A2W...",
+    "currentRevision": { "id": 901 },
+    "updatedAt": "2026-05-19T10:12:00+09:00",
+    "entries": [
+      { "packageName": "com.example.appa", "versionCode": 1, "installMode": "FORCE_INSTALLED" },
+      { "packageName": "com.example.appb", "versionCode": 1, "installMode": "FORCE_INSTALLED" },
+      { "packageName": "com.example.appc", "versionCode": 1, "installMode": "FORCE_INSTALLED" },
+      { "packageName": "com.example.appd", "versionCode": 1, "installMode": "AVAILABLE" }
+    ]
+  },
+  "push": {
+    "type": "POLICY_UPDATED",
+    "notification": null
+  }
+}`;
+
+const fcmDataMessage = `{
+  "message": {
+    "token": "fcm:APA91b...",
+    "data": {
+      "type": "POLICY_UPDATED",
+      "uniqueIdentifier": "drt_01HX9A2W...",
+      "devicePolicyUpdatedAt": "2026-05-19T10:12:00+09:00"
+    }
+  }
+}
+
+# notification payloadは入れない。
+# FCM pushはユーザー向け通知ではなく、Policy再取得の契機だけを与える。`;
+
+const fetchPolicyCurl = `curl -X GET https://distribution.example.test/api/devices/me/policy \\
+  -H "Authorization: Bearer $DEVICE_AUTH_TOKEN"`;
+
+const fetchPolicyResponse = `HTTP/1.1 200 OK
+{
+  "devicePolicyRevision": { "id": 901 },
+  "updatedAt": "2026-05-19T10:12:00+09:00",
+  "serverTime": "2026-05-19T10:12:04+09:00",
+  "entries": [
+    { "packageName": "com.example.appa", "release": { "id": 301 }, "versionCode": 1, "installMode": "FORCE_INSTALLED" },
+    { "packageName": "com.example.appb", "release": { "id": 302 }, "versionCode": 1, "installMode": "FORCE_INSTALLED" },
+    { "packageName": "com.example.appc", "release": { "id": 303 }, "versionCode": 1, "installMode": "FORCE_INSTALLED" },
+    { "packageName": "com.example.appd", "release": { "id": 304 }, "versionCode": 1, "installMode": "AVAILABLE" }
+  ]
+}`;
+
+const downloadUrlCurl = `curl -X GET https://distribution.example.test/api/releases/301/artifact_url \\
+  -H "Authorization: Bearer $DEVICE_AUTH_TOKEN"
+
+# FORCE_INSTALLEDで未インストール、または要求versionと異なる場合だけ取得する。
+# AVAILABLEのApp Dは、ユーザーがアプリ内UIから選んだときだけ取得する。`;
+
+const syncReportCurl = `curl -X POST https://distribution.example.test/api/devices/me/policy-sync-results \\
+  -H "Authorization: Bearer $DEVICE_AUTH_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "devicePolicyRevision": { "id": 901 },
+    "fetchedPolicyUpdatedAt": "2026-05-19T10:12:04+09:00",
+    "appliedPolicyUpdatedAt": "2026-05-19T10:13:20+09:00",
+    "actions": [
+      { "packageName": "com.example.appa", "action": "INSTALL", "route": "DEVICE_OWNER", "result": "INSTALLED" },
+      { "packageName": "com.example.legacy", "action": "UNINSTALL", "route": "PACKAGE_MANAGER", "result": "UNINSTALLED" }
+    ]
+  }'`;
+
+const policyFlow = `flowchart TD
+  PolicyEdit["管理者 / CIがDevicePolicyを更新"] --> ServerPolicy["device_policy_revisions<br/>あるべき状態を保存"]
+  ServerPolicy --> Push["FCM data message<br/>POLICY_UPDATED"]
+  Push --> Fetch["端末がPolicyを再取得"]
+  Manual["アプリUIの手動更新"] --> Fetch
+  Launch["アプリ起動"] --> NeedSync{"fetched snapshotが<br/>applied snapshotより新しい?"}
+  Fetch --> LocalFetched["端末ローカルストア<br/>fetched policy snapshotを保存"]
+  LocalFetched --> NeedSync
+  NeedSync -->|はい| Compare["インストール済みアプリとPolicyを比較"]
+  NeedSync -->|いいえ| Idle["同期不要"]
+  Compare --> Install["FORCE_INSTALLEDをインストール"]
+  Compare --> Keep["AVAILABLEは手動導線だけ表示"]
+  Compare --> Uninstall["Policyにない<br/>companion-installed appを削除"]
+  Install --> Route{"DeviceOwnerまたは<br/>権限委譲あり?"}
+  Route -->|はい| Silent["サイレントインストール"]
+  Route -->|いいえ| Sticky["Sticky通知でユーザーに促す"]
+  Silent --> Report["結果報告 + applied snapshot更新"]
+  Sticky --> Report
+  Uninstall --> Report`;
+
+const sequence = `sequenceDiagram
+  autonumber
+  actor Admin as 管理者 / CI
+  actor User as デバイス利用者
+  participant Api as APIサーバー
+  participant Push as FCM
+  participant App as コンパニオンアプリ
+  participant Local as 端末ローカルストア
+  participant Owner as DeviceOwner / 権限委譲
+  participant Os as Android PackageInstaller
+
+  Admin->>Api: DevicePolicyを更新
+  Api->>Api: device_policy_revisionsとentriesを保存
+  Api->>Push: POLICY_UPDATED data messageを送信
+  Push-->>App: data message、通知表示なし
+  App->>Api: 最新Policyを取得
+  App->>Local: fetched policy snapshotを保存
+  User->>App: 手動でPolicy更新を実行
+  App->>Api: 最新Policyを取得
+  App->>Local: fetched policy snapshotを上書き
+  App->>Local: fetched snapshot > applied snapshotなら同期開始
+  App->>App: FORCE_INSTALLED / AVAILABLE / 削除対象を判定
+  alt DeviceOwnerまたは権限委譲あり
+    App->>Owner: サイレントインストール / アンインストール
+    Owner-->>App: 結果
+  else 権限なし
+    App->>App: Sticky通知を維持
+    User->>App: 通知からインストール操作
+    App->>Os: PackageInstaller UIを起動
+    Os-->>App: 結果
+  end
+  App->>Local: 同期完了時にapplied policy snapshotを更新
+  App->>Api: policy sync resultを報告`;
+
+const lifecycle = `stateDiagram-v2
+  [*] --> Synced
+  Synced --> PolicyFetched: FCM data message / 手動更新 / app起動時取得
+  PolicyFetched --> SyncNeeded: fetchedPolicy.updatedAt > appliedPolicy.updatedAt
+  PolicyFetched --> Synced: fetched snapshotとapplied snapshotが同じ
+  SyncNeeded --> Planning: installed packagesとPolicyを比較
+  Planning --> ApplyingSilent: DeviceOwnerまたは権限委譲あり
+  Planning --> WaitingUserInstall: 権限なし + FORCE_INSTALLED不足
+  ApplyingSilent --> Synced: install / uninstall完了
+  WaitingUserInstall --> ApplyingUserInstall: ユーザーがSticky通知から操作
+  ApplyingUserInstall --> Synced: PackageInstaller完了
+  WaitingUserInstall --> SyncNeeded: app起動時に再通知 / 再同期
+  Synced --> [*]`;
+---
+
+<BaseLayout
+  title="アプリの配信"
+  description="デバイスごとのDevicePolicyを更新し、端末がPolicyを再取得して、強制インストール・手動提供・削除を同期します。"
+  currentPath="/use-cases/app-distribution/"
+>
+  <p class="lede">
+    アプリ配信は、個別の配信ジョブを端末へ投げる処理ではなく、デバイスごとに1つあるDevicePolicyを更新し、端末がその「あるべき状態」に同期する処理です。
+    FCM pushはユーザーへ通知を出すためではなく、Policyが更新されたことをコンパニオンアプリへ知らせ、Policy再取得の契機を与えるためだけに使います。
+  </p>
+
+  <section aria-labelledby="distribution-flow">
+    <p class="section-kicker">Flow with data</p>
+    <h2 id="distribution-flow">処理フロー</h2>
+
+    <article class="flow-step" aria-labelledby="step-1">
+      <div class="flow-step__header">
+        <span class="flow-step__number">1</span>
+        <div>
+          <h3 id="step-1">管理者がデバイスのDevicePolicyを更新する</h3>
+          <p>1デバイスにつき1つのDevicePolicyを持ちます。例ではApp A/B/CのversionCode 1を強制インストール、App DのversionCode 1をユーザー手動インストール可能として定義します。</p>
+        </div>
+      </div>
+      <div class="flow-step__grid">
+        <div>
+          <DiagramFrame src="/mocks/app-distribution/step-1-policy-editor.html" title="管理画面: デバイスPolicy編集" />
+        </div>
+        <div class="flow-step__details">
+          <h4>API呼び出し</h4>
+          <pre class="curl-block"><code>{updatePolicyCurl}</code></pre>
+          <h4>応答</h4>
+          <pre class="curl-block"><code>{updatePolicyResponse}</code></pre>
+          <h4>作成・更新されるDBデータ</h4>
+          <dl class="db-list">
+            <div>
+              <dt>device_policies</dt>
+              <dd>device_idごとに1行持ち、current_revision_idとupdatedAtを更新する。deviceの特定はdevices.uniqueIdentifierで行い、devices本体にPolicy内容を混ぜない。</dd>
+            </div>
+            <div>
+              <dt>device_policy_revisions</dt>
+              <dd>ActiveRecordのid、device_policy_id、createdAt、createdByを持つ不変のrevisionとして作成する。独自のPolicy revision用識別子は作らない。</dd>
+            </div>
+            <div>
+              <dt>device_policy_app_entries</dt>
+              <dd>device_policy_revision_id、release_id、packageName、versionCode、installModeを保存する。release_idはreleases.idを参照する。installModeはFORCE_INSTALLEDまたはAVAILABLEとして、強制対象と手動提供対象を分ける。</dd>
+            </div>
+            <div>
+              <dt>rollout_jobs / device_install_tasks</dt>
+              <dd>作成しない。端末はDevicePolicyを取得して自分で差分同期する。</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </article>
+
+    <article class="flow-step" aria-labelledby="step-2">
+      <div class="flow-step__header">
+        <span class="flow-step__number">2</span>
+        <div>
+          <h3 id="step-2">FCM pushまたは手動操作を契機にPolicyを再取得する</h3>
+          <p>FCMはdata messageとしてPolicy更新だけを届けます。通知payloadは含めず、ユーザー向け通知は表示しません。アプリUIからの手動更新でも同じPolicy取得APIを呼びます。</p>
+        </div>
+      </div>
+      <div class="flow-step__grid">
+        <div>
+          <DiagramFrame src="/mocks/app-distribution/step-2-policy-fetch.html" title="コンパニオンアプリ: Policy再取得" />
+        </div>
+        <div class="flow-step__details">
+          <h4>FCM data message</h4>
+          <pre class="curl-block"><code>{fcmDataMessage}</code></pre>
+          <h4>API呼び出し</h4>
+          <pre class="curl-block"><code>{fetchPolicyCurl}</code></pre>
+          <h4>端末ローカルデータの扱い</h4>
+          <dl class="db-list">
+            <div>
+              <dt>fetched_device_policy_snapshot</dt>
+              <dd>取得したPolicy本文を保存する。保存先はSQLiteの別テーブルでもJetpack DataStoreのobjectでもよい。サーバーのdevice_policy_revisionsは読み取りだけで変更しない。</dd>
+            </div>
+            <div>
+              <dt>applied_device_policy_snapshot</dt>
+              <dd>この時点では更新しない。fetched snapshotとapplied snapshotを別オブジェクトとして持つことで、取得済みだが未適用のPolicyを表現する。</dd>
+            </div>
+            <div>
+              <dt>notification</dt>
+              <dd>FCM pushの受信では表示しない。ユーザーに見せる通知は、強制インストールが必要で権限がない場合だけ後続ステップで出す。</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </article>
+
+    <article class="flow-step" aria-labelledby="step-3">
+      <div class="flow-step__header">
+        <span class="flow-step__number">3</span>
+        <div>
+          <h3 id="step-3">取得済みPolicyと端末状態を比較して同期計画を作る</h3>
+          <p>fetchedPolicy.updatedAtがappliedPolicy.updatedAtより新しい限り、アプリ起動時にも同期を試みます。強制対象の不足分はインストールし、Policyから消えたcompanion-installed appは削除します。</p>
+        </div>
+      </div>
+      <div class="flow-step__grid">
+        <div>
+          <DiagramFrame src="/mocks/app-distribution/step-3-sync-plan.html" title="コンパニオンアプリ: Policy差分同期計画" />
+        </div>
+        <div class="flow-step__details">
+          <h4>必要なartifact URL取得</h4>
+          <pre class="curl-block"><code>{downloadUrlCurl}</code></pre>
+          <h4>同期対象の決め方</h4>
+          <pre class="curl-block"><code>{fetchPolicyResponse}</code></pre>
+          <h4>端末ローカルデータの扱い</h4>
+          <dl class="db-list">
+            <div>
+              <dt>installed_package_index</dt>
+              <dd>端末上のpackageName、versionCode、installedByCompanionを保持または再スキャンする。ユーザーが外部で入れたアプリと、このアプリが入れたアプリを区別する。</dd>
+            </div>
+            <div>
+              <dt>policy_sync_plan</dt>
+              <dd>FORCE_INSTALLEDなのに未インストールまたは要求versionと異なるアプリをINSTALLにする。AVAILABLEは一覧に表示するだけで自動インストールしない。</dd>
+            </div>
+            <div>
+              <dt>companion-installed app</dt>
+              <dd>Policyに定義がなく、かつこのアプリによってインストールされたpackageはUNINSTALL対象にする。PolicyにAVAILABLEとして残るApp Dは削除しない。</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </article>
+
+    <article class="flow-step" aria-labelledby="step-4">
+      <div class="flow-step__header">
+        <span class="flow-step__number">4</span>
+        <div>
+          <h3 id="step-4">権限に応じて強制インストールを実行し、同期完了を記録する</h3>
+          <p>DeviceOwner権限またはインストール権限の委譲があればサイレントインストールします。権限がなければ、強制対象が満たされるまでStickyな通知でユーザーにインストールを促し続けます。</p>
+        </div>
+      </div>
+      <div class="flow-step__grid">
+        <div>
+          <DiagramFrame src="/mocks/app-distribution/step-4-install-route.html" title="コンパニオンアプリ: 強制インストール経路" />
+        </div>
+        <div class="flow-step__details">
+          <h4>同期結果報告</h4>
+          <pre class="curl-block"><code>{syncReportCurl}</code></pre>
+          <h4>DBと端末ローカルデータの扱い</h4>
+          <dl class="db-list">
+            <div>
+              <dt>applied_device_policy_snapshot</dt>
+              <dd>必要なインストールと削除が完了したときだけ、fetched snapshotのdevice_policy_revision.id、Policy本文、updatedAtをapplied snapshotへ反映する。</dd>
+            </div>
+            <div>
+              <dt>sticky install notification</dt>
+              <dd>権限なしでFORCE_INSTALLEDが未達の場合だけ表示する。ユーザーがキャンセルしてもPolicyが未同期なら、アプリ起動時や再同期時に再表示する。</dd>
+            </div>
+            <div>
+              <dt>device_policy_sync_reports</dt>
+              <dd>device_policy_revision_id、実行したaction、route、result、reportedAtをサーバーへ記録する。Policyそのものは結果報告で書き換えない。</dd>
+            </div>
+            <div>
+              <dt>fcm_push_tokens / releases / artifacts</dt>
+              <dd>同期結果報告では更新しない。push宛先とrelease metadataは別のライフサイクルで管理する。</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <section aria-labelledby="ownership">
+    <p class="section-kicker">Data ownership</p>
+    <h2 id="ownership">Policy同期で誰がどのデータを持つか</h2>
+    <Mermaid chart={policyFlow} title="DevicePolicy更新から端末同期完了まで" />
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">データ</th>
+            <th scope="col">保持場所</th>
+            <th scope="col">用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">DevicePolicy</th>
+            <td>サーバーのdevice_policies / device_policy_revisions。</td>
+            <td>1デバイスのあるべきアプリ状態を表す。devicesのidentityには混ぜない。</td>
+          </tr>
+          <tr>
+            <th scope="row">installMode</th>
+            <td>device_policy_app_entries。</td>
+            <td>FORCE_INSTALLEDは同期時に満たす対象、AVAILABLEはユーザーがアプリUIから手動取得できる対象。</td>
+          </tr>
+          <tr>
+            <th scope="row">fetched policy snapshot</th>
+            <td>端末ローカルストア。SQLiteの別テーブルでもJetpack DataStoreのobjectでもよい。</td>
+            <td>最後にサーバーから取得できたPolicy本文。FCM受信、手動更新、アプリ起動時取得で更新される。updatedAtはこのsnapshotが置き換わった時刻として扱う。</td>
+          </tr>
+          <tr>
+            <th scope="row">applied policy snapshot</th>
+            <td>端末ローカルストア。fetched policy snapshotとは別オブジェクトとして保存する。</td>
+            <td>端末上のインストール状態が実際に追いついたPolicy。fetchedPolicy.updatedAtより古い場合、アプリ起動時に同期を再開する。updatedAtはメタデータ更新では動かさない。</td>
+          </tr>
+          <tr>
+            <th scope="row">installedByCompanion</th>
+            <td>端末ローカルのinstalled_package_index。</td>
+            <td>Policyから消えたアプリを削除してよいか判断する。このアプリが入れたものだけ削除対象にする。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="sequence">
+    <p class="section-kicker">Sequence</p>
+    <h2 id="sequence">配信時の責務分担</h2>
+    <Mermaid chart={sequence} title="管理者、APIサーバー、FCM、コンパニオンアプリ、Androidの関係" />
+  </section>
+
+  <section aria-labelledby="lifecycle">
+    <p class="section-kicker">Lifecycle</p>
+    <h2 id="lifecycle">端末内Policy同期のライフサイクル</h2>
+    <Mermaid chart={lifecycle} title="fetched policy snapshotとapplied policy snapshotの関係" />
+  </section>
+</BaseLayout>

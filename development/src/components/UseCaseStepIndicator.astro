@@ -1,0 +1,48 @@
+---
+interface Props {
+  current: 1 | 2 | 3;
+}
+
+const { current } = Astro.props;
+const steps = [
+  { label: "端末登録", href: "/use-cases/device-registration/" },
+  { label: "アプリ登録", href: "/use-cases/app-registration/" },
+  { label: "配信", href: "/use-cases/app-distribution/" }
+];
+---
+
+<div class="usa-step-indicator usa-step-indicator--counters usecase-steps" aria-label="ユースケースの順序">
+  <ol class="usa-step-indicator__segments">
+    {steps.map((step, index) => {
+      const stepNumber = index + 1;
+      const statusClass =
+        stepNumber < current
+          ? "usa-step-indicator__segment--complete"
+          : stepNumber === current
+            ? "usa-step-indicator__segment--current"
+            : "";
+      return (
+        <li
+          class={`usa-step-indicator__segment ${statusClass}`}
+          aria-current={stepNumber === current ? "true" : undefined}
+        >
+          <a class="usa-step-indicator__segment-label" href={step.href}>
+            {step.label}
+            {stepNumber < current && <span class="usa-sr-only">完了</span>}
+            {stepNumber > current && <span class="usa-sr-only">未完了</span>}
+          </a>
+        </li>
+      );
+    })}
+  </ol>
+  <div class="usa-step-indicator__header">
+    <h2 class="usa-step-indicator__heading">
+      <span class="usa-step-indicator__heading-counter">
+        <span class="usa-sr-only">Step</span>
+        <span class="usa-step-indicator__current-step">{current}</span>
+        <span class="usa-step-indicator__total-steps">of {steps.length}</span>
+      </span>
+      <span class="usa-step-indicator__heading-text">{steps[current - 1].label}</span>
+    </h2>
+  </div>
+</div>

@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --ink: #1b1b1b;
+        --muted: #565c65;
+        --line: #dfe1e2;
+        --blue: #005ea8;
+        --green: #2e7044;
+        --gold: #ffbe2e;
+        --bg: #f7f9fa;
+        --chrome: #eef1f4;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        overflow: hidden;
+      }
+
+      body {
+        color: var(--ink);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 14px;
+      }
+
+      .chrome {
+        background: #fff;
+        border: 1px solid #c9cdd1;
+        border-radius: 10px;
+        box-shadow: 0 10px 26px rgba(27, 27, 27, 0.12);
+        margin: 0 auto;
+        max-width: 900px;
+        overflow: hidden;
+      }
+
+      .chrome-top {
+        background: var(--chrome);
+        border-bottom: 1px solid #c9cdd1;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: auto minmax(8rem, 13rem) minmax(0, 1fr);
+        padding: 9px 12px;
+      }
+
+      .traffic {
+        align-items: center;
+        display: flex;
+        gap: 6px;
+      }
+
+      .traffic span {
+        border-radius: 50%;
+        display: block;
+        height: 11px;
+        width: 11px;
+      }
+
+      .traffic span:nth-child(1) {
+        background: #d83933;
+      }
+
+      .traffic span:nth-child(2) {
+        background: #ffbe2e;
+      }
+
+      .traffic span:nth-child(3) {
+        background: #2e7044;
+      }
+
+      .tab {
+        align-items: center;
+        background: #fff;
+        border-radius: 8px 8px 0 0;
+        color: #3d4551;
+        display: flex;
+        font-size: 13px;
+        font-weight: 700;
+        padding: 7px 10px;
+      }
+
+      .address {
+        background: #fff;
+        border: 1px solid #c9cdd1;
+        border-radius: 999px;
+        color: #3d4551;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        overflow: hidden;
+        padding: 7px 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .admin {
+        display: grid;
+        grid-template-columns: 190px minmax(0, 1fr);
+        min-height: 370px;
+      }
+
+      .nav {
+        background: var(--bg);
+        border-right: 1px solid var(--line);
+        padding: 18px;
+      }
+
+      .nav b,
+      .main h1 {
+        display: block;
+        font-size: 18px;
+        margin: 0 0 18px;
+      }
+
+      .nav span {
+        border-left: 4px solid transparent;
+        color: var(--muted);
+        display: block;
+        font-size: 14px;
+        padding: 8px 0 8px 10px;
+      }
+
+      .nav span.active {
+        border-left-color: var(--blue);
+        color: var(--blue);
+        font-weight: 700;
+      }
+
+      .main {
+        padding: 20px;
+      }
+
+      .layout {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(0, 1fr) 270px;
+      }
+
+      label {
+        color: var(--muted);
+        display: block;
+        font-size: 13px;
+        font-weight: 700;
+        margin-top: 12px;
+      }
+
+      .select {
+        border: 1px solid var(--line);
+        margin-top: 6px;
+        min-height: 38px;
+        padding: 9px 10px;
+      }
+
+      .button {
+        background: var(--blue);
+        color: #fff;
+        display: inline-block;
+        font-weight: 700;
+        margin-top: 16px;
+        padding: 10px 14px;
+      }
+
+      .result {
+        background: #e7f6f8;
+        border: 1px solid #59b9de;
+        padding: 14px;
+      }
+
+      .qr {
+        background:
+          linear-gradient(90deg, #111 50%, transparent 50%) 0 0 / 16px 16px,
+          linear-gradient(#111 50%, transparent 50%) 0 0 / 16px 16px,
+          #fff;
+        border: 8px solid #fff;
+        box-shadow: 0 0 0 1px var(--line);
+        height: 128px;
+        margin: 10px auto 14px;
+        width: 128px;
+      }
+
+      .url {
+        background: #fff;
+        border: 1px solid var(--line);
+        color: var(--blue);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.45;
+        padding: 8px;
+        word-break: break-all;
+      }
+
+      .pill {
+        background: #ecf3ec;
+        color: var(--green);
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 700;
+        margin-top: 10px;
+        padding: 4px 7px;
+      }
+
+      .db-note {
+        background: #fff5c2;
+        border-left: 4px solid var(--gold);
+        color: #3d4551;
+        font-size: 13px;
+        line-height: 1.45;
+        margin-top: 12px;
+        padding: 9px 10px;
+      }
+
+      @media (max-width: 720px) {
+        .chrome-top {
+          grid-template-columns: auto minmax(0, 1fr);
+        }
+
+        .tab {
+          display: none;
+        }
+
+        .admin,
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="chrome" aria-label="Chrome風の管理画面でデバイス登録リンクを作成">
+      <div class="chrome-top" aria-hidden="true">
+        <div class="traffic"><span></span><span></span><span></span></div>
+        <div class="tab">Distribution Admin</div>
+        <div class="address">https://distribution.example.test/admin/devices/registration-tokens/new</div>
+      </div>
+      <div class="admin">
+        <aside class="nav">
+          <b>Distribution Admin</b>
+          <span>Apps</span>
+          <span class="active">Devices</span>
+          <span>Rollouts</span>
+          <span>Audit log</span>
+        </aside>
+        <main class="main">
+          <h1>デバイス登録トークンを発行</h1>
+          <div class="layout">
+            <section>
+              <label>所属グループ</label>
+              <div class="select">qa-devices</div>
+              <label>有効期限</label>
+              <div class="select">30 minutes</div>
+              <label>登録方式</label>
+              <div class="select">QR / custom scheme link</div>
+              <span class="button">トークンを発行</span>
+              <div class="db-note">この操作で作成されるのはdevice_registration_tokensだけです。devicesはまだ作成されません。</div>
+            </section>
+            <section class="result">
+              <strong>DeviceRegistrationToken</strong>
+              <div class="qr" aria-hidden="true"></div>
+              <div class="url">apkdist://register-device?registrationTokenId=drt_01HX9A2W...&amp;secret=drs_4Gk...</div>
+              <span class="pill">issuedAt / expiresAt saved</span>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+    <script>
+      (() => {
+        const sendSize = () => {
+          const body = document.body;
+          const height = Math.ceil(Math.max(body.scrollHeight, body.offsetHeight, body.getBoundingClientRect().height));
+          window.parent.postMessage({ type: "diagram-frame-size", path: window.location.pathname, height }, window.location.origin);
+        };
+        window.addEventListener("load", sendSize);
+        window.addEventListener("resize", sendSize);
+        window.addEventListener("message", (event) => {
+          if (event.origin === window.location.origin && event.data?.type === "diagram-frame-size-request") sendSize();
+        });
+        if (typeof ResizeObserver !== "undefined") new ResizeObserver(sendSize).observe(document.body);
+        sendSize();
+      })();
+    </script>
+  </body>
+</html>

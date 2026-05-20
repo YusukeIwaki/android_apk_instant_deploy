@@ -1,0 +1,65 @@
+---
+import "@uswds/uswds/css/uswds.min.css";
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description: string;
+  currentPath?: string;
+}
+
+const { title, description, currentPath = "/" } = Astro.props;
+const navItems = [
+  { label: "TOP", href: "/" },
+  { label: "デバイスの登録", href: "/use-cases/device-registration/" },
+  { label: "アプリの登録", href: "/use-cases/app-registration/" },
+  { label: "アプリの配信", href: "/use-cases/app-distribution/" }
+];
+const isActive = (href: string) => currentPath === href;
+---
+
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <title>{title} | APK Remote Distribution Design</title>
+  </head>
+  <body>
+    <a class="usa-skipnav" href="#main-content">本文へスキップ</a>
+
+    <main id="main-content">
+      <div class="docs-shell">
+        <aside class="docs-sidebar" aria-label="ユースケース">
+          <nav>
+            <ul class="usa-sidenav">
+              {navItems.map((item) => (
+                <li class="usa-sidenav__item">
+                  <a class={isActive(item.href) ? "usa-current" : ""} href={item.href}>
+                    {item.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        </aside>
+        <article class="docs-content">
+          <h1 class="docs-content-title">{title}</h1>
+          <slot />
+        </article>
+      </div>
+    </main>
+
+    <footer class="usa-footer usa-footer--slim docs-footer">
+      <div class="grid-container usa-footer__return-to-top">
+        <a href="#">ページ上部へ戻る</a>
+      </div>
+      <div class="usa-footer__primary-section">
+        <div class="grid-container">
+          <p>Source: <code>apk_remote_distribution_design.md</code></p>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,57 @@
+---
+interface Props {
+  chart: string;
+  title?: string;
+  caption?: string;
+}
+
+const { chart, title, caption } = Astro.props;
+---
+
+<figure class="diagram mermaid-figure">
+  {title && <figcaption class="diagram__title">{title}</figcaption>}
+  <pre class="mermaid">{chart}</pre>
+  {caption && <p class="diagram__caption">{caption}</p>}
+</figure>
+
+<script>
+  import mermaid from "mermaid";
+
+  const renderMermaid = async () => {
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: "base",
+      themeVariables: {
+        primaryColor: "#e7f6f8",
+        primaryTextColor: "#1b1b1b",
+        primaryBorderColor: "#005ea8",
+        lineColor: "#565c65",
+        secondaryColor: "#fff5c2",
+        tertiaryColor: "#f7f9fa",
+        noteBkgColor: "#fff5c2",
+        noteTextColor: "#1b1b1b",
+        actorBkg: "#f0f0f0",
+        actorBorder: "#565c65"
+      },
+      flowchart: {
+        curve: "basis",
+        htmlLabels: true
+      },
+      sequence: {
+        mirrorActors: false,
+        showSequenceNumbers: true
+      }
+    });
+
+    await mermaid.run({ querySelector: ".mermaid" });
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", renderMermaid, { once: true });
+  } else {
+    renderMermaid();
+  }
+
+  document.addEventListener("astro:page-load", renderMermaid);
+</script>

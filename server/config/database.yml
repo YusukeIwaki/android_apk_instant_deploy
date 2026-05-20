@@ -1,0 +1,19 @@
+default: &default
+  adapter: mysql2
+  database: <%= ENV.fetch("DATABASE_NAME", "apk_instant_deploy") %>
+  encoding: utf8mb4
+  host: <%= ENV.fetch("DATABASE_HOST", "localhost") %>
+  password: <%= ENV.fetch("DATABASE_PASSWORD", "") %>
+  pool: <%= ENV.fetch("DATABASE_POOL", "5") %>
+  port: <%= ENV.fetch("DATABASE_PORT", "3306") %>
+  sslca: <%= ENV["DATABASE_SSL_CA"] %>
+  username: <%= ENV.fetch("DATABASE_USERNAME", "root") %>
+
+development:
+  <<: *default
+
+production:
+  <<: *default
+
+test:
+  <<: *default

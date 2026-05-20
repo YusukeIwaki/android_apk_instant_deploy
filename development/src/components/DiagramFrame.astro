@@ -1,0 +1,130 @@
+---
+interface Props {
+  src: string;
+  title: string;
+  initialHeight?: string;
+}
+
+const { src, title, initialHeight = "16rem" } = Astro.props;
+---
+
+<figure class="diagram frame-diagram">
+  <figcaption class="diagram__title">{title}</figcaption>
+  <iframe
+    src={src}
+    title={title}
+    style={`height: ${initialHeight}`}
+    data-diagram-frame
+    loading="lazy"
+    scrolling="no"
+  ></iframe>
+</figure>
+
+<script>
+  const setFrameHeight = (iframe, height) => {
+    if (Number.isFinite(height) && height > 0) {
+      iframe.style.height = `${Math.ceil(height)}px`;
+    }
+  };
+
+  const measureFrameContent = (iframe) => {
+    try {
+      const doc = iframe.contentDocument;
+      if (!doc) return;
+
+      const body = doc.body;
+      const bodyRectHeight = body?.getBoundingClientRect().height ?? 0;
+      const height = Math.ceil(
+        Math.max(
+          bodyRectHeight,
+          body?.scrollHeight ?? 0,
+          body?.offsetHeight ?? 0
+        )
+      );
+
+      setFrameHeight(iframe, height);
+    } catch {
+      // Cross-origin frames cannot be measured. These diagrams are local and same-origin.
+    }
+  };
+
+  const attachDiagramFrameMessageListener = () => {
+    if (window["diagramFrameMessageListenerAttached"]) return;
+
+    window["diagramFrameMessageListenerAttached"] = true;
+    window.addEventListener("message", (event) => {
+      if (event.origin !== window.location.origin) return;
+
+      const data = event.data;
+      if (!data || data.type !== "diagram-frame-size") return;
+
+      const frames = document.querySelectorAll("iframe[data-diagram-frame]");
+      frames.forEach((iframe) => {
+        const framePath = new URL(iframe.getAttribute("src") ?? "", window.location.href).pathname;
+        if (iframe.contentWindow === event.source || framePath === data.path) {
+          iframe.dataset.diagramFrameSizedByChild = "true";
+          setFrameHeight(iframe, Number(data.height));
+        }
+      });
+    });
+  };
+
+  const attachDiagramFrameResizer = (iframe) => {
+    if (iframe.dataset.diagramResizerAttached === "true") {
+      if (iframe.dataset.diagramFrameSizedByChild !== "true") {
+        measureFrameContent(iframe);
+      }
+      return;
+    }
+
+    iframe.dataset.diagramResizerAttached = "true";
+    const resize = () => {
+      if (iframe.dataset.diagramFrameSizedByChild !== "true") {
+        measureFrameContent(iframe);
+      }
+    };
+    const requestChildSize = () => {
+      try {
+        iframe.contentWindow?.postMessage(
+          { type: "diagram-frame-size-request" },
+          window.location.origin
+        );
+      } catch {
+        // The fallback parent-side measurement still handles same-origin diagrams.
+      }
+    };
+
+    iframe.addEventListener("load", () => {
+      resize();
+      requestChildSize();
+
+      const doc = iframe.contentDocument;
+      if (!doc || typeof ResizeObserver === "undefined") return;
+
+      iframe.diagramResizeObserver?.disconnect?.();
+      const observer = new ResizeObserver(resize);
+      observer.observe(doc.documentElement);
+      if (doc.body) observer.observe(doc.body);
+      iframe.diagramResizeObserver = observer;
+    });
+
+    window.addEventListener("resize", resize);
+    resize();
+    requestChildSize();
+  };
+
+  const attachDiagramFrameResizers = () => {
+    attachDiagramFrameMessageListener();
+    document
+      .querySelectorAll("iframe[data-diagram-frame]")
+      .forEach((iframe) => attachDiagramFrameResizer(iframe));
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", attachDiagramFrameResizers, { once: true });
+  } else {
+    attachDiagramFrameResizers();
+  }
+
+  document.addEventListener("astro:page-load", attachDiagramFrameResizers);
+</script>

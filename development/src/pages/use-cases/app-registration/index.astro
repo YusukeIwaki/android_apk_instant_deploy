@@ -1,0 +1,486 @@
+---
+import DiagramFrame from "../../../components/DiagramFrame.astro";
+import Mermaid from "../../../components/Mermaid.astro";
+import BaseLayout from "../../../layouts/BaseLayout.astro";
+
+const createUploadCurl = `curl -X POST https://distribution.example.test/api/uploads/cache/multipart \\
+  -H "Authorization: Bearer $ADMIN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "filename": "qa-camera-2.4.0-42.apk",
+    "contentType": "application/vnd.android.package-archive",
+    "size": 50541312
+  }'`;
+
+const createUploadResponse = `HTTP/1.1 201 Created
+{
+  "multipartUpload": {
+    "key": "apk_uploads/01HX9J6/qa-camera-2.4.0-42.apk",
+    "uploadId": "s3_multipart_upload_id",
+    "partSize": 16777216,
+    "signPartUrl": "/api/uploads/cache/multipart/s3_multipart_upload_id/sign",
+    "completeUrl": "/api/uploads/cache/multipart/s3_multipart_upload_id/complete"
+  }
+}`;
+
+const uploadArtifactCurl = `curl -X PUT "$PART_1_UPLOAD_URL" \\
+  -H "Content-Type: application/vnd.android.package-archive" \\
+  --data-binary @part-0001.bin &
+curl -X PUT "$PART_2_UPLOAD_URL" \\
+  -H "Content-Type: application/vnd.android.package-archive" \\
+  --data-binary @part-0002.bin &
+curl -X PUT "$PART_3_UPLOAD_URL" \\
+  -H "Content-Type: application/vnd.android.package-archive" \\
+  --data-binary @part-0003.bin &
+wait
+
+# Uppy + Shrine.uppy_s3_multipartがS3 multipart completionまで担当する。
+# upload-success後、クライアントはShrine uploaded file dataを得る。
+# {
+#   "id": "apk_uploads/01HX9J6/qa-camera-2.4.0-42.apk",
+#   "storage": "cache",
+#   "metadata": {
+#     "filename": "qa-camera-2.4.0-42.apk",
+#     "size": 50541312,
+#     "mime_type": "application/vnd.android.package-archive"
+#   }
+# }
+#
+# この時点ではサーバーDBのartifacts、apps、releasesはまだ作成しない。`;
+
+const completeArtifactCurl = `curl -X POST https://distribution.example.test/api/artifacts \\
+  -H "Authorization: Bearer $ADMIN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "file": {
+      "id": "apk_uploads/01HX9J6/qa-camera-2.4.0-42.apk",
+      "storage": "cache",
+      "metadata": {
+        "filename": "qa-camera-2.4.0-42.apk",
+        "size": 50541312,
+        "mime_type": "application/vnd.android.package-archive"
+      }
+    },
+    "changelog": "Camera upload retry and QA logging fixes.",
+    "source": {
+      "branch": "main",
+      "commitSha": "8f4c2a1",
+      "buildNumber": "42"
+    }
+  }'`;
+
+const createReleaseResponse = `HTTP/1.1 201 Created
+{
+  "artifact": {
+    "id": 101,
+    "file": {
+      "id": "artifacts/101/qa-camera-2.4.0-42.apk",
+      "storage": "store"
+    },
+    "sha256": "58f7d4...",
+    "sizeBytes": 50541312,
+    "signingCertSha256": "9a5c0e..."
+  },
+  "app": {
+    "id": 12,
+    "packageName": "com.example.qacamera"
+  },
+  "release": {
+    "id": 301,
+    "app": { "id": 12 },
+    "artifact": { "id": 101 },
+    "packageName": "com.example.qacamera",
+    "versionCode": 42,
+    "versionName": "2.4.0-qa",
+    "sha256": "58f7d4...",
+    "signingCertSha256": "9a5c0e...",
+    "amapiPreflight": {
+      "customInstallType": true,
+      "fingerprintMatched": true
+    }
+  }
+}`;
+
+const rejectedReleaseCurl = `curl -X POST https://distribution.example.test/api/artifacts \\
+  -H "Authorization: Bearer $ADMIN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "file": {
+      "id": "apk_uploads/01HX9J7/qa-camera-old.apk",
+      "storage": "cache",
+      "metadata": {
+        "filename": "qa-camera-old.apk",
+        "size": 50112000,
+        "mime_type": "application/vnd.android.package-archive"
+      }
+    },
+    "changelog": "Retry old build."
+  }'
+
+# Response: 422 Unprocessable Entity
+# {
+#   "code": "VERSION_CODE_NOT_ACCEPTED",
+#   "message": "versionCode 39 is older than the latest accepted release."
+# }`;
+
+const artifactFlow = `flowchart TD
+  Start["管理者 / CIがAPK登録を開始"] --> UploadUrl["Shrine cache upload parametersを発行"]
+  UploadUrl --> Upload["Uppy + Shrineでcache storageへmultipart upload"]
+  Upload --> FileData["Shrine uploaded file data<br/>storage=cache / id / metadata"]
+  FileData --> Complete["POST /artifacts<br/>uploaded file dataを送る"]
+  Complete --> Open["APIサーバーがShrineでcache fileをopen"]
+  Open --> Inspect["APIサーバーがAPKを解析<br/>packageName / versionCode / cert / sha256"]
+  Inspect --> Acceptable{"既存appとの互換性を満たすか"}
+  Acceptable -->|はい| Promote["Shrineでcacheからstoreへpromote"]
+  Promote --> Artifact["artifacts<br/>store file_dataとmetadataを保存"]
+  Acceptable -->|はい| AppIdentity["apps<br/>packageNameに対応する行"]
+  Artifact --> Release["releases<br/>app_id + artifact_id + versionCode"]
+  AppIdentity --> Release
+  Release --> Preflight{"AMAPI policy preflight"}
+  Preflight -->|整合| Ready["登録完了<br/>release catalogに表示"]
+  Preflight -->|不整合| Warning["登録完了 + 警告<br/>配信時はfallback判断に残す"]
+  Acceptable -->|いいえ| Reject["登録拒否<br/>release catalogは変更しない"]
+  Reject --> Discard["cache fileを破棄<br/>artifact/releaseは残さない"]`;
+
+const relationshipDiagram = `flowchart LR
+  subgraph App["apps: アプリidentity"]
+    AppNode["id: 12 (AR primary key)<br/>packageName: com.example.qacamera<br/>createdAt"]
+  end
+
+  subgraph Versions["releases: バージョンごとの配信単位"]
+    Release1["id: 301 (AR primary key)<br/>app_id: 12 / artifact_id: 101<br/>versionCode: 1<br/>versionName: 1.0.0"]
+    Release2["id: 302 (AR primary key)<br/>app_id: 12 / artifact_id: 102<br/>versionCode: 2<br/>versionName: 1.1.0"]
+  end
+
+  subgraph Files["artifacts: アップロードAPKとmetadata"]
+    Artifact1["id: 101 (AR primary key)<br/>file.storage: store<br/>file.id: artifacts/101/app.apk<br/>sha256 / sizeBytes<br/>signingCertSha256"]
+    Artifact2["id: 102 (AR primary key)<br/>file.storage: store<br/>file.id: artifacts/102/app.apk<br/>sha256 / sizeBytes<br/>signingCertSha256"]
+  end
+
+  AppNode -->|"1 app has many releases"| Release1
+  AppNode -->|"1 app has many releases"| Release2
+  Release1 -->|"version 1 uses this APK"| Artifact1
+  Release2 -->|"version 2 uses this APK"| Artifact2`;
+
+const identityFlow = `flowchart LR
+  subgraph Operator["管理者 / CI"]
+    ApkFile["APK file"]
+    Changelog["changelog / source build info"]
+  end
+
+  subgraph Storage["Artifact storage"]
+    ShrineEndpoint["Shrine.uppy_s3_multipart<br/>cache storage endpoint"]
+    CacheFile["Shrine uploaded file data<br/>storage=cache / id / metadata"]
+    StoreFile["Shrine store file_data<br/>storage=store / id"]
+  end
+
+  subgraph Server["APIサーバー / DB"]
+    Apps["apps<br/>id / packageName"]
+    Artifacts["artifacts<br/>id / file_data / sha256 / sizeBytes / signingCertSha256"]
+    Releases["releases<br/>id / app_id / artifact_id / versionCode / changelog / createdAt"]
+    PolicyEvents["amapi_policy_preflight_events<br/>必要な場合だけrelease_idと結果理由を記録"]
+  end
+
+  subgraph External["外部管理面"]
+    Amapi["AMAPI policy registry<br/>CUSTOM設定 / signing fingerprint"]
+  end
+
+  ApkFile --> ShrineEndpoint --> CacheFile
+  CacheFile -->|POST /artifactsでShrine open + parse| Artifacts
+  Artifacts --> StoreFile
+  Changelog --> Releases
+  Artifacts --> Releases
+  Apps --> Releases
+  Releases -->|read-only preflight| Amapi
+  Amapi --> PolicyEvents`;
+
+const sequence = `sequenceDiagram
+  autonumber
+  actor Operator as 管理者 / CI
+  participant Api as APIサーバー
+  participant Store as Artifact storage
+  participant Inspector as APK inspector
+  participant Catalog as Release catalog
+  participant Amapi as AMAPI policy registry
+
+  Operator->>Api: Shrine/Uppy multipart upload parametersを要求
+  Api-->>Operator: key / uploadId / part signing endpointを返す
+  Operator->>Store: APK partsを並列PUT
+  Operator->>Api: Shrine multipart complete
+  Api-->>Operator: Shrine uploaded file data(storage=cache, id, metadata)
+  Operator->>Api: POST /artifacts(file data, changelog, source)
+  Api->>Store: Shrineでcache fileをopen
+  Api->>Inspector: packageName, versionCode, signing cert, sha256を抽出
+  alt 既存appと互換性あり
+    Api->>Store: cacheからstoreへpromote
+    Api->>Catalog: artifact(file_data)、app identity、releaseを保存
+    opt AMAPI対象として使いたい場合
+      Api->>Amapi: CUSTOM設定とfingerprintを確認
+      Amapi-->>Api: 整合または警告
+    end
+    Api-->>Operator: 作成されたreleaseと抽出メタデータを返す
+  else versionCode / signature / duplicateが受け入れ不可
+    Api->>Store: cache fileを破棄
+    Api-->>Operator: 登録拒否と理由を返す
+  end`;
+
+const lifecycle = `stateDiagram-v2
+  [*] --> CacheUploadIssued
+  CacheUploadIssued --> CacheUploaded: Shrine cacheへmultipart upload完了
+  CacheUploaded --> CompletingArtifact: POST /artifacts(file data)
+  CompletingArtifact --> Inspecting: Shrine open + parse
+  Inspecting --> Rejected: signature不一致 / downgrade / duplicate
+  Inspecting --> Promoted: cacheからstoreへpromote
+  Promoted --> ArtifactRecorded: artifacts作成
+  ArtifactRecorded --> AppResolved: appsを作成または既存参照
+  AppResolved --> ReleaseCreated: releases作成
+  ReleaseCreated --> PreflightChecked: AMAPI policy確認
+  PreflightChecked --> Completed: release catalogに表示
+  Rejected --> CacheDiscarded: cache fileを破棄
+  CacheDiscarded --> [*]
+  Completed --> [*]`;
+---
+
+<BaseLayout
+  title="アプリの登録"
+  description="配布対象APKをreleaseとして登録し、端末へ配信する前にartifact metadataと互換性判定を確定します。"
+  currentPath="/use-cases/app-registration/"
+>
+  <p class="lede">
+    アプリ登録は、APKファイルを置くだけの処理ではありません。
+    管理者またはCIがShrine/Uppyで信頼済みcache storageへアップロードしたAPKを、完了APIでサーバーがShrine fileとしてopen・解析し、packageName、versionCode、署名、hash、サイズをもとに、artifacts、apps、releasesへ結びつけてrelease catalogに登録します。
+  </p>
+
+  <section aria-labelledby="data-model">
+    <p class="section-kicker">Data model</p>
+    <h2 id="data-model">Artifact、apps、releasesの関係</h2>
+    <Mermaid chart={relationshipDiagram} title="apps、releases、artifactsの関係と保持する情報" />
+    <dl class="key-value-list">
+      <div>
+        <dt>artifacts</dt>
+        <dd>アップロードされたAPKそのものと、そのAPK bytesから得られるsha256、sizeBytes、signingCertSha256などの事実を持つ。独自のartifact用識別子は持たず、関連にはActiveRecordのidを使う。Shrine cache upload時点では作らず、POST /artifactsでサーバーがuploaded file dataを受け取り、cache fileを解析してstoreへpromoteできたときに作成する。</dd>
+      </div>
+      <div>
+        <dt>apps</dt>
+        <dd>packageNameで識別される配布対象アプリのidentity。独自のapp用識別子は持たず、行の参照にはActiveRecordのidを使う。解析したpackageNameに対応するappがなければ、release作成時に作成する。</dd>
+      </div>
+      <div>
+        <dt>releases</dt>
+        <dd>appsとartifactsをapp_id、artifact_idで結び、versionCode、versionName、changelog、createdAtを持つバージョン単位のrelease実体。単なる中間テーブルではなく、配信Policyから参照する単位になる。独自のrelease用識別子は持たず、参照にはActiveRecordのidを使う。</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section aria-labelledby="registration-flow">
+    <p class="section-kicker">Flow with data</p>
+    <h2 id="registration-flow">処理フロー</h2>
+
+    <article class="flow-step" aria-labelledby="step-1">
+      <div class="flow-step__header">
+        <span class="flow-step__number">1</span>
+        <div>
+          <h3 id="step-1">管理者またはCIがShrine cacheアップロード先を発行する</h3>
+          <p>管理画面またはCIから、APKを分割/並列アップロードするためのShrine/Uppy multipart parametersを作成します。この時点ではrelease catalogにも配信対象にも載りません。</p>
+        </div>
+      </div>
+      <div class="flow-step__grid">
+        <div>
+          <DiagramFrame src="/mocks/app-registration/step-1-upload-url.html" title="管理画面: APKアップロード先作成" />
+        </div>
+        <div class="flow-step__details">
+          <h4>API呼び出し</h4>
+          <pre class="curl-block"><code>{createUploadCurl}</code></pre>
+          <h4>応答</h4>
+          <pre class="curl-block"><code>{createUploadResponse}</code></pre>
+          <h4>DBデータの扱い</h4>
+          <dl class="db-list">
+            <div>
+              <dt>apps / artifacts / releases</dt>
+              <dd>まだ作成しない。cache upload先の発行だけでは、APK bytesの存在も、アプリidentityも、releaseも確定していない。</dd>
+            </div>
+            <div>
+              <dt>Shrine / Uppy / storage</dt>
+              <dd>multipart uploadのkey、uploadId、part signing、completionはShrine側の一時アップロード責務として扱う。ドメインDBには独自の一時アップロードセッションテーブルを作らず、必要な監査だけを別イベントとして残す。</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </article>
+
+    <article class="flow-step" aria-labelledby="step-2">
+      <div class="flow-step__header">
+        <span class="flow-step__number">2</span>
+        <div>
+          <h3 id="step-2">APKをShrine cache storageへ分割/並列アップロードする</h3>
+          <p>管理画面のアップローダーまたはCIが、Shrine/Uppyのmultipart uploadを完了し、uploaded file dataを得ます。アップロード完了だけでは、サーバーDBのartifactにもreleaseにもなりません。</p>
+        </div>
+      </div>
+      <div class="flow-step__grid">
+        <div>
+          <DiagramFrame src="/mocks/app-registration/step-2-upload-artifact.html" title="管理画面: APKアップロード中" />
+        </div>
+        <div class="flow-step__details">
+          <h4>API呼び出し</h4>
+          <pre class="curl-block"><code>{uploadArtifactCurl}</code></pre>
+          <h4>作成されるデータ</h4>
+          <dl class="db-list">
+            <div>
+              <dt>Artifact storage</dt>
+              <dd>Shrine cache storageにAPK bytesを保存し、storage=cache、id、metadataを含むuploaded file dataとして表現する。DB上のartifactやreleaseとしてはまだ参照しない。</dd>
+            </div>
+            <div>
+              <dt>artifacts</dt>
+              <dd>まだ作成しない。POST /artifactsへ渡すのはShrine uploaded file dataであり、独自multipart完了APIの内部値ではない。</dd>
+            </div>
+            <div>
+              <dt>rollout_jobs / device_install_tasks</dt>
+              <dd>作成しない。APK uploadと端末配信の責務は分ける。</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </article>
+
+    <article class="flow-step" aria-labelledby="step-3">
+      <div class="flow-step__header">
+        <span class="flow-step__number">3</span>
+        <div>
+          <h3 id="step-3">POST /artifactsでShrine cache fileを解析して完了する</h3>
+          <p>完了APIはShrine uploaded file dataを受け取り、サーバー側で信頼済みcache fileだけをopenして解析します。解析に成功した場合だけstoreへpromoteし、artifact、app、releaseを一連の結果として確定します。</p>
+        </div>
+      </div>
+      <div class="flow-step__grid">
+        <div>
+          <DiagramFrame src="/mocks/app-registration/step-3-release-created.html" title="管理画面: artifact完了とrelease登録" />
+        </div>
+        <div class="flow-step__details">
+          <h4>API呼び出し</h4>
+          <pre class="curl-block"><code>{completeArtifactCurl}</code></pre>
+          <h4>作成・参照されるDBデータ</h4>
+          <dl class="db-list">
+            <div>
+              <dt>apps</dt>
+              <dd>packageNameに対応するapps行を作成または既存参照する。アプリidentityにはpackageNameなど安定した識別情報だけを置き、独自のapp用識別子は持たない。</dd>
+            </div>
+            <div>
+              <dt>artifacts</dt>
+              <dd>ActiveRecordのid、Shrine store file_data、sha256、sizeBytes、signingCertSha256などのAPK bytes由来metadataを保存する。</dd>
+            </div>
+            <div>
+              <dt>releases</dt>
+              <dd>ActiveRecordのid、app_id、artifact_id、versionCode、versionName、changelog、createdAt、createdByを保存する。配信ジョブはまだ作成しない。</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </article>
+
+    <article class="flow-step" aria-labelledby="step-4">
+      <div class="flow-step__header">
+        <span class="flow-step__number">4</span>
+        <div>
+          <h3 id="step-4">登録結果を表示し、受け入れ不可のAPKはrelease化しない</h3>
+          <p>登録成功時は作成されたreleaseと抽出メタデータを表示します。署名不一致、downgrade、重複versionCodeなどの受け入れ不可条件では、release catalogを変更しません。</p>
+        </div>
+      </div>
+      <div class="flow-step__grid">
+        <div>
+          <DiagramFrame src="/mocks/app-registration/step-4-registration-result.html" title="管理画面: 登録完了と登録拒否" />
+        </div>
+        <div class="flow-step__details">
+          <h4>登録成功時の応答</h4>
+          <pre class="curl-block"><code>{createReleaseResponse}</code></pre>
+          <h4>受け入れ不可の場合</h4>
+          <pre class="curl-block"><code>{rejectedReleaseCurl}</code></pre>
+          <h4>DBデータの扱い</h4>
+          <dl class="db-list">
+            <div>
+              <dt>releases</dt>
+              <dd>成功時だけ新規作成する。拒否時はreleases行を作成せず、配信ジョブから選べる状態にしない。</dd>
+            </div>
+            <div>
+              <dt>artifacts</dt>
+              <dd>解析や互換性確認に失敗した場合は作成しない。cache fileは破棄し、storeへpromoteしない。監査目的で残す場合は、releaseとは別の解析イベントまたは隔離領域として扱う。</dd>
+            </div>
+            <div>
+              <dt>amapi_policy_preflight_events</dt>
+              <dd>AMAPI policyとの整合性を保存する必要がある場合だけ、release_id、checkedAt、理由を記録する。appsやreleasesにmutableなstatusを持たせない。</dd>
+            </div>
+            <div>
+              <dt>rollout_jobs / device_install_tasks</dt>
+              <dd>登録完了時点では作成しない。どの端末へ配るかはアプリ配信ページの責務として分ける。</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <section aria-labelledby="identity">
+    <p class="section-kicker">Data ownership</p>
+    <h2 id="identity">誰がどのidentifierと事実を持つか</h2>
+    <Mermaid chart={identityFlow} title="APK file、artifact storage、apps、artifacts、releasesの関係" />
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">identifier / fact</th>
+            <th scope="col">生成者</th>
+            <th scope="col">保持場所</th>
+            <th scope="col">用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Shrine uploaded file data</th>
+            <td>Shrine / Uppy upload completion</td>
+            <td>POST /artifactsの入力。storage=cache、id、metadataを含む。</td>
+            <td>APIサーバーが信頼済みcache storage内のAPKだけをopenするための参照。任意URLやrelease identityではない。</td>
+          </tr>
+          <tr>
+            <th scope="row">packageName</th>
+            <td>APK解析</td>
+            <td>apps。</td>
+            <td>配布対象アプリを識別する安定した事実。独自のapp用識別子は作らず、DB行の参照はapps.idを使う。</td>
+          </tr>
+          <tr>
+            <th scope="row">ActiveRecord id</th>
+            <td>DB / ActiveRecord</td>
+            <td>apps.id、artifacts.id、releases.idと、それらを参照するapp_id、artifact_id、release_id。</td>
+            <td>テーブル間の関連と管理APIでの行参照に使う。artifact、app、release向けの独自識別子は別途作らない。</td>
+          </tr>
+          <tr>
+            <th scope="row">versionCode / versionName</th>
+            <td>APIサーバーのAPK解析</td>
+            <td>releases。</td>
+            <td>特定appのバージョンを表すreleaseごとの事実。1つのreleaseは1つのappと1つのartifactに紐づく。</td>
+          </tr>
+          <tr>
+            <th scope="row">signingCertSha256</th>
+            <td>APIサーバーのAPK解析</td>
+            <td>artifacts。AMAPI policy preflightでは外部policy registryと照合する。</td>
+            <td>既存appとの署名互換性と、AMAPI CUSTOM設定のfingerprint整合性を判断する。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="artifact-flow">
+    <p class="section-kicker">Decision flow</p>
+    <h2 id="artifact-flow">artifact登録の判定</h2>
+    <Mermaid chart={artifactFlow} title="アップロード済みAPKがrelease catalogに載るまでの判定" />
+  </section>
+
+  <section aria-labelledby="sequence">
+    <p class="section-kicker">Sequence</p>
+    <h2 id="sequence">登録時の責務分担</h2>
+    <Mermaid chart={sequence} title="管理者またはCI、APIサーバー、artifact storage、release catalog、AMAPI policy registryの関係" />
+  </section>
+
+  <section aria-labelledby="lifecycle">
+    <p class="section-kicker">Lifecycle</p>
+    <h2 id="lifecycle">登録手続きのライフサイクル</h2>
+    <Mermaid chart={lifecycle} title="Shrine cache uploadからartifact完了または拒否まで" />
+  </section>
+</BaseLayout>

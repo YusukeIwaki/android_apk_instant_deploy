@@ -1,0 +1,13 @@
+.gradle/
+build/
+**/build/
+
+.bundle/
+vendor/bundle/
+
+local.properties
+.DS_Store
+
+development/node_modules/
+development/dist/
+development/.astro/

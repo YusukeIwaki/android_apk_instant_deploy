@@ -1,0 +1,870 @@
+openapi: 3.1.0
+info:
+  title: Android APK Instant Deploy API
+  version: 0.1.0
+  description: |
+    API definition for the APK instant deploy server.
+
+    Admin APIs are intended for the operator/admin web UI and use an admin token.
+    Android App APIs are intended for the companion Android app and use a device token.
+servers:
+  - url: http://localhost:4567
+    description: Local Docker Compose server
+tags:
+  - name: System
+    description: Health endpoints.
+  - name: Admin API
+    description: APIs used by the administrator web UI.
+  - name: Android App API
+    description: APIs used by the Android companion app.
+paths:
+  /health:
+    get:
+      tags:
+        - System
+      operationId: getHealth
+      summary: Get server health
+      security: []
+      responses:
+        "200":
+          $ref: "#/components/responses/HealthResponse"
+  /api/storage:
+    get:
+      tags:
+        - Admin API
+      operationId: getStorageConfiguration
+      summary: Get artifact storage configuration
+      security:
+        - AdminBearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/StorageConfigurationDetailResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+  /api/artifacts/presigned_uploads:
+    post:
+      tags:
+        - Admin API
+      operationId: createArtifactPresignedUpload
+      summary: Create a presigned artifact upload URL
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArtifactPresignedUploadCreateRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/ArtifactPresignedUploadDetailResponse"
+        "400":
+          $ref: "#/components/responses/InvalidJsonError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/releases:
+    get:
+      tags:
+        - Admin API
+      operationId: listReleases
+      summary: List releases
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          $ref: "#/components/responses/ReleaseListResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    post:
+      tags:
+        - Admin API
+      operationId: createRelease
+      summary: Create release metadata
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReleaseCreateRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/ReleaseDetailResponse"
+        "400":
+          $ref: "#/components/responses/InvalidJsonError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/releases/{releaseId}:
+    get:
+      tags:
+        - Admin API
+      operationId: getRelease
+      summary: Get release metadata
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ReleaseId"
+      responses:
+        "200":
+          $ref: "#/components/responses/ReleaseDetailResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+  /api/releases/{releaseId}/artifact_url:
+    get:
+      tags:
+        - Android App API
+      operationId: getReleaseArtifactUrl
+      summary: Get a short-lived artifact download URL
+      security:
+        - DeviceBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ReleaseId"
+      responses:
+        "200":
+          $ref: "#/components/responses/ReleaseArtifactUrlDetailResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+  /api/devices:
+    get:
+      tags:
+        - Admin API
+      operationId: listDevices
+      summary: List registered devices
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          $ref: "#/components/responses/DeviceListResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    post:
+      tags:
+        - Android App API
+      operationId: registerDevice
+      summary: Register or update a device
+      security:
+        - DeviceBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCreateRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/DeviceDetailResponse"
+        "400":
+          $ref: "#/components/responses/InvalidJsonError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/devices/{deviceId}:
+    get:
+      tags:
+        - Admin API
+      operationId: getDevice
+      summary: Get registered device
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          $ref: "#/components/responses/DeviceDetailResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+  /api/jobs:
+    post:
+      tags:
+        - Admin API
+      operationId: createRolloutJob
+      summary: Create a rollout job for a device
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RolloutJobCreateRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/RolloutJobDetailResponse"
+        "400":
+          $ref: "#/components/responses/InvalidJsonError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/jobs/{jobId}:
+    get:
+      tags:
+        - Admin API
+      operationId: getRolloutJob
+      summary: Get rollout job
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          $ref: "#/components/responses/RolloutJobDetailResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+  /api/devices/{deviceId}/sync:
+    get:
+      tags:
+        - Android App API
+      operationId: syncDevice
+      summary: Sync assigned rollout jobs and releases for a device
+      security:
+        - DeviceBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          $ref: "#/components/responses/DeviceSyncResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+  /api/install_results:
+    post:
+      tags:
+        - Android App API
+      operationId: reportInstallResult
+      summary: Report install result for a rollout job
+      security:
+        - DeviceBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstallResultCreateRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/InstallResultDetailResponse"
+        "400":
+          $ref: "#/components/responses/InvalidJsonError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+components:
+  securitySchemes:
+    AdminBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-admin-token
+      description: Bearer token issued for the administrator web UI.
+    DeviceBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-device-token
+      description: Bearer token issued per Android companion app/device.
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Device identifier.
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Rollout job identifier.
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 30
+        minimum: 1
+        maximum: 100
+      description: Maximum number of records to return.
+    Offset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+      description: Number of records to skip.
+    ReleaseId:
+      name: releaseId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Release identifier.
+  responses:
+    ArtifactPresignedUploadDetailResponse:
+      description: Presigned artifact upload URL was created.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ArtifactPresignedUploadDetailResponse"
+    DeviceDetailResponse:
+      description: Device detail.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DeviceDetailResponse"
+    DeviceListResponse:
+      description: Device list.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DeviceListResponse"
+    DeviceSyncResponse:
+      description: Device sync payload.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DeviceSyncResponse"
+    HealthResponse:
+      description: Server is healthy.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HealthResponse"
+    InstallResultDetailResponse:
+      description: Install result detail.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InstallResultDetailResponse"
+    ReleaseArtifactUrlDetailResponse:
+      description: Artifact download URL detail.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReleaseArtifactUrlDetailResponse"
+    ReleaseDetailResponse:
+      description: Release detail.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReleaseDetailResponse"
+    ReleaseListResponse:
+      description: Release list.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReleaseListResponse"
+    RolloutJobDetailResponse:
+      description: Rollout job detail.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RolloutJobDetailResponse"
+    StorageConfigurationDetailResponse:
+      description: Artifact storage configuration detail.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StorageConfigurationDetailResponse"
+    InvalidJsonError:
+      description: Request body is not valid JSON.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFoundError:
+      description: Requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnauthorizedError:
+      description: Authentication failed or token is missing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ValidationError:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ArtifactPresignedUpload:
+      type: object
+      additionalProperties: false
+      required:
+        - s3_key
+        - upload_url
+        - expires_in
+      properties:
+        s3_key:
+          type: string
+        upload_url:
+          type: string
+          format: uri
+        expires_in:
+          type: integer
+          minimum: 1
+    ArtifactPresignedUploadCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - filename
+      properties:
+        filename:
+          type: string
+        s3_key:
+          type: string
+        content_type:
+          type: string
+          default: application/vnd.android.package-archive
+    ArtifactPresignedUploadDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - artifact_presigned_upload
+      properties:
+        artifact_presigned_upload:
+          $ref: "#/components/schemas/ArtifactPresignedUpload"
+    Device:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - amapi_managed
+        - model
+        - sdk_int
+        - last_seen_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        name:
+          type:
+            - string
+            - "null"
+        amapi_managed:
+          type: boolean
+        model:
+          type:
+            - string
+            - "null"
+        sdk_int:
+          type:
+            - integer
+            - "null"
+        last_seen_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DeviceCreateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        device_id:
+          type: string
+        name:
+          type: string
+        amapi_managed:
+          type: boolean
+          default: false
+        model:
+          type: string
+        sdk_int:
+          type: integer
+          minimum: 1
+    DeviceDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - device
+      properties:
+        device:
+          $ref: "#/components/schemas/Device"
+    DeviceListResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - devices
+        - total_count
+        - count
+        - offset
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/Device"
+        total_count:
+          type: integer
+          minimum: 0
+        count:
+          type: integer
+          minimum: 0
+        offset:
+          type: integer
+          minimum: 0
+    DeviceSyncResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - device
+        - jobs
+        - releases
+      properties:
+        device:
+          $ref: "#/components/schemas/Device"
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/RolloutJob"
+        releases:
+          type: array
+          items:
+            $ref: "#/components/schemas/Release"
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        path:
+          type: string
+        fields:
+          type: array
+          items:
+            type: string
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        service:
+          type: string
+    InstallResult:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - job_id
+        - state
+        - reason
+        - installed_version_code
+        - reported_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        job_id:
+          type: string
+        state:
+          $ref: "#/components/schemas/InstallResultState"
+        reason:
+          type:
+            - string
+            - "null"
+        installed_version_code:
+          type:
+            - integer
+            - "null"
+        reported_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    InstallResultCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - job_id
+        - state
+      properties:
+        job_id:
+          type: string
+        state:
+          $ref: "#/components/schemas/InstallResultState"
+        reason:
+          type: string
+        installed_version_code:
+          type: integer
+          minimum: 1
+    InstallResultDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - install_result
+      properties:
+        install_result:
+          $ref: "#/components/schemas/InstallResult"
+    InstallResultState:
+      type: string
+      enum:
+        - downloaded
+        - install_requested
+        - installed
+        - failed
+    Release:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - package_name
+        - version_code
+        - version_name
+        - s3_key
+        - artifact_url
+        - sha256
+        - changelog
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        package_name:
+          type: string
+        version_code:
+          type: integer
+        version_name:
+          type:
+            - string
+            - "null"
+        s3_key:
+          type:
+            - string
+            - "null"
+        artifact_url:
+          type:
+            - string
+            - "null"
+          format: uri
+        sha256:
+          type:
+            - string
+            - "null"
+          pattern: "^[A-Fa-f0-9]{64}$"
+        changelog:
+          type:
+            - string
+            - "null"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ReleaseArtifactUrl:
+      type: object
+      additionalProperties: false
+      required:
+        - release_id
+        - artifact_url
+      properties:
+        release_id:
+          type: string
+        artifact_url:
+          type: string
+          format: uri
+    ReleaseArtifactUrlDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - release_artifact_url
+      properties:
+        release_artifact_url:
+          $ref: "#/components/schemas/ReleaseArtifactUrl"
+    ReleaseCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - package_name
+        - version_code
+      properties:
+        package_name:
+          type: string
+        version_code:
+          type: integer
+          minimum: 1
+        version_name:
+          type: string
+        s3_key:
+          type: string
+        artifact_url:
+          type: string
+          format: uri
+        sha256:
+          type: string
+          pattern: "^[A-Fa-f0-9]{64}$"
+        changelog:
+          type: string
+      anyOf:
+        - required:
+            - s3_key
+        - required:
+            - artifact_url
+    ReleaseDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - release
+      properties:
+        release:
+          $ref: "#/components/schemas/Release"
+    ReleaseListResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - releases
+        - total_count
+        - count
+        - offset
+      properties:
+        releases:
+          type: array
+          items:
+            $ref: "#/components/schemas/Release"
+        total_count:
+          type: integer
+          minimum: 0
+        count:
+          type: integer
+          minimum: 0
+        offset:
+          type: integer
+          minimum: 0
+    RolloutJob:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - release_id
+        - device_id
+        - state
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        release_id:
+          type: string
+        device_id:
+          type: string
+        state:
+          $ref: "#/components/schemas/RolloutJobState"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    RolloutJobCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - release_id
+        - device_id
+      properties:
+        release_id:
+          type: string
+        device_id:
+          type: string
+    RolloutJobDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - job
+      properties:
+        job:
+          $ref: "#/components/schemas/RolloutJob"
+    RolloutJobState:
+      type: string
+      enum:
+        - created
+        - download_requested
+        - downloaded
+        - install_requested
+        - installed
+        - failed
+    StorageConfiguration:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - bucket
+        - region
+        - endpoint_configured
+        - public_endpoint_configured
+      properties:
+        type:
+          type: string
+          enum:
+            - s3
+        bucket:
+          type: string
+        region:
+          type: string
+        endpoint_configured:
+          type: boolean
+        public_endpoint_configured:
+          type: boolean
+    StorageConfigurationDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - storage_configuration
+      properties:
+        storage_configuration:
+          $ref: "#/components/schemas/StorageConfiguration"

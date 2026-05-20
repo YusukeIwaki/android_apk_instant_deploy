@@ -1,0 +1,23 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const pages = [
+  { label: "デバイスの登録", href: "/use-cases/device-registration/" },
+  { label: "アプリの登録", href: "/use-cases/app-registration/" },
+  { label: "アプリの配信", href: "/use-cases/app-distribution/" }
+];
+---
+
+<BaseLayout
+  title="ページ一覧"
+  description="ユースケース別設計ページの一覧です。"
+  currentPath="/"
+>
+  <ul class="usa-list page-index-list">
+    {pages.map((page) => (
+      <li>
+        <a href={page.href}>{page.label}</a>
+      </li>
+    ))}
+  </ul>
+</BaseLayout>

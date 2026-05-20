@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --ink: #1b1b1b;
+        --muted: #565c65;
+        --line: #dfe1e2;
+        --blue: #005ea8;
+        --green: #2e7044;
+        --gold: #ffbe2e;
+        --bg: #f7f9fa;
+        --chrome: #eef1f4;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        overflow: hidden;
+      }
+
+      body {
+        color: var(--ink);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 14px;
+      }
+
+      .chrome {
+        background: #fff;
+        border: 1px solid #c9cdd1;
+        border-radius: 10px;
+        box-shadow: 0 10px 26px rgba(27, 27, 27, 0.12);
+        margin: 0 auto;
+        max-width: 920px;
+        overflow: hidden;
+      }
+
+      .chrome-top {
+        background: var(--chrome);
+        border-bottom: 1px solid #c9cdd1;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: auto minmax(8rem, 13rem) minmax(0, 1fr);
+        padding: 9px 12px;
+      }
+
+      .traffic {
+        align-items: center;
+        display: flex;
+        gap: 6px;
+      }
+
+      .traffic span {
+        border-radius: 50%;
+        display: block;
+        height: 11px;
+        width: 11px;
+      }
+
+      .traffic span:nth-child(1) {
+        background: #d83933;
+      }
+
+      .traffic span:nth-child(2) {
+        background: var(--gold);
+      }
+
+      .traffic span:nth-child(3) {
+        background: var(--green);
+      }
+
+      .tab {
+        align-items: center;
+        background: #fff;
+        border-radius: 8px 8px 0 0;
+        color: #3d4551;
+        display: flex;
+        font-size: 13px;
+        font-weight: 700;
+        padding: 7px 10px;
+      }
+
+      .address {
+        background: #fff;
+        border: 1px solid #c9cdd1;
+        border-radius: 999px;
+        color: #3d4551;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        overflow: hidden;
+        padding: 7px 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .admin {
+        display: grid;
+        grid-template-columns: 190px minmax(0, 1fr);
+        min-height: 420px;
+      }
+
+      .nav {
+        background: var(--bg);
+        border-right: 1px solid var(--line);
+        padding: 18px;
+      }
+
+      .nav b,
+      .main h1 {
+        display: block;
+        font-size: 18px;
+        margin: 0 0 18px;
+      }
+
+      .nav span {
+        border-left: 4px solid transparent;
+        color: var(--muted);
+        display: block;
+        font-size: 14px;
+        padding: 8px 0 8px 10px;
+      }
+
+      .nav span.active {
+        border-left-color: var(--blue);
+        color: var(--blue);
+        font-weight: 700;
+      }
+
+      .main {
+        padding: 20px;
+      }
+
+      .layout {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(0, 1fr) 280px;
+      }
+
+      .metadata {
+        border: 1px solid var(--line);
+      }
+
+      .metadata div {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 150px minmax(0, 1fr);
+        padding: 10px 12px;
+      }
+
+      .metadata div + div {
+        border-top: 1px solid var(--line);
+      }
+
+      .metadata dt {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .metadata dd {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .button {
+        background: var(--blue);
+        color: #fff;
+        display: inline-block;
+        font-weight: 700;
+        margin-top: 16px;
+        padding: 10px 14px;
+      }
+
+      .checklist {
+        border: 1px solid var(--line);
+      }
+
+      .row {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 26px minmax(0, 1fr);
+        padding: 10px;
+      }
+
+      .row + .row {
+        border-top: 1px solid var(--line);
+      }
+
+      .icon {
+        background: var(--green);
+        color: #fff;
+        display: grid;
+        font-size: 12px;
+        font-weight: 700;
+        height: 26px;
+        place-items: center;
+        width: 26px;
+      }
+
+      .row span {
+        color: var(--muted);
+        display: block;
+        font-size: 12px;
+        margin-top: 2px;
+      }
+
+      .note {
+        background: #e7f6f8;
+        border-left: 4px solid var(--blue);
+        color: #3d4551;
+        font-size: 13px;
+        line-height: 1.45;
+        margin-top: 12px;
+        padding: 9px 10px;
+      }
+
+      @media (max-width: 720px) {
+        .chrome-top {
+          grid-template-columns: auto minmax(0, 1fr);
+        }
+
+        .tab {
+          display: none;
+        }
+
+        .admin,
+        .layout,
+        .metadata div {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="chrome" aria-label="Chrome風の管理画面でAPKメタデータを確認してreleaseを作成">
+      <div class="chrome-top" aria-hidden="true">
+        <div class="traffic"><span></span><span></span><span></span></div>
+        <div class="tab">Distribution Admin</div>
+        <div class="address">https://distribution.example.test/admin/apps/artifacts/complete</div>
+      </div>
+      <div class="admin">
+        <aside class="nav">
+          <b>Distribution Admin</b>
+          <span class="active">Apps</span>
+          <span>Devices</span>
+          <span>Rollouts</span>
+          <span>Audit log</span>
+        </aside>
+        <main class="main">
+          <h1>POST /api/artifactsで完了</h1>
+          <div class="layout">
+            <section>
+              <dl class="metadata">
+                <div><dt>packageName</dt><dd>com.example.qacamera</dd></div>
+                <div><dt>versionCode</dt><dd>42</dd></div>
+                <div><dt>versionName</dt><dd>2.4.0-qa</dd></div>
+                <div><dt>sha256</dt><dd>58f7d4b7e9...</dd></div>
+                <div><dt>signing cert</dt><dd>9a5c0e14b2...</dd></div>
+              </dl>
+              <span class="button">artifactを完了</span>
+              <div class="note">APIサーバーがShrine cache fileをopenして解析し、storeへpromoteしてからartifact、app、releaseを確定します。</div>
+            </section>
+            <aside class="checklist">
+              <div class="row">
+                <div class="icon">OK</div>
+                <div><b>apps</b><span>packageNameからapps行を解決</span></div>
+              </div>
+              <div class="row">
+                <div class="icon">OK</div>
+                <div><b>artifacts</b><span>sha256と署名を確定</span></div>
+              </div>
+              <div class="row">
+                <div class="icon">OK</div>
+                <div><b>releases</b><span>appとartifactをversion単位で紐づけ</span></div>
+              </div>
+              <div class="row">
+                <div class="icon">--</div>
+                <div><b>rollout_jobs</b><span>まだ作成しない</span></div>
+              </div>
+            </aside>
+          </div>
+        </main>
+      </div>
+    </div>
+    <script>
+      (() => {
+        const sendSize = () => {
+          const body = document.body;
+          const height = Math.ceil(Math.max(body.scrollHeight, body.offsetHeight, body.getBoundingClientRect().height));
+          window.parent.postMessage({ type: "diagram-frame-size", path: window.location.pathname, height }, window.location.origin);
+        };
+        window.addEventListener("load", sendSize);
+        window.addEventListener("resize", sendSize);
+        window.addEventListener("message", (event) => {
+          if (event.origin === window.location.origin && event.data?.type === "diagram-frame-size-request") sendSize();
+        });
+        if (typeof ResizeObserver !== "undefined") new ResizeObserver(sendSize).observe(document.body);
+        sendSize();
+      })();
+    </script>
+  </body>
+</html>
