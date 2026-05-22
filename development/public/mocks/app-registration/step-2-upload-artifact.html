@@ -231,11 +231,11 @@
     </style>
   </head>
   <body>
-    <div class="chrome" aria-label="Chrome風の管理画面でAPKをartifact storageへアップロード">
+    <div class="chrome" aria-label="Chrome風の管理画面でAPKをS3へ保存してartifactを作成">
       <div class="chrome-top" aria-hidden="true">
         <div class="traffic"><span></span><span></span><span></span></div>
         <div class="tab">Distribution Admin</div>
-        <div class="address">https://distribution.example.test/admin/apps/releases/uploading</div>
+        <div class="address">https://distribution.example.test/admin/apps/artifacts/processing</div>
       </div>
       <div class="admin">
         <aside class="nav">
@@ -246,34 +246,30 @@
           <span>Audit log</span>
         </aside>
         <main class="main">
-          <h1>APKをShrine cacheへアップロード</h1>
+          <h1>アップロード中</h1>
           <div class="layout">
             <section>
               <div class="terminal">
-                <b>$</b> uppy upload qa-camera-2.4.0-42.apk<br />
-                Requesting Shrine multipart parameters...<br />
-                Uploading parts to cache storage in parallel...<br />
-                Completing multipart upload through Shrine...<br />
-                uploaded_file_data:<br />
-                { "storage": "cache",<br />
-                &nbsp;&nbsp;"id": "apk_uploads/01HX9J6/qa-camera-2.4.0-42.apk",<br />
-                &nbsp;&nbsp;"metadata": { "filename": "qa-camera-2.4.0-42.apk" } }
+                qa-camera-2.4.0-42.apk<br />
+                <br />
+                ファイルをアップロード中... 100%<br />
+                APKを解析中...<br />
+                登録を確定中...
               </div>
               <div class="progress" aria-hidden="true"><span></span></div>
-              <div class="note">Shrine cache upload完了だけではartifactsは作成しません。POST /api/artifactsでuploaded file dataを渡します。</div>
             </section>
             <aside class="check">
               <div class="row">
                 <div class="icon">OK</div>
-                <div><b>Shrine cache file</b><span>storage=cacheとして保存</span></div>
+                <div><b>ファイル送信</b><span>APKファイルを受け取りました</span></div>
               </div>
               <div class="row">
                 <div class="icon">OK</div>
-                <div><b>uploaded file data</b><span>POST /api/artifactsの入力</span></div>
+                <div><b>APK解析</b><span>パッケージ名・バージョン・署名を取得</span></div>
               </div>
               <div class="row">
-                <div class="icon">--</div>
-                <div><b>artifacts / releases</b><span>配信対象としては未登録</span></div>
+                <div class="icon">OK</div>
+                <div><b>登録</b><span>配信できる状態にしました</span></div>
               </div>
             </aside>
           </div>

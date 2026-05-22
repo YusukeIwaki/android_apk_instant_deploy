@@ -3,52 +3,71 @@ import DiagramFrame from "../../../components/DiagramFrame.astro";
 import Mermaid from "../../../components/Mermaid.astro";
 import BaseLayout from "../../../layouts/BaseLayout.astro";
 
-const createTokenCurl = `curl -X POST https://distribution.example.test/api/device-registration-tokens \\
+const createTokenCurl = `curl -X POST https://distribution.example.test/api/device_registration_tokens \\
   -H "Authorization: Bearer $ADMIN_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "deviceGroupIds": [7],
-    "expiresInMinutes": 30
+    "expires_in_minutes": 30
   }'`;
 
-const deepLinkExample = `apkdist://register-device?registrationTokenId=drt_01HX9A2W...&secret=drs_4Gk...
+const createTokenResponse = `HTTP/1.1 201 Created
+{
+  "device_registration_token": {
+    "identifier": "drt_01HX9A2W...",
+    "registration_secret": "drs_4Gk...",
+    "issued_at": "2026-05-19T09:41:00+09:00",
+    "expires_at": "2026-05-19T10:11:00+09:00",
+    "deep_link": "apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk..."
+  }
+}`;
 
-# QRコードまたはリンクにこのcustom scheme URLを載せる。
-# 端末側ではOSがコンパニオンアプリを起動する。
-# この時点ではサーバーAPIは呼ばれず、devicesも作成しない。`;
+const deepLinkExample = `apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...`;
 
 const createDeviceCurl = `curl -X POST https://distribution.example.test/api/devices \\
   -H "Content-Type: application/json" \\
   -d '{
-    "registrationTokenId": "drt_01HX9A2W...",
-    "registrationSecret": "drs_4Gk...",
-    "displayName": "Pixel 8 QA-01",
-    "fcmPushToken": "fcm:APA91b..."
+    "identifier": "drt_01HX9A2W...",
+    "registration_secret": "drs_4Gk...",
+    "display_name": "Pixel 8 QA-01",
+    "fcm_push_token": "fcm:APA91b..."
   }'`;
 
 const createDeviceResponse = `HTTP/1.1 201 Created
 {
-  "uniqueIdentifier": "drt_01HX9A2W...",
-  "deviceAuthToken": "dat_6m2...",
-  "profile": {
-    "displayName": "Pixel 8 QA-01"
+  "device": {
+    "identifier": "drt_01HX9A2W...",
+    "device_auth_token": "dat_6m2...",
+    "profile": {
+      "display_name": "Pixel 8 QA-01"
+    },
+    "registered_at": "2026-05-19T09:41:32+09:00"
   }
-}`;
+}
 
-const alreadyRegisteredCurl = `curl -X POST https://distribution.example.test/api/devices \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "registrationTokenId": "drt_01HX9A2W...",
-    "registrationSecret": "drs_4Gk...",
-    "displayName": "Pixel 8 QA-02",
-    "fcmPushToken": "fcm:NEW_TOKEN..."
-  }'
+# device_auth_token はこのレスポンスでだけ平文を返す。
+# 端末は private storage に保存し、以後のAPI呼び出しで Bearer として送る。`;
 
-# Response: 410 Gone
-# {
-#   "code": "DEVICE_ALREADY_REGISTERED",
-#   "message": "A device already exists for this registrationTokenId."
-# }`;
+const alreadyRegisteredResponse = `HTTP/1.1 403 Forbidden
+{
+  "error": {
+    "code": "DEVICE_ALREADY_REGISTERED",
+    "message": "A device already exists for this identifier."
+  }
+}
+
+# devices.identifier と同じ値が既にある場合に返す。
+# このとき device_profiles / fcm_push_tokens / device_credentials は触らない。`;
+
+const expiredOrSecretMismatchResponse = `HTTP/1.1 404 Not Found
+{
+  "error": {
+    "code": "REGISTRATION_TOKEN_NOT_FOUND",
+    "message": "Registration link is expired, already used, or the secret is incorrect."
+  }
+}
+
+# 期限切れ / secret不一致 / 既に使用済み はすべて同じレスポンスにまとめる。
+# 失敗理由を細かく返すと、リンク総当たりの手掛かりになるため。`;
 
 const sequence = `sequenceDiagram
   autonumber
@@ -68,14 +87,14 @@ const sequence = `sequenceDiagram
   App->>Push: FCM tokenを取得
   Push-->>App: FCM token
   User->>App: 表示名を入力して登録
-  App->>Api: device create(registrationTokenId, secret, displayName, FCM token)
+  App->>Api: device create(identifier, secret, display_name, FCM token)
   Api->>Registry: token検証、Device/profile/credential/fcm token作成、token削除
-  Api-->>App: uniqueIdentifier, deviceAuthToken, profileを返す
+  Api-->>App: identifier, device_auth_token, profileを返す
   App-->>User: 登録完了を表示
   User->>Launcher: 同じQRまたはリンクを再度開く
   Launcher->>App: custom schemeでアプリ起動
-  App->>Api: device create(same registrationTokenId, secret)
-  Api->>Registry: token行なし、devices.uniqueIdentifierあり
+  App->>Api: device create(same identifier, secret)
+  Api->>Registry: token行なし、devices.identifierあり
   Api-->>App: 410 DEVICE_ALREADY_REGISTERED
   App-->>User: 登録済みリンクとして表示`;
 
@@ -97,26 +116,26 @@ const state = `stateDiagram-v2
 
 const identityFlow = `flowchart LR
   subgraph Token["DeviceRegistrationToken"]
-    RegistrationTokenId["registrationTokenId<br/>サーバーが発行"]
+    TokenIdentifier["identifier<br/>サーバーが発行"]
     RegistrationSecret["registration secret<br/>URL/QRに含める一回限りの秘密"]
   end
 
   subgraph DeviceSide["端末"]
     Browser["QR reader / OS<br/>custom schemeを開く"]
-    App["コンパニオンアプリ<br/>registrationTokenIdを受け取る"]
+    App["コンパニオンアプリ<br/>identifierを受け取る"]
     PushToken["FCM push token<br/>FCMから取得"]
     DisplayName["表示名<br/>ユーザーが必須入力"]
-    Credential["uniqueIdentifier + deviceAuthToken<br/>登録成功後に保存"]
+    Credential["identifier + device_auth_token<br/>登録成功後に保存"]
   end
 
   subgraph Server["APIサーバー"]
-    TokenRecord["device_registration_tokens<br/>secretHash / issuedAt / expiresAt"]
-    DeviceRecord["devices<br/>uniqueIdentifier = registrationTokenIdで新規作成"]
-    ProfileRecord["device_profiles<br/>device_id / displayName"]
-    PushRecord["fcm_push_tokens<br/>device_id / tokenHash / encryptedToken"]
+    TokenRecord["device_registration_tokens<br/>identifier / secret_hash / issued_at / expires_at"]
+    DeviceRecord["devices<br/>identifier = DeviceRegistrationToken.identifierで新規作成"]
+    ProfileRecord["device_profiles<br/>device_id / display_name"]
+    PushRecord["fcm_push_tokens<br/>device_id / token_hash / encrypted_token"]
   end
 
-  RegistrationTokenId --> Browser --> App
+  TokenIdentifier --> Browser --> App
   RegistrationSecret --> Browser
   App -->|device create| DeviceRecord
   TokenRecord -->|validate then delete| DeviceRecord
@@ -135,7 +154,51 @@ const identityFlow = `flowchart LR
   <p class="lede">
     デバイス登録は、事前にDeviceを作っておく処理ではありません。
     サーバーが発行したDeviceRegistrationTokenをcustom scheme URLまたはQRコードで端末アプリへ渡し、アプリがFCM tokenを取得してから、必須入力の表示名とともにdevicesを新規作成します。
+    Android Management API のmanaged-device enrollmentとは別物で、AMAPI管理外端末も同じ流れで登録できます。
   </p>
+
+  <section aria-labelledby="actors">
+    <p class="section-kicker">Actors and responsibilities</p>
+    <h2 id="actors">登場人物と責務</h2>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">登場人物</th>
+            <th scope="col">きっかけ</th>
+            <th scope="col">責務</th>
+            <th scope="col">参照する識別子</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">管理者</th>
+            <td>新しい端末を登録枠に追加したい</td>
+            <td>管理画面でデバイス登録リンクを発行し、端末利用者に渡す。</td>
+            <td>DeviceRegistrationToken.identifier (発行時にサーバーが付与)</td>
+          </tr>
+          <tr>
+            <th scope="row">端末利用者</th>
+            <td>渡されたリンクまたはQRコード</td>
+            <td>コンパニオンアプリを開き、表示名を入力して登録ボタンを押す。</td>
+            <td>登録リンク (identifier + secret)</td>
+          </tr>
+          <tr>
+            <th scope="row">コンパニオンアプリ</th>
+            <td>custom scheme deep linkでの起動</td>
+            <td>FCM tokenを取得してから登録ボタンを有効化し、APIへ登録要求を送り、返ってきた device_auth_token を端末内に保存する。</td>
+            <td>identifier, registration secret, FCM token, device_auth_token</td>
+          </tr>
+          <tr>
+            <th scope="row">APIサーバー</th>
+            <td>POST /api/devices</td>
+            <td>tokenを検証し、devices / device_profiles / device_credentials / fcm_push_tokens を1トランザクションで作成し、device_registration_tokens 行を削除する。</td>
+            <td>devices.identifier (= DeviceRegistrationToken.identifier)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
   <section aria-labelledby="registration-flow">
     <p class="section-kicker">Flow with data</p>
@@ -146,7 +209,7 @@ const identityFlow = `flowchart LR
         <span class="flow-step__number">1</span>
         <div>
           <h3 id="step-1">管理者がデバイス登録リンクを発行する</h3>
-          <p>管理画面でcustom schemeの登録リンクを作成するか、管理APIを呼び出します。この時点ではまだdevicesは作られません。</p>
+          <p>管理画面または管理APIで登録リンクを作成します。リンクには <code>identifier</code> と一回限りの <code>secret</code> が含まれ、QRコードや共有リンクとして渡せます。この時点ではまだdevicesは作られません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -156,15 +219,17 @@ const identityFlow = `flowchart LR
         <div class="flow-step__details">
           <h4>API呼び出し</h4>
           <pre class="curl-block"><code>{createTokenCurl}</code></pre>
+          <h4>応答</h4>
+          <pre class="curl-block"><code>{createTokenResponse}</code></pre>
           <h4>作成されるDBデータ</h4>
           <dl class="db-list">
             <div>
               <dt>device_registration_tokens</dt>
-              <dd>registrationTokenId、secretHash、issuedAt、expiresAt、createdBy、device_group_idsを保存する。device_group_idsはdevice_groups.idを参照し、状態カラムは持たない。</dd>
+              <dd>identifier、secret_hash、issued_at、expires_at、created_by を保存する。状態カラムは持たない。secret は hash だけ保存し、平文は応答にのみ含める。</dd>
             </div>
             <div>
               <dt>devices</dt>
-              <dd>まだ作成しない。registrationTokenIdは未使用の登録枠に載った予約済み識別子として扱う。</dd>
+              <dd>まだ作成しない。DeviceRegistrationToken.identifier は未使用の登録枠に載った予約済み識別子として扱う。</dd>
             </div>
           </dl>
         </div>
@@ -176,7 +241,7 @@ const identityFlow = `flowchart LR
         <span class="flow-step__number">2</span>
         <div>
           <h3 id="step-2">端末でcustom schemeリンクまたはQRコードを開く</h3>
-          <p>QRコードやリンクに含まれるcustom scheme URLから、OSがコンパニオンアプリを直接起動します。</p>
+          <p>QRコードやリンクに含まれるcustom scheme URLから、OSがコンパニオンアプリを直接起動します。ブラウザ上の中継ページは挟みません。FCM tokenの取得はアプリ起動後に行う必要があるため、ブラウザベースの登録ページにはしません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -184,23 +249,25 @@ const identityFlow = `flowchart LR
           <DiagramFrame src="/mocks/device-registration/step-2-deep-link.html" title="スマートフォン: QR読み取りからアプリ起動" />
         </div>
         <div class="flow-step__details">
-          <h4>端末操作</h4>
+          <h4>端末が受け取るURL</h4>
           <pre class="curl-block"><code>{deepLinkExample}</code></pre>
-          <h4>作成されるDBデータ</h4>
+          <h4>この時点での処理</h4>
           <dl class="db-list">
             <div>
-              <dt>device_registration_tokens</dt>
-              <dd>この時点では行を削除しない。アプリ起動だけでは登録完了とは扱わない。</dd>
+              <dt>サーバーAPI</dt>
+              <dd>呼ばれない。アプリが起動しただけでは登録扱いにしない。</dd>
             </div>
             <div>
-              <dt>device_registration_events</dt>
-              <dd>監査ログを取る場合のみ、eventType=APP_LAUNCHEDを記録する。</dd>
+              <dt>device_registration_tokens</dt>
+              <dd>触らない。識別子の有効性検証は POST /api/devices のときに行う。</dd>
             </div>
             <div>
               <dt>devices</dt>
-              <dd>まだ作成しない。アプリが起動しても、FCM token取得と表示名入力が終わるまでは登録完了ではない。</dd>
+              <dd>触らない。FCM token取得と表示名入力が終わるまで登録完了ではない。</dd>
             </div>
           </dl>
+          <h4>端末側の前提</h4>
+          <p>コンパニオンアプリ未インストールの場合、OSはアプリ選択画面を出すかリンクを開けない。事前にアプリのインストール経路 (Managed Play、社内ストア、APKサイドロード) を確保しておくことが前提です。</p>
         </div>
       </div>
     </article>
@@ -210,7 +277,7 @@ const identityFlow = `flowchart LR
         <span class="flow-step__number">3</span>
         <div>
           <h3 id="step-3">アプリがFCM tokenと表示名を送ってdevicesを作成する</h3>
-          <p>コンパニオンアプリはFCM tokenを取得できるまで登録ボタンを無効にします。表示名は必須入力で、登録後も変更可能なprofile情報として扱います。</p>
+          <p>コンパニオンアプリはFCM tokenを取得できるまで登録ボタンを無効にします。表示名は必須入力で、登録後も変更可能なprofile情報として扱います。サーバーはtoken検証 → devices/profile/credential/fcm_push_token作成 → device_registration_tokens削除を1トランザクションで行います。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -220,31 +287,29 @@ const identityFlow = `flowchart LR
         <div class="flow-step__details">
           <h4>API呼び出し</h4>
           <pre class="curl-block"><code>{createDeviceCurl}</code></pre>
-          <h4>作成・更新されるDBデータ</h4>
+          <h4>成功時の応答</h4>
+          <pre class="curl-block"><code>{createDeviceResponse}</code></pre>
+          <h4>作成・更新されるDBデータ (1トランザクション)</h4>
           <dl class="db-list">
             <div>
               <dt>devices</dt>
-              <dd>uniqueIdentifier=registrationTokenIdで新規作成する。registeredAtを保存する。表示名や有効/無効などの別概念はここには持たない。</dd>
-            </div>
-            <div>
-              <dt>device_group_memberships</dt>
-              <dd>DeviceRegistrationTokenに載っていたdevice_group_idsを、device_idとdevice_group_idの関連として作成する。グループ所属はdevices本体から分ける。</dd>
+              <dd>identifier = DeviceRegistrationToken.identifier で新規作成。registered_at を保存する。表示名や enabled/active といった可変状態はここに持たない。</dd>
             </div>
             <div>
               <dt>device_profiles</dt>
-              <dd>device_id、displayName、updatedAtを保存する。表示名はあとから変更可能なデータとして扱い、devices.uniqueIdentifierを重複保持しない。</dd>
+              <dd>device_id、display_name、updated_at を保存する。表示名は後から変更可能で、devices.identifier を重複保持しない。OS / 機種 / SDK バージョン等の自動収集はしない。</dd>
             </div>
             <div>
               <dt>device_credentials</dt>
-              <dd>device_id、deviceAuthTokenのhash、tokenVersion、issuedAtを保存する。平文tokenは端末へ一度だけ返す。</dd>
+              <dd>device_id、device_auth_token の hash、token_version、issued_at を保存する。平文 token は応答に1度だけ含め、サーバーは hash のみ保持する。</dd>
             </div>
             <div>
               <dt>fcm_push_tokens</dt>
-              <dd>device_id、tokenHash、encryptedToken、lastRegisteredAtをupsertする。登録要求のuniqueIdentifierからdevices.idを解決し、同じdevice_idの最新tokenとして扱うため、過去値に対する別処理は不要。</dd>
+              <dd>device_id、token_hash、encrypted_token、last_registered_at を upsert する。同じ identifier の最新tokenとして扱い、過去値に対する別処理は行わない。</dd>
             </div>
             <div>
               <dt>device_registration_tokens</dt>
-              <dd>登録成功後に行を削除する。登録済みかどうかをトークン側の状態カラムで持たない。</dd>
+              <dd>登録成功後にこの行を削除する。「使用済み」フラグは持たず、行の不在をもって登録完了とみなす。</dd>
             </div>
           </dl>
         </div>
@@ -256,7 +321,7 @@ const identityFlow = `flowchart LR
         <span class="flow-step__number">4</span>
         <div>
           <h3 id="step-4">登録完了を表示し、登録済みリンクの再利用を拒否する</h3>
-          <p>登録成功時はアプリに完了画面を表示します。同じDeviceRegistrationTokenで再アクセスされた場合は、同じ値のdevices.uniqueIdentifierが存在することをもって登録済みと判断し、devicesやprofileを新規作成・更新しません。</p>
+          <p>登録成功時はアプリに完了画面を表示します。同じDeviceRegistrationTokenで再アクセスされた場合は、同じ値の <code>devices.identifier</code> が存在することをもって登録済みと判断し、devicesやprofileを新規作成・更新しません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -264,27 +329,23 @@ const identityFlow = `flowchart LR
           <DiagramFrame src="/mocks/device-registration/step-4-registered.html" title="コンパニオンアプリ: 登録完了と登録済みリンク" />
         </div>
         <div class="flow-step__details">
-          <h4>登録成功時の応答</h4>
-          <pre class="curl-block"><code>{createDeviceResponse}</code></pre>
-          <h4>登録済みリンクで再登録された場合</h4>
-          <pre class="curl-block"><code>{alreadyRegisteredCurl}</code></pre>
+          <h4>登録済みリンクで再登録された場合の応答</h4>
+          <pre class="curl-block"><code>{alreadyRegisteredResponse}</code></pre>
+          <h4>期限切れ / secret不一致 の応答</h4>
+          <pre class="curl-block"><code>{expiredOrSecretMismatchResponse}</code></pre>
           <h4>DBデータの扱い</h4>
           <dl class="db-list">
             <div>
               <dt>devices</dt>
-              <dd>既存のuniqueIdentifierを維持し、新しい行は作成しない。</dd>
+              <dd>既存の identifier をそのまま維持し、新しい行は作成しない。</dd>
             </div>
             <div>
               <dt>device_registration_tokens</dt>
-              <dd>登録完了時に削除済みなので、同じregistrationTokenIdでは検証対象の行が見つからない。</dd>
+              <dd>登録完了時に削除済みなので、同じ identifier では検証対象の行が見つからない。期限切れの行も背景処理で削除してよい。</dd>
             </div>
             <div>
-              <dt>devices</dt>
-              <dd>registrationTokenIdと同じ値のuniqueIdentifierが存在するため、登録完了済みとして扱う。新しい行は作成しない。</dd>
-            </div>
-            <div>
-              <dt>device_profiles / fcm_push_tokens</dt>
-              <dd>登録済みリンクによる再登録では更新しない。新しい端末登録が必要なら管理者がDeviceRegistrationTokenを再発行する。</dd>
+              <dt>device_profiles / fcm_push_tokens / device_credentials</dt>
+              <dd>登録済みリンクによる再登録では更新しない。新しい端末を登録する場合は管理者が DeviceRegistrationToken を再発行する。</dd>
             </div>
           </dl>
         </div>
@@ -308,34 +369,34 @@ const identityFlow = `flowchart LR
         </thead>
         <tbody>
           <tr>
-            <th scope="row">registrationTokenId</th>
+            <th scope="row">DeviceRegistrationToken.identifier</th>
             <td>APIサーバー</td>
-            <td>DeviceRegistrationTokenとURL/QR。登録成功後は同じ値をdevices.uniqueIdentifierとして保持。</td>
-            <td>リンクと新規device作成要求を対応づける。未登録段階ではDeviceそのものではなく、未使用の登録枠に載った予約済み識別子である。</td>
+            <td>device_registration_tokens と URL/QR。登録成功後は同じ値が devices.identifier として残る。</td>
+            <td>リンクと新規device作成要求を対応づける。未登録段階では Device そのものではなく、未使用の登録枠に載った予約済み識別子。</td>
           </tr>
           <tr>
             <th scope="row">registration secret</th>
             <td>APIサーバー</td>
-            <td>URL/QRには平文、サーバー側はhashのみ。</td>
-            <td>リンクを知っているだけの第三者登録を防ぐ一回限りの秘密。期限切れ、secret不一致、または同じ値のdevices.uniqueIdentifierがある場合は拒否する。</td>
+            <td>URL/QR には平文、サーバー側は hash のみ。</td>
+            <td>リンクを知っているだけの第三者登録を防ぐ一回限りの秘密。期限切れ、secret不一致、または同じ値の devices.identifier がある場合は拒否する。</td>
           </tr>
           <tr>
-            <th scope="row">uniqueIdentifier</th>
+            <th scope="row">devices.identifier</th>
             <td>APIサーバー</td>
-            <td>devices作成時にregistrationTokenIdの値から確定し、サーバーと端末内private storageに保存。</td>
-            <td>登録済み端末を外部から特定するための安定した識別子。この設計ではregistrationTokenIdの値をdevices.uniqueIdentifierとして使う。DB上の関連はdevices.idを参照する。</td>
+            <td>devices と端末内 private storage。</td>
+            <td>登録済み端末を外部から特定する安定した識別子。本設計では DeviceRegistrationToken.identifier の値をそのまま使う。DB上の関連は devices.id を参照する。</td>
           </tr>
           <tr>
-            <th scope="row">deviceAuthToken</th>
+            <th scope="row">device_auth_token</th>
             <td>APIサーバー</td>
-            <td>端末内private storage。サーバー側はhashまたはtoken versionを保持。</td>
-            <td>登録済み端末からの後続API呼び出しで、uniqueIdentifierに対する本人性を確認する。</td>
+            <td>端末内 private storage。サーバー側は hash または token version を保持。</td>
+            <td>登録済み端末からの後続API呼び出しで、identifier に対する本人性を確認する。</td>
           </tr>
           <tr>
             <th scope="row">FCM push token</th>
             <td>FCM</td>
-            <td>端末側は最新値を受け取り、サーバー側はfcm_push_tokensに暗号化値とhashを保持。</td>
-            <td>登録完了時点でサーバーがpush通知宛先を持つようにする。rotation時はuniqueIdentifierでupsertする。</td>
+            <td>端末側は最新値、サーバー側は fcm_push_tokens に暗号化値と hash。</td>
+            <td>Policy更新を端末へ通知する宛先。ローテーション時は identifier で upsert する。</td>
           </tr>
         </tbody>
       </table>
@@ -352,5 +413,76 @@ const identityFlow = `flowchart LR
     <p class="section-kicker">Lifecycle</p>
     <h2 id="state">登録手続きのライフサイクル</h2>
     <Mermaid chart={state} title="デバイス登録リンク発行から登録済みリンク拒否まで" />
+  </section>
+
+  <section aria-labelledby="errors">
+    <p class="section-kicker">Errors</p>
+    <h2 id="errors">主要エラーと応答</h2>
+    <p>登録時のエラーは、攻撃者にリンクの状態を推測させない方針で集約します。「期限切れ・secret不一致・既に削除済み」は同じレスポンスで返し、すでに別端末で完了している場合だけ別レスポンスにします。</p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">状況</th>
+            <th scope="col">HTTP / code</th>
+            <th scope="col">DB変更</th>
+            <th scope="col">端末側UI</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">登録リンクの有効期限切れ</th>
+            <td>404 REGISTRATION_TOKEN_NOT_FOUND</td>
+            <td>なし。期限切れ行は背景処理で削除してよい。</td>
+            <td>「リンクの有効期限が切れています」と表示し、管理者に再発行を依頼する導線を出す。</td>
+          </tr>
+          <tr>
+            <th scope="row">secret 不一致</th>
+            <td>404 REGISTRATION_TOKEN_NOT_FOUND</td>
+            <td>なし。理由を明かさないため期限切れと同じレスポンス。</td>
+            <td>同上。再発行で解決する旨を促す。</td>
+          </tr>
+          <tr>
+            <th scope="row">同じリンクで再登録 (登録済み)</th>
+            <td>403 DEVICE_ALREADY_REGISTERED</td>
+            <td>なし。device_profiles / fcm_push_tokens は触らない。</td>
+            <td>「すでに別端末で登録済みです」と表示し、管理者に新しいリンクを依頼する導線を出す。</td>
+          </tr>
+          <tr>
+            <th scope="row">表示名が未入力</th>
+            <td>400 DISPLAY_NAME_REQUIRED</td>
+            <td>なし。トランザクションを開始しない。</td>
+            <td>クライアント側でも入力必須化しているため通常は発生しないが、サーバー側で必ず検証する。</td>
+          </tr>
+          <tr>
+            <th scope="row">FCM token 未取得のまま送信</th>
+            <td>400 FCM_PUSH_TOKEN_REQUIRED</td>
+            <td>なし。</td>
+            <td>クライアント側で登録ボタンを無効化しているため通常は発生しない。Google Play services 障害時はリトライ導線を出す。</td>
+          </tr>
+          <tr>
+            <th scope="row">トランザクション中に重複登録 (race)</th>
+            <td>403 DEVICE_ALREADY_REGISTERED</td>
+            <td>devices.identifier の unique 制約で守る。重複検知時は何も書かない。</td>
+            <td>登録済みリンクとして扱い、ユーザーには成功または「すでに登録済み」を表示する。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="guidance">
+    <p class="section-kicker">Out-of-spec guidance</p>
+    <h2 id="guidance">不足ユースケースに遭遇したときの判断指針</h2>
+    <p>このページに書かれていないケースに遭遇したら、まず次の原則で判断してください。判断が変わるような新しい要件が出てきた場合は、原則そのものを更新してから実装に入ります。</p>
+    <ol>
+      <li><strong>devicesは identity に集中する。</strong> 表示名・OS情報・push token・auth credential は別テーブル。新しい属性を持ち込むときも、まず devices に足すべきかを疑い、別テーブルを検討する。</li>
+      <li><strong>状態は行の存在で表す。</strong> <code>enabled</code> / <code>status</code> / <code>used</code> / <code>CONSUMED</code> を新設しない。「登録済みかどうか」は <code>devices.identifier</code> の有無で判定する。</li>
+      <li><strong>失敗理由は集約してから細分化する。</strong> リンクの有効性に関わるエラーは、まず1つに集約してから、攻撃面に影響しない範囲で細分化する。</li>
+      <li><strong>登録完了の前提を勝手に増やさない。</strong> 必要条件は「未使用の有効な登録リンク」「FCM token」「表示名」の3点。AMAPI enrollment、初期同期、policy fetch を登録完了の前提に組み込まない。</li>
+      <li><strong>profileの自動収集はしない。</strong> 機種、OS、SDK、ロケールなどは初期登録では収集しない。あとから別ユースケースとして追加する。</li>
+      <li><strong>token rotation や再登録は別ユースケース。</strong> このページでは扱わない。`device_credentials` を別テーブルにしてあるのはそのための余地。</li>
+    </ol>
+    <p>判断に詰まったら <code>AGENTS.md</code> の "Device Registration Design" と "Data Modeling" のセクションを参照してください。</p>
   </section>
 </BaseLayout>

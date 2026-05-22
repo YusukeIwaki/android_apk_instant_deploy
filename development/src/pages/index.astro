@@ -2,22 +2,58 @@
 import BaseLayout from "../layouts/BaseLayout.astro";
 
 const pages = [
-  { label: "デバイスの登録", href: "/use-cases/device-registration/" },
-  { label: "アプリの登録", href: "/use-cases/app-registration/" },
-  { label: "アプリの配信", href: "/use-cases/app-distribution/" }
+  {
+    label: "デバイスの登録",
+    href: "/use-cases/device-registration/",
+    summary: "管理者が発行した登録リンクから、コンパニオンアプリがFCM tokenと表示名を添えて devices を作るまで。Android Management API のenrollmentとは別物。",
+    audience: "サーバー / Androidアプリ"
+  },
+  {
+    label: "アプリの登録",
+    href: "/use-cases/app-registration/",
+    summary: "管理者/CIが1回のAPKアップロードで apps / artifacts / releases を確定するまで。Release削除でS3 objectまで連動して消えるところまで。",
+    audience: "サーバー / CI"
+  },
+  {
+    label: "アプリの配信",
+    href: "/use-cases/app-distribution/",
+    summary: "デバイスごとのDevicePolicyを更新し、FCMを契機に端末が再取得、必須インストール・任意提供・削除を同期するまで。",
+    audience: "サーバー / Androidアプリ"
+  },
+  {
+    label: "OpenAPI",
+    href: "/openapi/",
+    summary: "上記3ユースケースで使う具体的なエンドポイント・スキーマの一覧。実装時のリファレンス。",
+    audience: "サーバー / Androidアプリ"
+  }
 ];
 ---
 
 <BaseLayout
-  title="ページ一覧"
-  description="ユースケース別設計ページの一覧です。"
+  title="ユースケース別設計"
+  description="APK配信システムの設計ドキュメント。3つのユースケースとOpenAPIで構成されています。"
   currentPath="/"
 >
-  <ul class="usa-list page-index-list">
-    {pages.map((page) => (
-      <li>
-        <a href={page.href}>{page.label}</a>
-      </li>
-    ))}
-  </ul>
+  <section aria-labelledby="reading-guide">
+    <h2 id="reading-guide">読み方ガイド</h2>
+    <p>
+      各ユースケースページは <strong>登場人物と責務 / データモデル / 処理フロー / Data ownership / Sequence / Lifecycle / 主要エラー / 判断指針</strong> の順に並んでいます。
+      まず冒頭の lede と「登場人物と責務」表で全体像を掴み、「処理フロー」で各ステップを順に確認し、ページ末尾の「主要エラー」と「判断指針」で例外と原則を抑える、という順で読むと最短です。
+      ページ内のモック画像 (Chromeフレーム / スマートフォンフレーム) は <em>その画面で操作者または利用者が見るもの</em> だけを表現しています。
+      API・DB・端末ローカルストアの責務は、モック横の「API呼び出し」「作成されるDBデータ」セクションを正としてください。
+    </p>
+  </section>
+
+  <section aria-labelledby="page-list">
+    <h2 id="page-list">ページ一覧</h2>
+    <ul class="usa-list page-index-list">
+      {pages.map((page) => (
+        <li>
+          <a href={page.href}><strong>{page.label}</strong></a>
+          <div class="page-index-summary">{page.summary}</div>
+          <div class="page-index-audience">対象: {page.audience}</div>
+        </li>
+      ))}
+    </ul>
+  </section>
 </BaseLayout>

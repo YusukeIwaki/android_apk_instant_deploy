@@ -237,29 +237,28 @@
           <span>Audit log</span>
         </aside>
         <main class="main">
-          <h1>DevicePolicyを編集</h1>
+          <h1>配信設定を編集</h1>
           <div class="device">
-            Pixel 8 QA-01 / uniqueIdentifier: drt_01HX9A2W... / 1 device has 1 current policy
+            Pixel 8 QA-01
           </div>
-          <table aria-label="DevicePolicy app entries">
+          <table aria-label="このデバイスへ配信するアプリの一覧">
             <thead>
               <tr>
-                <th>App</th>
-                <th>release.id</th>
-                <th>version</th>
-                <th>installMode</th>
+                <th>アプリ</th>
+                <th>バージョン</th>
+                <th>配信方法</th>
               </tr>
             </thead>
             <tbody>
-              <tr><td>App A</td><td>301</td><td>1</td><td><span class="mode force">FORCE_INSTALLED</span></td></tr>
-              <tr><td>App B</td><td>302</td><td>1</td><td><span class="mode force">FORCE_INSTALLED</span></td></tr>
-              <tr><td>App C</td><td>303</td><td>1</td><td><span class="mode force">FORCE_INSTALLED</span></td></tr>
-              <tr><td>App D</td><td>304</td><td>1</td><td><span class="mode available">AVAILABLE</span></td></tr>
+              <tr><td>App A</td><td>1.0.0 (1)</td><td><span class="mode force">必須</span></td></tr>
+              <tr><td>App B</td><td>1.0.0 (1)</td><td><span class="mode force">必須</span></td></tr>
+              <tr><td>App C</td><td>1.0.0 (1)</td><td><span class="mode force">必須</span></td></tr>
+              <tr><td>App D</td><td>1.0.0 (1)</td><td><span class="mode available">任意</span></td></tr>
             </tbody>
           </table>
           <div class="actions">
-            <span class="button">Policyを更新</span>
-            <span class="note">保存後にPOLICY_UPDATED data messageを送ります。通知は表示しません。</span>
+            <span class="button">保存して反映</span>
+            <span class="note">保存するとこの端末で同期が開始されます。</span>
           </div>
         </main>
       </div>

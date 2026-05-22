@@ -240,11 +240,11 @@
     </style>
   </head>
   <body>
-    <div class="chrome" aria-label="Chrome風の管理画面でAPKメタデータを確認してreleaseを作成">
+    <div class="chrome" aria-label="Chrome風の管理画面でappとreleaseを確定">
       <div class="chrome-top" aria-hidden="true">
         <div class="traffic"><span></span><span></span><span></span></div>
         <div class="tab">Distribution Admin</div>
-        <div class="address">https://distribution.example.test/admin/apps/artifacts/complete</div>
+        <div class="address">https://distribution.example.test/admin/apps/artifacts/101</div>
       </div>
       <div class="admin">
         <aside class="nav">
@@ -255,35 +255,30 @@
           <span>Audit log</span>
         </aside>
         <main class="main">
-          <h1>POST /api/artifactsで完了</h1>
+          <h1>登録結果</h1>
           <div class="layout">
             <section>
               <dl class="metadata">
-                <div><dt>packageName</dt><dd>com.example.qacamera</dd></div>
-                <div><dt>versionCode</dt><dd>42</dd></div>
-                <div><dt>versionName</dt><dd>2.4.0-qa</dd></div>
-                <div><dt>sha256</dt><dd>58f7d4b7e9...</dd></div>
-                <div><dt>signing cert</dt><dd>9a5c0e14b2...</dd></div>
+                <div><dt>パッケージ名</dt><dd>com.example.qacamera</dd></div>
+                <div><dt>バージョン</dt><dd>2.4.0-qa (42)</dd></div>
+                <div><dt>ファイル</dt><dd>qa-camera-2.4.0-42.apk</dd></div>
+                <div><dt>SHA-256</dt><dd>58f7d4b7e9...</dd></div>
+                <div><dt>署名証明書</dt><dd>9a5c0e14b2...</dd></div>
               </dl>
-              <span class="button">artifactを完了</span>
-              <div class="note">APIサーバーがShrine cache fileをopenして解析し、storeへpromoteしてからartifact、app、releaseを確定します。</div>
+              <span class="button">配信設定を開く</span>
             </section>
             <aside class="checklist">
               <div class="row">
                 <div class="icon">OK</div>
-                <div><b>apps</b><span>packageNameからapps行を解決</span></div>
+                <div><b>新規アプリ</b><span>「com.example.qacamera」を登録しました</span></div>
               </div>
               <div class="row">
                 <div class="icon">OK</div>
-                <div><b>artifacts</b><span>sha256と署名を確定</span></div>
+                <div><b>新規バージョン</b><span>v2.4.0-qa (42) を追加しました</span></div>
               </div>
               <div class="row">
                 <div class="icon">OK</div>
-                <div><b>releases</b><span>appとartifactをversion単位で紐づけ</span></div>
-              </div>
-              <div class="row">
-                <div class="icon">--</div>
-                <div><b>rollout_jobs</b><span>まだ作成しない</span></div>
+                <div><b>配信可能</b><span>デバイスのPolicyから参照できます</span></div>
               </div>
             </aside>
           </div>

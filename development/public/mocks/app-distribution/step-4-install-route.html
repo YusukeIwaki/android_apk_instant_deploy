@@ -140,22 +140,22 @@
         <div class="statusbar"><span>10:14</span><span>5G 100%</span></div>
         <div class="bar">APK Remote Companion</div>
         <div class="body">
-          <h1>強制インストール</h1>
-          <p>FORCE_INSTALLEDを満たすため、端末権限に応じて経路を選びます。</p>
+          <h1>必須アプリの入れ方</h1>
+          <p>端末の権限に合わせて、自動か手動のどちらかで進みます。</p>
           <section class="panel silent">
-            <h2>DeviceOwner / 権限委譲あり</h2>
-            <span>ユーザー操作なしでApp A v1をインストールし、Legacy Appを削除します。</span>
+            <h2>自動インストールが可能な端末</h2>
+            <span>App A をユーザー操作なしで入れます。配信対象から外れた Legacy App も自動で削除します。</span>
           </section>
           <section class="panel fallback">
-            <h2>権限なし</h2>
-            <span>サイレントインストールは行わず、Sticky通知でユーザー操作を促します。</span>
-            <div class="notification" aria-label="Sticky install notification">
+            <h2>自動インストールができない端末</h2>
+            <span>下の通知が表示され続けます。タップして手動でインストールしてください。</span>
+            <div class="notification" aria-label="必須アプリのインストール通知">
               <b>必須アプリのインストールが必要です</b>
-              <small>App A v1をインストールしてください。この通知はPolicy同期が完了するまで残ります。</small>
+              <small>タップして App A をインストールしてください。インストールが終わるまでこの通知は残ります。</small>
             </div>
           </section>
           <div class="state">
-            同期完了時だけapplied policy snapshotを更新します。ユーザーがキャンセルして必須アプリが未インストールなら、次回起動時も同期対象のままです。
+            必須アプリが揃うまで、アプリを起動するたびに再確認します。任意アプリ (App D) のように一覧にあるだけのアプリは、ユーザー自身が選んだときだけインストールされます。
           </div>
         </div>
       </div>

@@ -1,0 +1,18 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import redocStandaloneUrl from "redoc/bundles/redoc.standalone.js?url";
+---
+
+<BaseLayout
+  title="OpenAPI"
+  description="APK Remote Distribution APIのOpenAPI仕様です。"
+  currentPath="/openapi/"
+  contentClass="docs-content--openapi"
+  showTitle={false}
+>
+  <div class="openapi-redoc">
+    <redoc spec-url="/openapi.yaml"></redoc>
+  </div>
+</BaseLayout>
+
+<script src={redocStandaloneUrl}></script>

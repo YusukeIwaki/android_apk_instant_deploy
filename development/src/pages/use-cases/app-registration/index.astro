@@ -3,253 +3,265 @@ import DiagramFrame from "../../../components/DiagramFrame.astro";
 import Mermaid from "../../../components/Mermaid.astro";
 import BaseLayout from "../../../layouts/BaseLayout.astro";
 
-const createUploadCurl = `curl -X POST https://distribution.example.test/api/uploads/cache/multipart \\
+const uploadCurl = `curl -X POST https://distribution.example.test/api/artifacts \\
   -H "Authorization: Bearer $ADMIN_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "filename": "qa-camera-2.4.0-42.apk",
-    "contentType": "application/vnd.android.package-archive",
-    "size": 50541312
-  }'`;
+  -F "file=@qa-camera-2.4.0-42.apk;type=application/vnd.android.package-archive"`;
 
-const createUploadResponse = `HTTP/1.1 201 Created
-{
-  "multipartUpload": {
-    "key": "apk_uploads/01HX9J6/qa-camera-2.4.0-42.apk",
-    "uploadId": "s3_multipart_upload_id",
-    "partSize": 16777216,
-    "signPartUrl": "/api/uploads/cache/multipart/s3_multipart_upload_id/sign",
-    "completeUrl": "/api/uploads/cache/multipart/s3_multipart_upload_id/complete"
-  }
-}`;
-
-const uploadArtifactCurl = `curl -X PUT "$PART_1_UPLOAD_URL" \\
-  -H "Content-Type: application/vnd.android.package-archive" \\
-  --data-binary @part-0001.bin &
-curl -X PUT "$PART_2_UPLOAD_URL" \\
-  -H "Content-Type: application/vnd.android.package-archive" \\
-  --data-binary @part-0002.bin &
-curl -X PUT "$PART_3_UPLOAD_URL" \\
-  -H "Content-Type: application/vnd.android.package-archive" \\
-  --data-binary @part-0003.bin &
-wait
-
-# Uppy + Shrine.uppy_s3_multipartがS3 multipart completionまで担当する。
-# upload-success後、クライアントはShrine uploaded file dataを得る。
-# {
-#   "id": "apk_uploads/01HX9J6/qa-camera-2.4.0-42.apk",
-#   "storage": "cache",
-#   "metadata": {
-#     "filename": "qa-camera-2.4.0-42.apk",
-#     "size": 50541312,
-#     "mime_type": "application/vnd.android.package-archive"
-#   }
-# }
-#
-# この時点ではサーバーDBのartifacts、apps、releasesはまだ作成しない。`;
-
-const completeArtifactCurl = `curl -X POST https://distribution.example.test/api/artifacts \\
-  -H "Authorization: Bearer $ADMIN_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "file": {
-      "id": "apk_uploads/01HX9J6/qa-camera-2.4.0-42.apk",
-      "storage": "cache",
-      "metadata": {
-        "filename": "qa-camera-2.4.0-42.apk",
-        "size": 50541312,
-        "mime_type": "application/vnd.android.package-archive"
-      }
-    },
-    "changelog": "Camera upload retry and QA logging fixes.",
-    "source": {
-      "branch": "main",
-      "commitSha": "8f4c2a1",
-      "buildNumber": "42"
-    }
-  }'`;
-
-const createReleaseResponse = `HTTP/1.1 201 Created
+const uploadResponse = `HTTP/1.1 201 Created
 {
   "artifact": {
     "id": 101,
     "file": {
-      "id": "artifacts/101/qa-camera-2.4.0-42.apk",
-      "storage": "store"
+      "storage": "s3",
+      "key": "artifacts/101/qa-camera-2.4.0-42.apk",
+      "filename": "qa-camera-2.4.0-42.apk",
+      "content_type": "application/vnd.android.package-archive"
     },
     "sha256": "58f7d4...",
-    "sizeBytes": 50541312,
-    "signingCertSha256": "9a5c0e..."
+    "size_bytes": 50541312,
+    "signing_cert_sha256": "9a5c0e..."
   },
   "app": {
     "id": 12,
-    "packageName": "com.example.qacamera"
+    "package_name": "com.example.qacamera",
+    "action": "created"
   },
   "release": {
     "id": 301,
-    "app": { "id": 12 },
-    "artifact": { "id": 101 },
-    "packageName": "com.example.qacamera",
-    "versionCode": 42,
-    "versionName": "2.4.0-qa",
-    "sha256": "58f7d4...",
-    "signingCertSha256": "9a5c0e...",
-    "amapiPreflight": {
-      "customInstallType": true,
-      "fingerprintMatched": true
-    }
+    "app_id": 12,
+    "artifact_id": 101,
+    "package_name": "com.example.qacamera",
+    "version_code": 42,
+    "version_name": "2.4.0-qa",
+    "action": "created"
   }
 }`;
 
-const rejectedReleaseCurl = `curl -X POST https://distribution.example.test/api/artifacts \\
+const replaceReleaseCurl = `curl -X POST https://distribution.example.test/api/artifacts \\
   -H "Authorization: Bearer $ADMIN_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
+  -F "file=@qa-camera-2.4.0-42-hotfix.apk;type=application/vnd.android.package-archive"
+
+# 同じ app_id + version_code の release が既にある場合:
+# - 新しい artifact を作成する
+# - release.artifact_id を新しい artifact へ更新する
+# - 古い artifact は release.artifact_id から外れた瞬間に削除される (孤児にしない)`;
+
+const updatedReleaseResponse = `HTTP/1.1 200 OK
+{
+  "artifact": {
+    "id": 102,
     "file": {
-      "id": "apk_uploads/01HX9J7/qa-camera-old.apk",
-      "storage": "cache",
-      "metadata": {
-        "filename": "qa-camera-old.apk",
-        "size": 50112000,
-        "mime_type": "application/vnd.android.package-archive"
-      }
+      "storage": "s3",
+      "key": "artifacts/102/qa-camera-2.4.0-42-hotfix.apk"
     },
-    "changelog": "Retry old build."
-  }'
+    "sha256": "a91c0b..."
+  },
+  "app": {
+    "id": 12,
+    "package_name": "com.example.qacamera",
+    "action": "found"
+  },
+  "release": {
+    "id": 301,
+    "app_id": 12,
+    "artifact_id": 102,
+    "version_code": 42,
+    "version_name": "2.4.0-qa",
+    "action": "updated"
+  }
+}`;
 
-# Response: 422 Unprocessable Entity
-# {
-#   "code": "VERSION_CODE_NOT_ACCEPTED",
-#   "message": "versionCode 39 is older than the latest accepted release."
-# }`;
+const invalidApkResponse = `HTTP/1.1 400 Bad Request
+{
+  "error": {
+    "code": "INVALID_APK",
+    "message": "file must be a parseable APK."
+  }
+}
 
-const artifactFlow = `flowchart TD
-  Start["管理者 / CIがAPK登録を開始"] --> UploadUrl["Shrine cache upload parametersを発行"]
-  UploadUrl --> Upload["Uppy + Shrineでcache storageへmultipart upload"]
-  Upload --> FileData["Shrine uploaded file data<br/>storage=cache / id / metadata"]
-  FileData --> Complete["POST /artifacts<br/>uploaded file dataを送る"]
-  Complete --> Open["APIサーバーがShrineでcache fileをopen"]
-  Open --> Inspect["APIサーバーがAPKを解析<br/>packageName / versionCode / cert / sha256"]
-  Inspect --> Acceptable{"既存appとの互換性を満たすか"}
-  Acceptable -->|はい| Promote["Shrineでcacheからstoreへpromote"]
-  Promote --> Artifact["artifacts<br/>store file_dataとmetadataを保存"]
-  Acceptable -->|はい| AppIdentity["apps<br/>packageNameに対応する行"]
-  Artifact --> Release["releases<br/>app_id + artifact_id + versionCode"]
-  AppIdentity --> Release
-  Release --> Preflight{"AMAPI policy preflight"}
-  Preflight -->|整合| Ready["登録完了<br/>release catalogに表示"]
-  Preflight -->|不整合| Warning["登録完了 + 警告<br/>配信時はfallback判断に残す"]
-  Acceptable -->|いいえ| Reject["登録拒否<br/>release catalogは変更しない"]
-  Reject --> Discard["cache fileを破棄<br/>artifact/releaseは残さない"]`;
+# APKとして解析できない場合は apps / releases / artifacts を変更しない。
+# このときS3 objectも作成しない (検証 -> 保存 の順で実装する)。`;
+
+const signingCertMismatchResponse = `HTTP/1.1 400 Bad Request
+{
+  "error": {
+    "code": "SIGNING_CERT_MISMATCH",
+    "message": "Signing certificate differs from the previously registered release for this package."
+  }
+}
+
+# 同じ package_name で過去に登録済みの release と署名が異なる場合は拒否する。
+# 端末側のPackageInstallerが署名差し替えを許可しないため、配信前に検出する。`;
+
+const deleteReleaseCurl = `curl -X DELETE https://distribution.example.test/api/releases/301 \\
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Response: 204 No Content`;
 
 const relationshipDiagram = `flowchart LR
   subgraph App["apps: アプリidentity"]
-    AppNode["id: 12 (AR primary key)<br/>packageName: com.example.qacamera<br/>createdAt"]
+    AppNode["id: 12 (AR primary key)<br/>package_name: com.example.qacamera<br/>created_at"]
   end
 
-  subgraph Versions["releases: バージョンごとの配信単位"]
-    Release1["id: 301 (AR primary key)<br/>app_id: 12 / artifact_id: 101<br/>versionCode: 1<br/>versionName: 1.0.0"]
-    Release2["id: 302 (AR primary key)<br/>app_id: 12 / artifact_id: 102<br/>versionCode: 2<br/>versionName: 1.1.0"]
+  subgraph Releases["releases: 配信で選ぶバージョン単位"]
+    Release1["id: 301 (AR primary key)<br/>app_id: 12 / artifact_id: 101<br/>version_code: 42<br/>version_name: 2.4.0-qa"]
+    Release2["id: 302 (AR primary key)<br/>app_id: 12 / artifact_id: 103<br/>version_code: 43<br/>version_name: 2.4.1"]
   end
 
-  subgraph Files["artifacts: アップロードAPKとmetadata"]
-    Artifact1["id: 101 (AR primary key)<br/>file.storage: store<br/>file.id: artifacts/101/app.apk<br/>sha256 / sizeBytes<br/>signingCertSha256"]
-    Artifact2["id: 102 (AR primary key)<br/>file.storage: store<br/>file.id: artifacts/102/app.apk<br/>sha256 / sizeBytes<br/>signingCertSha256"]
+  subgraph Artifacts["artifacts: APKファイルとS3参照"]
+    Artifact1["id: 101 (AR primary key)<br/>s3_key: artifacts/101/app.apk<br/>sha256 / size_bytes<br/>signing_cert_sha256"]
+    Artifact2["id: 103 (AR primary key)<br/>s3_key: artifacts/103/app.apk<br/>sha256 / size_bytes<br/>signing_cert_sha256"]
   end
 
   AppNode -->|"1 app has many releases"| Release1
   AppNode -->|"1 app has many releases"| Release2
-  Release1 -->|"version 1 uses this APK"| Artifact1
-  Release2 -->|"version 2 uses this APK"| Artifact2`;
+  Release1 -->|"uses this APK"| Artifact1
+  Release2 -->|"uses this APK"| Artifact2`;
 
-const identityFlow = `flowchart LR
+const ownershipFlow = `flowchart LR
   subgraph Operator["管理者 / CI"]
     ApkFile["APK file"]
-    Changelog["changelog / source build info"]
   end
 
-  subgraph Storage["Artifact storage"]
-    ShrineEndpoint["Shrine.uppy_s3_multipart<br/>cache storage endpoint"]
-    CacheFile["Shrine uploaded file data<br/>storage=cache / id / metadata"]
-    StoreFile["Shrine store file_data<br/>storage=store / id"]
+  subgraph Api["APIサーバー"]
+    InputFile["input[:file]"]
+    Inspector["APK metadata extraction"]
+    ArtifactService["artifact registration"]
   end
 
-  subgraph Server["APIサーバー / DB"]
-    Apps["apps<br/>id / packageName"]
-    Artifacts["artifacts<br/>id / file_data / sha256 / sizeBytes / signingCertSha256"]
-    Releases["releases<br/>id / app_id / artifact_id / versionCode / changelog / createdAt"]
-    PolicyEvents["amapi_policy_preflight_events<br/>必要な場合だけrelease_idと結果理由を記録"]
+  subgraph S3["S3 artifact bucket"]
+    S3Object["artifacts/{artifact.id}/file.apk"]
   end
 
-  subgraph External["外部管理面"]
-    Amapi["AMAPI policy registry<br/>CUSTOM設定 / signing fingerprint"]
+  subgraph DB["DB / ActiveRecord"]
+    Apps["apps<br/>id / package_name"]
+    Artifacts["artifacts<br/>id / s3_key / sha256 / size_bytes / signing_cert_sha256"]
+    Releases["releases<br/>id / app_id / artifact_id / version_code / version_name"]
   end
 
-  ApkFile --> ShrineEndpoint --> CacheFile
-  CacheFile -->|POST /artifactsでShrine open + parse| Artifacts
-  Artifacts --> StoreFile
-  Changelog --> Releases
-  Artifacts --> Releases
+  ApkFile -->|POST multipart/form-data| InputFile
+  InputFile --> Inspector
+  InputFile -->|そのまま保存| S3Object
+  Inspector --> ArtifactService
+  S3Object --> ArtifactService
+  ArtifactService --> Artifacts
+  ArtifactService --> Apps
+  ArtifactService --> Releases
+  Releases --> Artifacts
   Apps --> Releases
-  Releases -->|read-only preflight| Amapi
-  Amapi --> PolicyEvents`;
+  Releases -. "Release destroyから推移" .-> Artifacts
+  Artifacts -. "S3 cleanup" .-> S3Object`;
+
+const artifactFlow = `flowchart TD
+  Start["管理者 / CIがAPKを選択"] --> Post["POST /api/artifacts<br/>multipart field: file"]
+  Post --> Receive["APIサーバーがinput[:file]を受け取る"]
+  Receive --> Parse["APKを解析<br/>package_name / version_code / version_name / sha256 / cert"]
+  Parse --> Valid{"APKとして受け入れ可能か"}
+  Valid -->|いいえ| Reject["422で拒否<br/>apps / releases / artifacts / S3は変更しない"]
+  Valid -->|はい| CertCheck{"既存 release と署名一致?"}
+  CertCheck -->|不一致| RejectCert["409で拒否<br/>S3も書かない"]
+  CertCheck -->|一致 or 新規 package| Upload["input[:file]をS3へアップロード"]
+  Upload --> Artifact["artifacts作成<br/>S3 keyとAPK由来metadataを保存"]
+  Artifact --> App["appsをpackage_nameで作成または参照"]
+  App --> Release{"app_id + version_codeのrelease"}
+  Release -->|ない| CreateRelease["releases作成<br/>artifact_idを設定"]
+  Release -->|ある| UpdateRelease["releases更新<br/>artifact_idを差し替え + 旧artifactを削除"]
+  CreateRelease --> Done["登録完了"]
+  UpdateRelease --> Done
+  Done --> ReleaseDelete["後日、管理者がreleaseを削除"]
+  ReleaseDelete --> ArtifactDestroy["release削除からartifact削除へ推移"]
+  ArtifactDestroy --> Cleanup["artifact destroy callbackでS3 objectを削除"]`;
 
 const sequence = `sequenceDiagram
   autonumber
   actor Operator as 管理者 / CI
   participant Api as APIサーバー
-  participant Store as Artifact storage
   participant Inspector as APK inspector
-  participant Catalog as Release catalog
-  participant Amapi as AMAPI policy registry
+  participant S3 as S3 artifact bucket
+  participant AR as ActiveRecord / DB
 
-  Operator->>Api: Shrine/Uppy multipart upload parametersを要求
-  Api-->>Operator: key / uploadId / part signing endpointを返す
-  Operator->>Store: APK partsを並列PUT
-  Operator->>Api: Shrine multipart complete
-  Api-->>Operator: Shrine uploaded file data(storage=cache, id, metadata)
-  Operator->>Api: POST /artifacts(file data, changelog, source)
-  Api->>Store: Shrineでcache fileをopen
-  Api->>Inspector: packageName, versionCode, signing cert, sha256を抽出
-  alt 既存appと互換性あり
-    Api->>Store: cacheからstoreへpromote
-    Api->>Catalog: artifact(file_data)、app identity、releaseを保存
-    opt AMAPI対象として使いたい場合
-      Api->>Amapi: CUSTOM設定とfingerprintを確認
-      Amapi-->>Api: 整合または警告
-    end
-    Api-->>Operator: 作成されたreleaseと抽出メタデータを返す
-  else versionCode / signature / duplicateが受け入れ不可
-    Api->>Store: cache fileを破棄
-    Api-->>Operator: 登録拒否と理由を返す
-  end`;
+  Operator->>Api: POST /api/artifacts(file)
+  Api->>Inspector: input[:file]からAPK metadataを抽出
+  alt APKとして受け入れ可能 (署名も一致)
+    Api->>S3: input[:file]をS3 objectとして保存
+    Api->>AR: artifactsを作成
+    Api->>AR: appsをpackage_nameで作成または参照
+    Api->>AR: releasesを作成またはartifact_id更新
+    Api-->>Operator: artifact / app / releaseを返す
+  else 不正なAPKまたは署名不一致
+    Api-->>Operator: 422 / 409と理由を返す
+  end
+
+  Operator->>Api: DELETE /api/releases/:id
+  Api->>AR: Release.destroy
+  AR->>AR: 関連artifactをdestroy
+  AR->>S3: artifact destroy callbackでS3 objectを削除
+  Api-->>Operator: 204 No Content`;
 
 const lifecycle = `stateDiagram-v2
-  [*] --> CacheUploadIssued
-  CacheUploadIssued --> CacheUploaded: Shrine cacheへmultipart upload完了
-  CacheUploaded --> CompletingArtifact: POST /artifacts(file data)
-  CompletingArtifact --> Inspecting: Shrine open + parse
-  Inspecting --> Rejected: signature不一致 / downgrade / duplicate
-  Inspecting --> Promoted: cacheからstoreへpromote
-  Promoted --> ArtifactRecorded: artifacts作成
-  ArtifactRecorded --> AppResolved: appsを作成または既存参照
-  AppResolved --> ReleaseCreated: releases作成
-  ReleaseCreated --> PreflightChecked: AMAPI policy確認
-  PreflightChecked --> Completed: release catalogに表示
-  Rejected --> CacheDiscarded: cache fileを破棄
-  CacheDiscarded --> [*]
-  Completed --> [*]`;
+  [*] --> FileSubmitted: POST /api/artifacts(file)
+  FileSubmitted --> Inspecting: input[:file]を解析
+  Inspecting --> Rejected: APKではない / 解析不可 / 署名不一致
+  Inspecting --> StoredInS3: 受け入れ可能
+  StoredInS3 --> ArtifactRecorded: artifacts作成
+  ArtifactRecorded --> AppResolved: apps作成または既存参照
+  AppResolved --> ReleaseLinked: releases作成または更新
+  ReleaseLinked --> Registered: 登録結果を返す
+  Registered --> ReleaseDeleting: DELETE /api/releases/:id
+  ReleaseDeleting --> ArtifactDestroying: Release削除から推移
+  ArtifactDestroying --> S3Deleted: S3 object削除
+  Rejected --> [*]
+  S3Deleted --> [*]`;
 ---
 
 <BaseLayout
   title="アプリの登録"
-  description="配布対象APKをreleaseとして登録し、端末へ配信する前にartifact metadataと互換性判定を確定します。"
+  description="APKファイルを1回のアップロードで受け取り、S3上のartifact、apps、releasesを最小限の責務で確定します。"
   currentPath="/use-cases/app-registration/"
 >
   <p class="lede">
-    アプリ登録は、APKファイルを置くだけの処理ではありません。
-    管理者またはCIがShrine/Uppyで信頼済みcache storageへアップロードしたAPKを、完了APIでサーバーがShrine fileとしてopen・解析し、packageName、versionCode、署名、hash、サイズをもとに、artifacts、apps、releasesへ結びつけてrelease catalogに登録します。
+    アプリ登録は、管理者またはCIがAPKファイルを1つアップロードする操作で完結します。
+    APIサーバーは受け取った <code>input[:file]</code> を解析・検証し、APKとして妥当ならS3へ保存して、APKから読み取った package_name、version_code、version_name、署名、hash、サイズをもとに、artifacts、apps、releases を必要な分だけ作成または更新します。
+    ユーザー操作として扱うのは <strong>Artifact作成 (POST /api/artifacts)</strong> と <strong>Release削除 (DELETE /api/releases/:id)</strong> の2つだけで、artifact 単体の作成・削除APIは提供しません。
+    build source や changelog はこの登録データでは管理しません。
   </p>
+
+  <section aria-labelledby="actors">
+    <p class="section-kicker">Actors and responsibilities</p>
+    <h2 id="actors">登場人物と責務</h2>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">登場人物</th>
+            <th scope="col">きっかけ</th>
+            <th scope="col">責務</th>
+            <th scope="col">触るリソース</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">管理者 / CI</th>
+            <td>新しいAPKができた / 既存バージョンを差し替えたい / 配信対象から外したい</td>
+            <td>POST /api/artifacts でAPKをアップロードする。配信終了時は DELETE /api/releases/:id を呼ぶ。</td>
+            <td>artifacts, releases (経由で apps)</td>
+          </tr>
+          <tr>
+            <th scope="row">APIサーバー</th>
+            <td>POST /api/artifacts</td>
+            <td>APK解析 → 署名検証 → S3保存 → artifact/app/release を1トランザクションで確定。Release削除時はartifactをdestroyしてS3 objectを削除。</td>
+            <td>apps, artifacts, releases, S3 bucket</td>
+          </tr>
+          <tr>
+            <th scope="row">S3 bucket</th>
+            <td>APIサーバーからの put_object / delete_object</td>
+            <td>APK bytes の保存先。key は <code>{`artifacts/{artifact.id}/{filename}`}</code>。</td>
+            <td>artifacts に紐づく単一の object</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
   <section aria-labelledby="data-model">
     <p class="section-kicker">Data model</p>
@@ -258,15 +270,15 @@ const lifecycle = `stateDiagram-v2
     <dl class="key-value-list">
       <div>
         <dt>artifacts</dt>
-        <dd>アップロードされたAPKそのものと、そのAPK bytesから得られるsha256、sizeBytes、signingCertSha256などの事実を持つ。独自のartifact用識別子は持たず、関連にはActiveRecordのidを使う。Shrine cache upload時点では作らず、POST /artifactsでサーバーがuploaded file dataを受け取り、cache fileを解析してstoreへpromoteできたときに作成する。</dd>
+        <dd>アップロードされたAPKそのものを表す。S3 key、元ファイル名、content_type、sha256、size_bytes、signing_cert_sha256 など、APK bytes と保存先から決まる事実だけを持つ。ユーザー向けの直接削除APIは置かず、release削除から推移して削除される。</dd>
       </div>
       <div>
         <dt>apps</dt>
-        <dd>packageNameで識別される配布対象アプリのidentity。独自のapp用識別子は持たず、行の参照にはActiveRecordのidを使う。解析したpackageNameに対応するappがなければ、release作成時に作成する。</dd>
+        <dd>package_name で識別される配布対象アプリのidentity。解析した package_name に対応する行がなければ作成し、あれば既存行を参照する。changelogやbuild sourceは持たない。</dd>
       </div>
       <div>
         <dt>releases</dt>
-        <dd>appsとartifactsをapp_id、artifact_idで結び、versionCode、versionName、changelog、createdAtを持つバージョン単位のrelease実体。単なる中間テーブルではなく、配信Policyから参照する単位になる。独自のrelease用識別子は持たず、参照にはActiveRecordのidを使う。</dd>
+        <dd>app_id、artifact_id、version_code、version_name を持つバージョン単位の配信対象。app_id + version_code の release がなければ作成し、既にあれば artifact_id と version_name を更新する。ユーザーが削除する単位でもあり、削除時には関連artifactの削除へ推移する。</dd>
       </div>
     </dl>
   </section>
@@ -279,30 +291,34 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">1</span>
         <div>
-          <h3 id="step-1">管理者またはCIがShrine cacheアップロード先を発行する</h3>
-          <p>管理画面またはCIから、APKを分割/並列アップロードするためのShrine/Uppy multipart parametersを作成します。この時点ではrelease catalogにも配信対象にも載りません。</p>
+          <h3 id="step-1">Artifact作成APIにAPKファイルを送る</h3>
+          <p>エントリーポイントは画面操作ではなく、APKファイルを送るAPI呼び出しです。CIから直接呼んでも、管理画面から呼んでも同じAPIを使います。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-registration/step-1-upload-url.html" title="管理画面: APKアップロード先作成" />
+          <DiagramFrame src="/mocks/app-registration/step-1-upload-url.html" title="管理画面: APKファイル選択" />
         </div>
         <div class="flow-step__details">
           <h4>API呼び出し</h4>
-          <pre class="curl-block"><code>{createUploadCurl}</code></pre>
-          <h4>応答</h4>
-          <pre class="curl-block"><code>{createUploadResponse}</code></pre>
-          <h4>DBデータの扱い</h4>
+          <pre class="curl-block"><code>{uploadCurl}</code></pre>
+          <h4>入力の制約</h4>
           <dl class="db-list">
             <div>
-              <dt>apps / artifacts / releases</dt>
-              <dd>まだ作成しない。cache upload先の発行だけでは、APK bytesの存在も、アプリidentityも、releaseも確定していない。</dd>
+              <dt>file</dt>
+              <dd>受け取る入力はAPKファイルだけ。multipart field 名は <code>file</code> で、APIサーバー内では <code>input[:file]</code> として扱う。</dd>
             </div>
             <div>
-              <dt>Shrine / Uppy / storage</dt>
-              <dd>multipart uploadのkey、uploadId、part signing、completionはShrine側の一時アップロード責務として扱う。ドメインDBには独自の一時アップロードセッションテーブルを作らず、必要な監査だけを別イベントとして残す。</dd>
+              <dt>build source / changelog</dt>
+              <dd>受け取らない。リリース説明、branch、commit SHA、build番号などのビルド由来情報は登録データへ混ぜない。</dd>
+            </div>
+            <div>
+              <dt>upload方式</dt>
+              <dd>事前のpresigned URL発行、分割upload、一時cache storageは扱わない。単純な1リクエストのファイル受領を優先する。</dd>
             </div>
           </dl>
+          <h4>この時点でのDB変更</h4>
+          <p>なし。リクエスト受信だけでは何も確定しない。次ステップの解析・保存が成功したときに初めてDB行を書く。</p>
         </div>
       </div>
     </article>
@@ -311,30 +327,35 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">2</span>
         <div>
-          <h3 id="step-2">APKをShrine cache storageへ分割/並列アップロードする</h3>
-          <p>管理画面のアップローダーまたはCIが、Shrine/Uppyのmultipart uploadを完了し、uploaded file dataを得ます。アップロード完了だけでは、サーバーDBのartifactにもreleaseにもなりません。</p>
+          <h3 id="step-2">APIサーバーが <code>input[:file]</code> を検証・保存して artifact を作る</h3>
+          <p>サーバーは受け取ったファイルをAPKとして解析し、APKとして妥当で、かつ既存 release との署名互換性も満たす場合に限りS3へアップロードします。「検証 → 保存」の順序を守ることで、不正リクエストでS3に孤児オブジェクトを残さないようにします。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-registration/step-2-upload-artifact.html" title="管理画面: APKアップロード中" />
+          <DiagramFrame src="/mocks/app-registration/step-2-upload-artifact.html" title="管理画面: 処理中表示" />
         </div>
         <div class="flow-step__details">
-          <h4>API呼び出し</h4>
-          <pre class="curl-block"><code>{uploadArtifactCurl}</code></pre>
           <h4>作成されるデータ</h4>
           <dl class="db-list">
             <div>
-              <dt>Artifact storage</dt>
-              <dd>Shrine cache storageにAPK bytesを保存し、storage=cache、id、metadataを含むuploaded file dataとして表現する。DB上のartifactやreleaseとしてはまだ参照しない。</dd>
+              <dt>S3 object</dt>
+              <dd>APK bytes を <code>{`artifacts/{artifact.id}/{filename}`}</code> の key で保存する。key は artifacts 行から参照できる形にする。</dd>
             </div>
             <div>
               <dt>artifacts</dt>
-              <dd>まだ作成しない。POST /artifactsへ渡すのはShrine uploaded file dataであり、独自multipart完了APIの内部値ではない。</dd>
+              <dd>S3 key と、APKから抽出した sha256、size_bytes、signing_cert_sha256 を保存する。artifact 独自の外部識別子は増やさず、行参照には ActiveRecord id を使う。</dd>
             </div>
+          </dl>
+          <h4>作成しないもの</h4>
+          <dl class="db-list">
             <div>
               <dt>rollout_jobs / device_install_tasks</dt>
-              <dd>作成しない。APK uploadと端末配信の責務は分ける。</dd>
+              <dd>作成しない。APK登録と端末配信の責務は分ける (アプリの配信ページを参照)。</dd>
+            </div>
+            <div>
+              <dt>changelog 関連テーブル</dt>
+              <dd>用意しない。リリースノートやビルド由来情報を持ちたい場合は別ユースケースとして別途設計する。</dd>
             </div>
           </dl>
         </div>
@@ -345,30 +366,30 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">3</span>
         <div>
-          <h3 id="step-3">POST /artifactsでShrine cache fileを解析して完了する</h3>
-          <p>完了APIはShrine uploaded file dataを受け取り、サーバー側で信頼済みcache fileだけをopenして解析します。解析に成功した場合だけstoreへpromoteし、artifact、app、releaseを一連の結果として確定します。</p>
+          <h3 id="step-3">apps と releases を作成または更新する</h3>
+          <p>package_name に対応する app を作成または参照し、app_id + version_code に対応する release を作成または更新します。差し替え時 (同じ version_code への再アップロード) は、release.artifact_id を新しい artifact に切り替え、古い artifact は孤児にせず削除します。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-registration/step-3-release-created.html" title="管理画面: artifact完了とrelease登録" />
+          <DiagramFrame src="/mocks/app-registration/step-3-release-created.html" title="管理画面: 登録結果" />
         </div>
         <div class="flow-step__details">
-          <h4>API呼び出し</h4>
-          <pre class="curl-block"><code>{completeArtifactCurl}</code></pre>
-          <h4>作成・参照されるDBデータ</h4>
+          <h4>新規登録時の応答</h4>
+          <pre class="curl-block"><code>{uploadResponse}</code></pre>
+          <h4>同じ app + version_code を差し替える場合</h4>
+          <pre class="curl-block"><code>{replaceReleaseCurl}</code></pre>
+          <h4>更新時の応答</h4>
+          <pre class="curl-block"><code>{updatedReleaseResponse}</code></pre>
+          <h4>差し替え時のDB変更</h4>
           <dl class="db-list">
             <div>
-              <dt>apps</dt>
-              <dd>packageNameに対応するapps行を作成または既存参照する。アプリidentityにはpackageNameなど安定した識別情報だけを置き、独自のapp用識別子は持たない。</dd>
-            </div>
-            <div>
-              <dt>artifacts</dt>
-              <dd>ActiveRecordのid、Shrine store file_data、sha256、sizeBytes、signingCertSha256などのAPK bytes由来metadataを保存する。</dd>
-            </div>
-            <div>
               <dt>releases</dt>
-              <dd>ActiveRecordのid、app_id、artifact_id、versionCode、versionName、changelog、createdAt、createdByを保存する。配信ジョブはまだ作成しない。</dd>
+              <dd>同じ行を更新する (id は変わらない)。これにより、DevicePolicyから release.id で参照しているデバイスは自動で新しい artifact を取りに行ける。</dd>
+            </div>
+            <div>
+              <dt>artifacts (旧)</dt>
+              <dd>release から外れた瞬間に destroy する。S3 object も destroy callback で削除する。バージョン履歴を残したい場合は version_code を別にしてもらう。</dd>
             </div>
           </dl>
         </div>
@@ -379,36 +400,30 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">4</span>
         <div>
-          <h3 id="step-4">登録結果を表示し、受け入れ不可のAPKはrelease化しない</h3>
-          <p>登録成功時は作成されたreleaseと抽出メタデータを表示します。署名不一致、downgrade、重複versionCodeなどの受け入れ不可条件では、release catalogを変更しません。</p>
+          <h3 id="step-4">Release削除時にartifactとS3 objectも削除する</h3>
+          <p>不要になったAPKを配信対象から外す操作は Release 削除です。Release を削除すると関連 artifact の削除へ推移し、その artifact 削除時にS3 object も削除します。配信中のデバイスがあった場合は、DevicePolicy 側でその release.id を外す必要があります (アプリの配信ページを参照)。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-registration/step-4-registration-result.html" title="管理画面: 登録完了と登録拒否" />
+          <DiagramFrame src="/mocks/app-registration/step-4-registration-result.html" title="管理画面: バージョン削除結果" />
         </div>
         <div class="flow-step__details">
-          <h4>登録成功時の応答</h4>
-          <pre class="curl-block"><code>{createReleaseResponse}</code></pre>
-          <h4>受け入れ不可の場合</h4>
-          <pre class="curl-block"><code>{rejectedReleaseCurl}</code></pre>
-          <h4>DBデータの扱い</h4>
+          <h4>API呼び出し</h4>
+          <pre class="curl-block"><code>{deleteReleaseCurl}</code></pre>
+          <h4>DB / S3 の扱い</h4>
           <dl class="db-list">
             <div>
               <dt>releases</dt>
-              <dd>成功時だけ新規作成する。拒否時はreleases行を作成せず、配信ジョブから選べる状態にしない。</dd>
+              <dd>管理者またはCIが削除する単位。削除後は release catalog から消え、DevicePolicyからも参照できなくなる。</dd>
             </div>
             <div>
               <dt>artifacts</dt>
-              <dd>解析や互換性確認に失敗した場合は作成しない。cache fileは破棄し、storeへpromoteしない。監査目的で残す場合は、releaseとは別の解析イベントまたは隔離領域として扱う。</dd>
+              <dd>release から外れたタイミングで destroy。S3 object も同時に削除する。直接削除APIは提供しない。</dd>
             </div>
             <div>
-              <dt>amapi_policy_preflight_events</dt>
-              <dd>AMAPI policyとの整合性を保存する必要がある場合だけ、release_id、checkedAt、理由を記録する。appsやreleasesにmutableなstatusを持たせない。</dd>
-            </div>
-            <div>
-              <dt>rollout_jobs / device_install_tasks</dt>
-              <dd>登録完了時点では作成しない。どの端末へ配るかはアプリ配信ページの責務として分ける。</dd>
+              <dt>apps</dt>
+              <dd>削除しない。同じ package_name で再アップロードされる可能性があるため、apps 行は履歴として残す。</dd>
             </div>
           </dl>
         </div>
@@ -416,10 +431,10 @@ const lifecycle = `stateDiagram-v2
     </article>
   </section>
 
-  <section aria-labelledby="identity">
+  <section aria-labelledby="ownership">
     <p class="section-kicker">Data ownership</p>
-    <h2 id="identity">誰がどのidentifierと事実を持つか</h2>
-    <Mermaid chart={identityFlow} title="APK file、artifact storage、apps、artifacts、releasesの関係" />
+    <h2 id="ownership">誰がどのidentifierと事実を持つか</h2>
+    <Mermaid chart={ownershipFlow} title="APK file、input[:file]、S3、apps、artifacts、releasesの関係" />
     <div class="table-wrap">
       <table class="usa-table">
         <thead>
@@ -432,34 +447,34 @@ const lifecycle = `stateDiagram-v2
         </thead>
         <tbody>
           <tr>
-            <th scope="row">Shrine uploaded file data</th>
-            <td>Shrine / Uppy upload completion</td>
-            <td>POST /artifactsの入力。storage=cache、id、metadataを含む。</td>
-            <td>APIサーバーが信頼済みcache storage内のAPKだけをopenするための参照。任意URLやrelease identityではない。</td>
+            <th scope="row"><code>input[:file]</code></th>
+            <td>管理者またはCIのmultipart upload</td>
+            <td>APIリクエスト内。DBには保存しない。</td>
+            <td>S3保存とAPK metadata抽出の入力。事前アップロード済みfile idや任意URLではない。</td>
           </tr>
           <tr>
-            <th scope="row">packageName</th>
+            <th scope="row">S3 key</th>
+            <td>APIサーバー</td>
+            <td>artifacts</td>
+            <td>APK bytes の保存先。release削除から推移したartifact destroy時に、このkeyのobjectを削除する。</td>
+          </tr>
+          <tr>
+            <th scope="row">package_name</th>
             <td>APK解析</td>
-            <td>apps。</td>
-            <td>配布対象アプリを識別する安定した事実。独自のapp用識別子は作らず、DB行の参照はapps.idを使う。</td>
+            <td>apps</td>
+            <td>配布対象アプリを識別する安定した事実。DB行の参照には apps.id を使う。</td>
           </tr>
           <tr>
-            <th scope="row">ActiveRecord id</th>
-            <td>DB / ActiveRecord</td>
-            <td>apps.id、artifacts.id、releases.idと、それらを参照するapp_id、artifact_id、release_id。</td>
-            <td>テーブル間の関連と管理APIでの行参照に使う。artifact、app、release向けの独自識別子は別途作らない。</td>
+            <th scope="row">version_code / version_name</th>
+            <td>APK解析</td>
+            <td>releases</td>
+            <td>特定アプリのバージョンを表す release ごとの事実。app_id + version_code で作成または更新対象を決める。</td>
           </tr>
           <tr>
-            <th scope="row">versionCode / versionName</th>
+            <th scope="row">sha256 / size_bytes / signing_cert_sha256</th>
             <td>APIサーバーのAPK解析</td>
-            <td>releases。</td>
-            <td>特定appのバージョンを表すreleaseごとの事実。1つのreleaseは1つのappと1つのartifactに紐づく。</td>
-          </tr>
-          <tr>
-            <th scope="row">signingCertSha256</th>
-            <td>APIサーバーのAPK解析</td>
-            <td>artifacts。AMAPI policy preflightでは外部policy registryと照合する。</td>
-            <td>既存appとの署名互換性と、AMAPI CUSTOM設定のfingerprint整合性を判断する。</td>
+            <td>artifacts</td>
+            <td>アップロードされたAPK bytesの確認、重複検出、署名互換性判断に使う。</td>
           </tr>
         </tbody>
       </table>
@@ -469,18 +484,94 @@ const lifecycle = `stateDiagram-v2
   <section aria-labelledby="artifact-flow">
     <p class="section-kicker">Decision flow</p>
     <h2 id="artifact-flow">artifact登録の判定</h2>
-    <Mermaid chart={artifactFlow} title="アップロード済みAPKがrelease catalogに載るまでの判定" />
+    <Mermaid chart={artifactFlow} title="アップロードされたAPKがartifactとreleaseになるまでの判定" />
   </section>
 
   <section aria-labelledby="sequence">
     <p class="section-kicker">Sequence</p>
-    <h2 id="sequence">登録時の責務分担</h2>
-    <Mermaid chart={sequence} title="管理者またはCI、APIサーバー、artifact storage、release catalog、AMAPI policy registryの関係" />
+    <h2 id="sequence">登録と削除の責務分担</h2>
+    <Mermaid chart={sequence} title="管理者またはCI、APIサーバー、S3、ActiveRecordの関係" />
   </section>
 
   <section aria-labelledby="lifecycle">
     <p class="section-kicker">Lifecycle</p>
-    <h2 id="lifecycle">登録手続きのライフサイクル</h2>
-    <Mermaid chart={lifecycle} title="Shrine cache uploadからartifact完了または拒否まで" />
+    <h2 id="lifecycle">ArtifactとReleaseのライフサイクル</h2>
+    <Mermaid chart={lifecycle} title="APKアップロードからS3 cleanupまで" />
+  </section>
+
+  <section aria-labelledby="errors">
+    <p class="section-kicker">Errors</p>
+    <h2 id="errors">主要エラーと応答</h2>
+    <p>APK登録は「検証 → 保存」の順序を厳密に守り、失敗時はDB行もS3 objectも作らないことを原則にします。S3に書いてからDB保存に失敗するパターンは避け、片側だけ残らないようにします。</p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">状況</th>
+            <th scope="col">HTTP / code</th>
+            <th scope="col">DB / S3 の状態</th>
+            <th scope="col">復旧方法</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">APKとして解析できない</th>
+            <td>400 INVALID_APK</td>
+            <td>何も書かない。S3にも書かない。</td>
+            <td>正しいAPKをアップロードし直す。</td>
+          </tr>
+          <tr>
+            <th scope="row">既存 release と署名証明書が違う</th>
+            <td>400 SIGNING_CERT_MISMATCH</td>
+            <td>何も書かない。S3にも書かない。</td>
+            <td>同じ署名鍵で再ビルドするか、別の package_name で配布する。端末側のPackageInstallerが署名差し替えを拒否するため、サーバー側で先に弾く。</td>
+          </tr>
+          <tr>
+            <th scope="row">S3アップロード失敗</th>
+            <td>500 ARTIFACT_UPLOAD_FAILED</td>
+            <td>DBには何も書かない。S3 objectは部分的に残る可能性があるが、artifact行と紐付かないため定期cleanupの対象として扱う。</td>
+            <td>同じファイルで再試行。S3 cleanup ジョブは「artifactsに紐付かないオブジェクトを一定期間後に削除」する。</td>
+          </tr>
+          <tr>
+            <th scope="row">multipart に file がない / 複数</th>
+            <td>400 FILE_REQUIRED</td>
+            <td>何も書かない。</td>
+            <td>正しく <code>file</code> 1つだけ送る。複数同時登録は今回スコープ外。</td>
+          </tr>
+          <tr>
+            <th scope="row">同じ app + version_code に対する同時アップロード (race)</th>
+            <td>200 OK (どちらか1つが勝つ)</td>
+            <td>release.artifact_id は最後の更新が勝つ。失われた artifact は孤児になる前に destroy する。</td>
+            <td>CIの並列実行は同じ version_code を避ける。どうしても起きうる場合は version_code を CI 側でインクリメントする運用にする。</td>
+          </tr>
+          <tr>
+            <th scope="row">release削除時、S3 objectのみ削除に失敗</th>
+            <td>500 ARTIFACT_DELETE_FAILED (DBは未削除)</td>
+            <td>DBは元のまま。再試行で整合を取る。</td>
+            <td>destroy callback がトランザクション内で失敗すれば全体rollback。失敗時は再試行可能なジョブにする。</td>
+          </tr>
+        </tbody>
+      </table>
+      <h3>不正APKの応答例</h3>
+      <pre class="curl-block"><code>{invalidApkResponse}</code></pre>
+      <h3>署名不一致の応答例</h3>
+      <pre class="curl-block"><code>{signingCertMismatchResponse}</code></pre>
+    </div>
+  </section>
+
+  <section aria-labelledby="guidance">
+    <p class="section-kicker">Out-of-spec guidance</p>
+    <h2 id="guidance">不足ユースケースに遭遇したときの判断指針</h2>
+    <p>このページに書かれていないケースは、まず次の原則で判断してください。</p>
+    <ol>
+      <li><strong>ユーザー操作の入口は2つだけ。</strong> Artifact作成 (POST /api/artifacts) と Release削除 (DELETE /api/releases/:id)。artifact 単体の作成・削除APIや、apps を直接編集するAPIは追加しない。</li>
+      <li><strong>artifactsはAPK bytesと保存先の事実だけを持つ。</strong> changelog、build source、CI metadata、ブランチ名などを足したくなったら別テーブルを検討する。</li>
+      <li><strong>build由来情報を登録データに混ぜない。</strong> branch、commit SHA、CIビルド番号、Slack通知用のリリースノートなどは、必要なら別ユースケースとして別の paths / tables で扱う。</li>
+      <li><strong>署名は配信前に必ず検証する。</strong> 同じ package_name で署名が変わると、端末のPackageInstallerが必ず失敗する。サーバー側で先に検出して、不整合のあるartifactをS3に書かない。</li>
+      <li><strong>差し替えは「artifact入れ替え」、履歴保持は「version_code増やす」。</strong> 同じ version_code への再アップロードは差し替え扱いで古いartifactを削除する。履歴を残したいなら CI 側で version_code を増やす運用にする。</li>
+      <li><strong>S3に書く前にDB検証を終える。</strong> S3 objectを書いてからDB保存に失敗するパターンは作らない。「検証 → S3保存 → DB作成」の順で、DB作成失敗時はS3も巻き戻すか、cleanupジョブで掃除可能な状態にしておく。</li>
+      <li><strong>「直接削除したい」は通常 release.delete で十分。</strong> 配信から外す = release削除。APK bytes だけ消したい要求が来ても、通常は release を消すことで artifact も S3 も連動して消えるため、別APIを足す前にユースケースを問い直す。</li>
+    </ol>
+    <p>判断に詰まったら <code>AGENTS.md</code> の "Data Modeling" セクション、および本ページの Data ownership 表を参照してください。</p>
   </section>
 </BaseLayout>

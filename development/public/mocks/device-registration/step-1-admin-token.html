@@ -236,7 +236,7 @@
       <div class="chrome-top" aria-hidden="true">
         <div class="traffic"><span></span><span></span><span></span></div>
         <div class="tab">Distribution Admin</div>
-        <div class="address">https://distribution.example.test/admin/devices/registration-tokens/new</div>
+        <div class="address">https://distribution.example.test/admin/devices/registration_tokens/new</div>
       </div>
       <div class="admin">
         <aside class="nav">
@@ -247,23 +247,21 @@
           <span>Audit log</span>
         </aside>
         <main class="main">
-          <h1>デバイス登録トークンを発行</h1>
+          <h1>デバイス登録リンクを発行</h1>
           <div class="layout">
             <section>
-              <label>所属グループ</label>
-              <div class="select">qa-devices</div>
               <label>有効期限</label>
-              <div class="select">30 minutes</div>
+              <div class="select">30分</div>
               <label>登録方式</label>
-              <div class="select">QR / custom scheme link</div>
-              <span class="button">トークンを発行</span>
-              <div class="db-note">この操作で作成されるのはdevice_registration_tokensだけです。devicesはまだ作成されません。</div>
+              <div class="select">QRコード / 登録リンク</div>
+              <span class="button">登録リンクを発行</span>
+              <div class="db-note">発行後30分以内に端末でQRコードまたはリンクを開いてください。</div>
             </section>
             <section class="result">
-              <strong>DeviceRegistrationToken</strong>
+              <strong>登録リンク</strong>
               <div class="qr" aria-hidden="true"></div>
-              <div class="url">apkdist://register-device?registrationTokenId=drt_01HX9A2W...&amp;secret=drs_4Gk...</div>
-              <span class="pill">issuedAt / expiresAt saved</span>
+              <div class="url">apkdist://register-device?identifier=drt_01HX9A2W...&amp;secret=drs_4Gk...</div>
+              <span class="pill">9:41 発行 / 10:11 まで有効</span>
             </section>
           </div>
         </main>

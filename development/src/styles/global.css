@@ -384,12 +384,34 @@ a {
 }
 
 .page-index-list {
-  font-size: 1.15rem;
+  font-size: 1.05rem;
   margin-top: 0;
 }
 
+.page-index-list li {
+  padding: 0.5rem 0;
+}
+
 .page-index-list li + li {
+  border-top: 1px solid var(--docs-border);
   margin-top: 0.5rem;
+}
+
+.page-index-list li > a {
+  font-size: 1.15rem;
+}
+
+.page-index-summary {
+  color: #3d4551;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin-top: 0.25rem;
+}
+
+.page-index-audience {
+  color: var(--docs-muted);
+  font-size: 0.85rem;
+  margin-top: 0.2rem;
 }
 
 @media (max-width: 63.99em) {
@@ -432,4 +454,13 @@ a {
   .diagram {
     padding: 0.75rem;
   }
+}
+
+.docs-content--openapi {
+  padding: 0;
+}
+
+.openapi-redoc redoc {
+  display: block;
+  min-height: 100vh;
 }

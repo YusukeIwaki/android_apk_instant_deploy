@@ -6,14 +6,17 @@ interface Props {
   title: string;
   description: string;
   currentPath?: string;
+  contentClass?: string;
+  showTitle?: boolean;
 }
 
-const { title, description, currentPath = "/" } = Astro.props;
+const { title, description, currentPath = "/", contentClass = "", showTitle = true } = Astro.props;
 const navItems = [
   { label: "TOP", href: "/" },
   { label: "デバイスの登録", href: "/use-cases/device-registration/" },
   { label: "アプリの登録", href: "/use-cases/app-registration/" },
-  { label: "アプリの配信", href: "/use-cases/app-distribution/" }
+  { label: "アプリの配信", href: "/use-cases/app-distribution/" },
+  { label: "OpenAPI", href: "/openapi/" }
 ];
 const isActive = (href: string) => currentPath === href;
 ---
@@ -44,8 +47,8 @@ const isActive = (href: string) => currentPath === href;
             </ul>
           </nav>
         </aside>
-        <article class="docs-content">
-          <h1 class="docs-content-title">{title}</h1>
+        <article class={`docs-content ${contentClass}`.trim()}>
+          {showTitle && <h1 class="docs-content-title">{title}</h1>}
           <slot />
         </article>
       </div>
@@ -54,11 +57,6 @@ const isActive = (href: string) => currentPath === href;
     <footer class="usa-footer usa-footer--slim docs-footer">
       <div class="grid-container usa-footer__return-to-top">
         <a href="#">ページ上部へ戻る</a>
-      </div>
-      <div class="usa-footer__primary-section">
-        <div class="grid-container">
-          <p>Source: <code>apk_remote_distribution_design.md</code></p>
-        </div>
       </div>
     </footer>
   </body>

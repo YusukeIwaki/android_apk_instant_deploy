@@ -163,25 +163,20 @@
         <div class="bar">APK Remote Companion</div>
         <div class="body">
           <h1>この端末を登録します</h1>
-          <p>表示名を入力し、FCM token取得後に登録できます。</p>
-          <label>表示名 必須</label>
+          <p>表示名を入力すると、登録の準備が完了します。</p>
+          <label>表示名 (必須)</label>
           <div class="input">Pixel 8 QA-01</div>
           <div class="checklist">
             <div class="item">
               <div class="icon">OK</div>
-              <div><b>DeviceRegistrationToken</b><span>registrationTokenIdとsecretを受信済み</span></div>
+              <div><b>登録リンクを受信</b><span>管理者から発行されたリンクを読み取りました</span></div>
             </div>
             <div class="item">
               <div class="icon">OK</div>
-              <div><b>FCM push token</b><span>fcm:APA91b... を取得済み</span></div>
-            </div>
-            <div class="item">
-              <div class="icon">OK</div>
-              <div><b>device_profiles</b><span>displayNameだけを登録時に作成</span></div>
+              <div><b>プッシュ通知の準備が完了</b><span>サーバーからの配信通知を受け取れます</span></div>
             </div>
           </div>
-          <div class="guard">FCM tokenが取得できるまでは登録ボタンはdisabledです。</div>
-          <div class="endpoint">POST /api/devices<br />uniqueIdentifier will be drt_01HX9A2W...</div>
+          <div class="guard">プッシュ通知の準備が整うまで登録ボタンは押せません。</div>
           <div class="button">登録する</div>
         </div>
       </div>

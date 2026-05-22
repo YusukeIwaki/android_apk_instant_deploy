@@ -146,27 +146,23 @@
         <div class="statusbar"><span>10:12</span><span>5G 100%</span></div>
         <div class="bar">APK Remote Companion</div>
         <div class="body">
-          <h1>Policyを再取得</h1>
-          <p>FCMはPolicy更新の合図です。端末通知は出さず、アプリがPolicy APIを読み直します。</p>
+          <h1>最新の配信設定を受信</h1>
+          <p>新しい配信設定が届きました。次の画面でアプリを同期します。</p>
           <div class="event">
             <div class="row">
-              <div class="icon">FCM</div>
-              <div><b>POLICY_UPDATED</b><span class="mono">updatedAt: 2026-05-19 10:12</span></div>
+              <div class="icon ok">10:12</div>
+              <div><b>更新を受信</b><span>サーバーから新しい配信設定が届きました</span></div>
             </div>
             <div class="row">
-              <div class="icon ok">GET</div>
-              <div><b>/api/devices/me/policy</b><span>fetched policy snapshotを保存</span></div>
-            </div>
-            <div class="row">
-              <div class="icon ok">UI</div>
-              <div><b>手動で更新</b><span>同じPolicy取得APIを呼び出す</span></div>
+              <div class="icon ok">10:12</div>
+              <div><b>最新の構成を取得</b><span>同期するアプリの一覧を確認できます</span></div>
             </div>
           </div>
-          <div class="button">Policyを手動更新</div>
+          <div class="button">いますぐ手動で更新</div>
           <div class="state">
-            fetchedPolicy.updatedAt: 10:12<br />
-            appliedPolicy.updatedAt: 09:48<br />
-            fetched snapshotが新しいため、次に同期を開始します。
+            前回の同期: 09:48<br />
+            今回の更新: 10:12<br />
+            更新後の構成を端末へ反映する準備ができました。
           </div>
         </div>
       </div>

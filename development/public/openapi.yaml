@@ -1,0 +1,1277 @@
+openapi: 3.1.0
+info:
+  title: Android APK Instant Deploy API
+  version: 0.1.0
+  description: |
+    API definition for the APK instant deploy server.
+
+    Admin APIs are intended for the operator/admin web UI and use an admin token.
+    Android App APIs are intended for the companion Android app. Device registration
+    uses a registration token and secret in the request body, and registered-device
+    APIs use a device bearer token.
+
+    APK upload is a single multipart/form-data request to POST /api/artifacts.
+    There is no separate pre-upload URL endpoint, no multipart cache, and no
+    intermediate cache storage; the server parses, validates, and stores the APK
+    in one shot.
+
+    Errors are returned as `{ "error": { "code": "...", "message": "..." } }` and
+    use only common HTTP status codes (400, 401, 403, 404, 500). Each endpoint's
+    error response lists the concrete error codes that endpoint can actually
+    return as named examples.
+servers:
+  - url: http://localhost:4567
+    description: Local Docker Compose server
+tags:
+  - name: System
+    description: Health endpoints.
+  - name: Admin API
+    description: APIs used by the administrator web UI.
+  - name: Android App API
+    description: APIs used by the Android companion app.
+paths:
+  /health:
+    get:
+      tags:
+        - System
+      operationId: getHealth
+      summary: Get server health
+      security: []
+      responses:
+        "200":
+          $ref: "#/components/responses/HealthResponse"
+
+  /api/artifacts:
+    post:
+      tags:
+        - Admin API
+      operationId: createArtifact
+      summary: Upload an APK and create app / release records
+      description: |
+        Accepts an APK file as a single multipart/form-data upload. The server parses
+        APK metadata (package_name, version_code, version_name, sha256, signing
+        certificate), validates it (including signing certificate compatibility with
+        any existing release for the same package), then stores the file to the
+        configured object store and creates or updates the artifact / app / release
+        records in one transaction.
+
+        Pre-upload URL issuance, multipart cache uploads, intermediate cache storage,
+        changelogs, and build-source metadata (branch / commit / build number) are
+        intentionally out of scope for this endpoint.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/ArtifactCreateRequest"
+            encoding:
+              file:
+                contentType: application/vnd.android.package-archive
+      responses:
+        "201":
+          $ref: "#/components/responses/ArtifactCreateResponse"
+        "400":
+          description: APK or request body was rejected. No artifact / app / release row and no stored object are created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid_apk:
+                  summary: File is not a parseable APK
+                  value:
+                    error:
+                      code: INVALID_APK
+                      message: file must be a parseable APK.
+                signing_cert_mismatch:
+                  summary: Signing certificate differs from the previously registered release
+                  value:
+                    error:
+                      code: SIGNING_CERT_MISMATCH
+                      message: Signing certificate differs from the previously registered release for this package.
+                file_required:
+                  summary: Missing or duplicated "file" multipart field
+                  value:
+                    error:
+                      code: FILE_REQUIRED
+                      message: multipart field "file" is required (exactly one).
+        "401":
+          $ref: "#/components/responses/AdminUnauthorizedError"
+        "500":
+          description: Server-side failure while persisting the APK.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                artifact_upload_failed:
+                  summary: Storing the APK to object storage failed
+                  value:
+                    error:
+                      code: ARTIFACT_UPLOAD_FAILED
+                      message: Failed to store the uploaded APK. Retry the upload.
+
+  /api/releases/{release_id}:
+    delete:
+      tags:
+        - Admin API
+      operationId: deleteRelease
+      summary: Delete a release (and its artifact and stored object)
+      description: |
+        Deletes a release. The associated artifact row is destroyed transitively, and
+        the artifact destroy callback removes the stored APK object. The app row is
+        kept so that future uploads with the same package_name resolve to the same
+        app.
+
+        There is no direct artifact deletion API. Removing an APK from distribution
+        always goes through deleting the release that references it.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ReleaseId"
+      responses:
+        "204":
+          description: Release was deleted.
+        "401":
+          $ref: "#/components/responses/AdminUnauthorizedError"
+        "404":
+          description: Release was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                release_not_found:
+                  value:
+                    error:
+                      code: RELEASE_NOT_FOUND
+                      message: Release was not found.
+        "500":
+          description: Server-side failure while removing the artifact's stored object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                artifact_delete_failed:
+                  value:
+                    error:
+                      code: ARTIFACT_DELETE_FAILED
+                      message: Failed to remove the stored APK object. The release was not deleted.
+
+  /api/releases/{release_id}/artifact_url:
+    get:
+      tags:
+        - Android App API
+      operationId: getReleaseArtifactUrl
+      summary: Get a short-lived artifact download URL
+      description: |
+        Returns a short-lived URL for downloading the APK artifact for a release.
+        Devices call this only for releases they need to install.
+      security:
+        - DeviceBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ReleaseId"
+      responses:
+        "200":
+          $ref: "#/components/responses/ReleaseArtifactUrlDetailResponse"
+        "401":
+          $ref: "#/components/responses/DeviceUnauthorizedError"
+        "404":
+          description: Release was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                release_not_found:
+                  value:
+                    error:
+                      code: RELEASE_NOT_FOUND
+                      message: Release was not found.
+
+  /api/device_registration_tokens:
+    post:
+      tags:
+        - Admin API
+      operationId: createDeviceRegistrationToken
+      summary: Create a device registration link
+      description: |
+        Creates a DeviceRegistrationToken and returns the custom scheme URL that the
+        administrator can show as a link or QR code. This does not create a device.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceRegistrationTokenCreateRequest"
+            examples:
+              default:
+                value:
+                  expires_in_minutes: 30
+      responses:
+        "201":
+          $ref: "#/components/responses/DeviceRegistrationTokenDetailResponse"
+        "400":
+          description: Request body was rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid_request:
+                  summary: Body is missing or not valid JSON
+                  value:
+                    error:
+                      code: INVALID_REQUEST
+                      message: Request body is not valid JSON.
+                expires_in_minutes_invalid:
+                  summary: expires_in_minutes is missing or out of range
+                  value:
+                    error:
+                      code: EXPIRES_IN_MINUTES_INVALID
+                      message: expires_in_minutes must be a positive integer.
+        "401":
+          $ref: "#/components/responses/AdminUnauthorizedError"
+
+  /api/devices:
+    post:
+      tags:
+        - Android App API
+      operationId: registerDevice
+      summary: Register a device from a DeviceRegistrationToken
+      description: |
+        Registers a device using the identifier and registration_secret from
+        the custom scheme link. The app must obtain an FCM token and a required
+        display_name before calling this API.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCreateRequest"
+            examples:
+              default:
+                value:
+                  identifier: drt_01HX9A2W...
+                  registration_secret: drs_4Gk...
+                  display_name: Pixel 8 QA-01
+                  fcm_push_token: fcm:APA91b...
+      responses:
+        "201":
+          $ref: "#/components/responses/DeviceCreateResponse"
+        "400":
+          description: Request body was rejected before any registration was attempted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                display_name_required:
+                  value:
+                    error:
+                      code: DISPLAY_NAME_REQUIRED
+                      message: display_name is required.
+                fcm_push_token_required:
+                  value:
+                    error:
+                      code: FCM_PUSH_TOKEN_REQUIRED
+                      message: fcm_push_token is required.
+                invalid_request:
+                  summary: Body is missing or not valid JSON
+                  value:
+                    error:
+                      code: INVALID_REQUEST
+                      message: Request body is not valid JSON.
+        "403":
+          description: |
+            The same identifier already has a registered device. devices /
+            device_profiles / fcm_push_tokens / device_credentials are not modified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                device_already_registered:
+                  value:
+                    error:
+                      code: DEVICE_ALREADY_REGISTERED
+                      message: A device already exists for this identifier.
+        "404":
+          description: |
+            Registration link is expired, has already been consumed, or the secret is
+            incorrect. The three cases are intentionally folded into one response so
+            that link-state probing is not possible from the client.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                registration_token_not_found:
+                  value:
+                    error:
+                      code: REGISTRATION_TOKEN_NOT_FOUND
+                      message: Registration link is expired, already used, or the secret is incorrect.
+
+  /api/devices/{identifier}/policy:
+    put:
+      tags:
+        - Admin API
+      operationId: updateDevicePolicy
+      summary: Update a device policy
+      description: |
+        Replaces the target device's desired app state by creating a new immutable
+        device_policy_revision and updating the device policy's current revision.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdentifier"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DevicePolicyUpdateRequest"
+            examples:
+              default:
+                value:
+                  entries:
+                    - package_name: com.example.appa
+                      release:
+                        id: 301
+                      install_mode: FORCE_INSTALLED
+                    - package_name: com.example.appd
+                      release:
+                        id: 304
+                      install_mode: AVAILABLE
+      responses:
+        "200":
+          $ref: "#/components/responses/DevicePolicyUpdateResponse"
+        "400":
+          description: Request body was rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid_request:
+                  summary: Body is missing or not valid JSON
+                  value:
+                    error:
+                      code: INVALID_REQUEST
+                      message: Request body is not valid JSON.
+                install_mode_invalid:
+                  summary: install_mode is not FORCE_INSTALLED or AVAILABLE
+                  value:
+                    error:
+                      code: INSTALL_MODE_INVALID
+                      message: install_mode must be one of FORCE_INSTALLED, AVAILABLE.
+                release_not_found_for_entry:
+                  summary: Referenced release.id does not exist
+                  value:
+                    error:
+                      code: RELEASE_NOT_FOUND_FOR_ENTRY
+                      message: One or more entries reference a release that does not exist.
+        "401":
+          $ref: "#/components/responses/AdminUnauthorizedError"
+        "404":
+          description: Device was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                device_not_found:
+                  value:
+                    error:
+                      code: DEVICE_NOT_FOUND
+                      message: Device was not found.
+
+  /api/devices/me/policy:
+    get:
+      tags:
+        - Android App API
+      operationId: getDevicePolicy
+      summary: Get the current policy for the authenticated device
+      description: |
+        Returns the latest DevicePolicy snapshot for the authenticated companion app.
+        The device stores this as its fetched policy snapshot.
+
+        Devices that do not yet have a DevicePolicy receive a 200 response with an
+        empty `entries` array. 404 is only returned when the device itself can no
+        longer be resolved.
+      security:
+        - DeviceBearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/DevicePolicyFetchResponse"
+        "401":
+          $ref: "#/components/responses/DeviceUnauthorizedError"
+        "404":
+          description: Device policy could not be resolved for the authenticated device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                device_policy_not_found:
+                  value:
+                    error:
+                      code: DEVICE_POLICY_NOT_FOUND
+                      message: Device policy could not be resolved for the authenticated device.
+
+  /api/devices/me/policy_sync_results:
+    post:
+      tags:
+        - Android App API
+      operationId: createPolicySyncResult
+      summary: Report a device policy sync result
+      description: |
+        Records the actions the companion app performed while applying a fetched
+        DevicePolicy. Reporting a result does not rewrite the policy, releases, or
+        push token records.
+      security:
+        - DeviceBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PolicySyncResultCreateRequest"
+            examples:
+              default:
+                value:
+                  device_policy_revision:
+                    id: 901
+                  fetched_policy_updated_at: "2026-05-19T10:12:04+09:00"
+                  applied_policy_updated_at: "2026-05-19T10:13:20+09:00"
+                  actions:
+                    - package_name: com.example.appa
+                      action: INSTALL
+                      route: DEVICE_OWNER
+                      result: INSTALLED
+                    - package_name: com.example.legacy
+                      action: UNINSTALL
+                      route: PACKAGE_MANAGER
+                      result: UNINSTALLED
+      responses:
+        "201":
+          $ref: "#/components/responses/PolicySyncResultDetailResponse"
+        "400":
+          description: Request body was rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid_request:
+                  summary: Body is missing or not valid JSON
+                  value:
+                    error:
+                      code: INVALID_REQUEST
+                      message: Request body is not valid JSON.
+                device_policy_revision_required:
+                  summary: device_policy_revision.id is missing
+                  value:
+                    error:
+                      code: DEVICE_POLICY_REVISION_REQUIRED
+                      message: device_policy_revision.id is required.
+                actions_invalid:
+                  summary: actions array is missing or contains invalid entries
+                  value:
+                    error:
+                      code: ACTIONS_INVALID
+                      message: actions must be an array of valid PolicySyncAction objects.
+        "401":
+          $ref: "#/components/responses/DeviceUnauthorizedError"
+        "404":
+          description: The referenced device_policy_revision was not found for this device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                device_policy_revision_not_found:
+                  value:
+                    error:
+                      code: DEVICE_POLICY_REVISION_NOT_FOUND
+                      message: The referenced device_policy_revision was not found for this device.
+
+components:
+  securitySchemes:
+    AdminBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-admin-token
+      description: Bearer token issued for the administrator web UI.
+    DeviceBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-device-token
+      description: Bearer token issued per registered Android companion app/device.
+
+  parameters:
+    DeviceIdentifier:
+      name: identifier
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Device identifier (equal to the consumed DeviceRegistrationToken identifier).
+      example: drt_01HX9A2W...
+    ReleaseId:
+      name: release_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+      description: ActiveRecord ID of the release.
+      example: 301
+
+  responses:
+    ArtifactCreateResponse:
+      description: APK artifact, app, and release were created or updated.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ArtifactCreateResponse"
+          examples:
+            new_release:
+              summary: First upload for a new package
+              value:
+                artifact:
+                  id: 101
+                  file:
+                    storage: s3
+                    key: artifacts/101/qa-camera-2.4.0-42.apk
+                    filename: qa-camera-2.4.0-42.apk
+                    content_type: application/vnd.android.package-archive
+                  sha256: 58f7d4...
+                  size_bytes: 50541312
+                  signing_cert_sha256: 9a5c0e...
+                app:
+                  id: 12
+                  package_name: com.example.qacamera
+                  action: created
+                release:
+                  id: 301
+                  app_id: 12
+                  artifact_id: 101
+                  package_name: com.example.qacamera
+                  version_code: 42
+                  version_name: 2.4.0-qa
+                  action: created
+            replace_same_version:
+              summary: Re-uploading the same version_code replaces the artifact
+              value:
+                artifact:
+                  id: 102
+                  file:
+                    storage: s3
+                    key: artifacts/102/qa-camera-2.4.0-42-hotfix.apk
+                    filename: qa-camera-2.4.0-42-hotfix.apk
+                    content_type: application/vnd.android.package-archive
+                  sha256: a91c0b...
+                  size_bytes: 50621984
+                  signing_cert_sha256: 9a5c0e...
+                app:
+                  id: 12
+                  package_name: com.example.qacamera
+                  action: found
+                release:
+                  id: 301
+                  app_id: 12
+                  artifact_id: 102
+                  package_name: com.example.qacamera
+                  version_code: 42
+                  version_name: 2.4.0-qa
+                  action: updated
+    DeviceCreateResponse:
+      description: Device was registered.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DeviceCreateResponse"
+    DevicePolicyFetchResponse:
+      description: Current device policy for the authenticated device.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DevicePolicyFetchResponse"
+    DevicePolicyUpdateResponse:
+      description: Device policy was updated.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DevicePolicyUpdateResponse"
+    DeviceRegistrationTokenDetailResponse:
+      description: Device registration link was created.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DeviceRegistrationTokenDetailResponse"
+    HealthResponse:
+      description: Server is healthy.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HealthResponse"
+    PolicySyncResultDetailResponse:
+      description: Policy sync result was recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PolicySyncResultDetailResponse"
+    ReleaseArtifactUrlDetailResponse:
+      description: Artifact download URL detail.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReleaseArtifactUrlDetailResponse"
+    AdminUnauthorizedError:
+      description: Admin bearer token is missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            admin_auth_required:
+              summary: No Authorization header
+              value:
+                error:
+                  code: ADMIN_AUTH_REQUIRED
+                  message: Admin bearer token is required.
+            admin_auth_invalid:
+              summary: Token is present but does not authenticate
+              value:
+                error:
+                  code: ADMIN_AUTH_INVALID
+                  message: Admin bearer token is invalid or has been revoked.
+    DeviceUnauthorizedError:
+      description: Device bearer token is missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            device_auth_required:
+              summary: No Authorization header
+              value:
+                error:
+                  code: DEVICE_AUTH_REQUIRED
+                  message: Device bearer token is required.
+            device_auth_invalid:
+              summary: Token is present but does not authenticate
+              value:
+                error:
+                  code: DEVICE_AUTH_INVALID
+                  message: Device bearer token is invalid or has been revoked. Re-register the device.
+
+  schemas:
+    App:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - package_name
+        - action
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        package_name:
+          type: string
+          example: com.example.qacamera
+        action:
+          $ref: "#/components/schemas/AppResolveAction"
+
+    AppResolveAction:
+      type: string
+      description: |
+        Whether the apps row was created in this request or an existing row was
+        re-used. The apps table holds package identity and is not destroyed when
+        releases are deleted, so "found" is normal for subsequent uploads.
+      enum:
+        - created
+        - found
+
+    Artifact:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - file
+        - sha256
+        - size_bytes
+        - signing_cert_sha256
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        file:
+          $ref: "#/components/schemas/ArtifactFile"
+        sha256:
+          type: string
+        size_bytes:
+          type: integer
+          minimum: 0
+        signing_cert_sha256:
+          type: string
+
+    ArtifactFile:
+      type: object
+      additionalProperties: false
+      required:
+        - storage
+        - key
+        - filename
+        - content_type
+      properties:
+        storage:
+          type: string
+          description: Storage backend identifier. Currently only "s3".
+          enum:
+            - s3
+        key:
+          type: string
+          example: artifacts/101/qa-camera-2.4.0-42.apk
+        filename:
+          type: string
+          example: qa-camera-2.4.0-42.apk
+        content_type:
+          type: string
+          example: application/vnd.android.package-archive
+
+    ArtifactCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - file
+      properties:
+        file:
+          type: string
+          format: binary
+          description: |
+            APK file. Sent as a single multipart/form-data part named "file".
+            The server parses package_name, version_code, version_name, sha256, and
+            signing certificate from this file. Build-source metadata (branch,
+            commit_sha, build_number) and changelog text are not accepted.
+
+    ArtifactCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - artifact
+        - app
+        - release
+      properties:
+        artifact:
+          $ref: "#/components/schemas/Artifact"
+        app:
+          $ref: "#/components/schemas/App"
+        release:
+          $ref: "#/components/schemas/Release"
+
+    DeviceCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - identifier
+        - registration_secret
+        - display_name
+        - fcm_push_token
+      properties:
+        identifier:
+          type: string
+          example: drt_01HX9A2W...
+        registration_secret:
+          type: string
+          example: drs_4Gk...
+        display_name:
+          type: string
+          minLength: 1
+          example: Pixel 8 QA-01
+        fcm_push_token:
+          type: string
+          minLength: 1
+          example: fcm:APA91b...
+
+    DeviceCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - device
+      properties:
+        device:
+          $ref: "#/components/schemas/RegisteredDevice"
+
+    RegisteredDevice:
+      type: object
+      additionalProperties: false
+      required:
+        - identifier
+        - device_auth_token
+        - profile
+        - registered_at
+      properties:
+        identifier:
+          type: string
+          example: drt_01HX9A2W...
+        device_auth_token:
+          type: string
+          description: |
+            Opaque bearer token. Returned in plaintext only once here; the server
+            stores only a hash. Subsequent companion-app requests use this as the
+            Bearer token for DeviceBearerAuth.
+          example: dat_6m2...
+        profile:
+          $ref: "#/components/schemas/DeviceProfile"
+        registered_at:
+          type: string
+          format: date-time
+
+    DevicePolicy:
+      type: object
+      additionalProperties: false
+      required:
+        - identifier
+        - current_revision
+        - updated_at
+        - entries
+      properties:
+        identifier:
+          type: string
+          example: drt_01HX9A2W...
+        current_revision:
+          $ref: "#/components/schemas/DevicePolicyRevisionReference"
+        updated_at:
+          type: string
+          format: date-time
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/DevicePolicyUpdatedEntry"
+
+    DevicePolicyEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - package_name
+        - release
+        - version_code
+        - install_mode
+      properties:
+        package_name:
+          type: string
+          example: com.example.appa
+        release:
+          $ref: "#/components/schemas/ReleaseReference"
+        version_code:
+          type: integer
+          minimum: 1
+        install_mode:
+          $ref: "#/components/schemas/InstallMode"
+
+    DevicePolicyFetchResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - device_policy_revision
+        - updated_at
+        - server_time
+        - entries
+      properties:
+        device_policy_revision:
+          $ref: "#/components/schemas/DevicePolicyRevisionReference"
+        updated_at:
+          type: string
+          format: date-time
+        server_time:
+          type: string
+          format: date-time
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/DevicePolicyEntry"
+
+    DevicePolicyRevisionReference:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+      properties:
+        id:
+          type: integer
+          minimum: 1
+
+    DevicePolicyUpdateEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - package_name
+        - release
+        - install_mode
+      properties:
+        package_name:
+          type: string
+          example: com.example.appa
+        release:
+          $ref: "#/components/schemas/ReleaseReference"
+        install_mode:
+          $ref: "#/components/schemas/InstallMode"
+
+    DevicePolicyUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - entries
+      properties:
+        entries:
+          type: array
+          minItems: 0
+          items:
+            $ref: "#/components/schemas/DevicePolicyUpdateEntry"
+
+    DevicePolicyUpdateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - device_policy
+        - push
+      properties:
+        device_policy:
+          $ref: "#/components/schemas/DevicePolicy"
+        push:
+          $ref: "#/components/schemas/PolicyUpdatedPush"
+
+    DevicePolicyUpdatedEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - package_name
+        - release
+        - version_code
+        - install_mode
+      properties:
+        package_name:
+          type: string
+          example: com.example.appa
+        release:
+          $ref: "#/components/schemas/ReleaseReference"
+        version_code:
+          type: integer
+          minimum: 1
+        install_mode:
+          $ref: "#/components/schemas/InstallMode"
+
+    DeviceProfile:
+      type: object
+      additionalProperties: false
+      required:
+        - display_name
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          example: Pixel 8 QA-01
+
+    DeviceRegistrationToken:
+      type: object
+      additionalProperties: false
+      required:
+        - identifier
+        - registration_secret
+        - issued_at
+        - expires_at
+        - deep_link
+      properties:
+        identifier:
+          type: string
+          example: drt_01HX9A2W...
+        registration_secret:
+          type: string
+          description: |
+            One-time secret returned in plaintext only in this response. The server
+            stores only a hash. Embed this in the QR code / deep link together with
+            the identifier.
+          example: drs_4Gk...
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        deep_link:
+          type: string
+          format: uri
+          example: apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...
+
+    DeviceRegistrationTokenCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - expires_in_minutes
+      properties:
+        expires_in_minutes:
+          type: integer
+          minimum: 1
+          example: 30
+
+    DeviceRegistrationTokenDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - device_registration_token
+      properties:
+        device_registration_token:
+          $ref: "#/components/schemas/DeviceRegistrationToken"
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorBody"
+
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code in SCREAMING_SNAKE_CASE.
+          example: INVALID_APK
+        message:
+          type: string
+          description: Human-readable error message in English.
+          example: file must be a parseable APK.
+
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        service:
+          type: string
+
+    InstallAction:
+      type: string
+      enum:
+        - INSTALL
+        - UNINSTALL
+
+    InstallMode:
+      type: string
+      enum:
+        - FORCE_INSTALLED
+        - AVAILABLE
+
+    InstallResult:
+      type: string
+      enum:
+        - INSTALLED
+        - UNINSTALLED
+        - FAILED
+        - SKIPPED
+
+    InstallRoute:
+      type: string
+      enum:
+        - DEVICE_OWNER
+        - PACKAGE_MANAGER
+
+    PolicySyncAction:
+      type: object
+      additionalProperties: false
+      required:
+        - package_name
+        - action
+        - route
+        - result
+      properties:
+        package_name:
+          type: string
+          example: com.example.appa
+        action:
+          $ref: "#/components/schemas/InstallAction"
+        route:
+          $ref: "#/components/schemas/InstallRoute"
+        result:
+          $ref: "#/components/schemas/InstallResult"
+
+    PolicySyncResult:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - device_policy_revision
+        - fetched_policy_updated_at
+        - applied_policy_updated_at
+        - reported_at
+        - actions
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        device_policy_revision:
+          $ref: "#/components/schemas/DevicePolicyRevisionReference"
+        fetched_policy_updated_at:
+          type: string
+          format: date-time
+        applied_policy_updated_at:
+          type: string
+          format: date-time
+        reported_at:
+          type: string
+          format: date-time
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicySyncAction"
+
+    PolicySyncResultCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - device_policy_revision
+        - fetched_policy_updated_at
+        - applied_policy_updated_at
+        - actions
+      properties:
+        device_policy_revision:
+          $ref: "#/components/schemas/DevicePolicyRevisionReference"
+        fetched_policy_updated_at:
+          type: string
+          format: date-time
+        applied_policy_updated_at:
+          type: string
+          format: date-time
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicySyncAction"
+
+    PolicySyncResultDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - policy_sync_result
+      properties:
+        policy_sync_result:
+          $ref: "#/components/schemas/PolicySyncResult"
+
+    PolicyUpdatedPush:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - notification
+      properties:
+        type:
+          type: string
+          enum:
+            - POLICY_UPDATED
+        notification:
+          type: "null"
+          description: |
+            Always null. The FCM payload is a data message only; the companion app
+            uses it as a refetch trigger and does not present a user-facing
+            notification.
+
+    Release:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - app_id
+        - artifact_id
+        - package_name
+        - version_code
+        - version_name
+        - action
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        app_id:
+          type: integer
+          minimum: 1
+        artifact_id:
+          type: integer
+          minimum: 1
+        package_name:
+          type: string
+          example: com.example.qacamera
+        version_code:
+          type: integer
+          minimum: 1
+        version_name:
+          type: string
+          example: 2.4.0-qa
+        action:
+          $ref: "#/components/schemas/ReleaseUpsertAction"
+
+    ReleaseUpsertAction:
+      type: string
+      description: |
+        Whether the release row was created (new app_id + version_code) or updated
+        in place (same app_id + version_code, artifact_id swapped to the newly
+        uploaded artifact). Re-uploading the same version_code is treated as a
+        replacement: the previous artifact is destroyed transitively.
+      enum:
+        - created
+        - updated
+
+    ReleaseArtifactUrl:
+      type: object
+      additionalProperties: false
+      required:
+        - release
+        - artifact_url
+        - expires_at
+      properties:
+        release:
+          $ref: "#/components/schemas/ReleaseReference"
+        artifact_url:
+          type: string
+          format: uri
+          description: Short-lived (presigned) download URL for the APK artifact.
+        expires_at:
+          type: string
+          format: date-time
+
+    ReleaseArtifactUrlDetailResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - release_artifact_url
+      properties:
+        release_artifact_url:
+          $ref: "#/components/schemas/ReleaseArtifactUrl"
+
+    ReleaseReference:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+      properties:
+        id:
+          type: integer
+          minimum: 1

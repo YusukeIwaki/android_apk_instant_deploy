@@ -151,27 +151,27 @@
     </style>
   </head>
   <body>
-    <div class="pipeline" aria-label="アプリ登録フロー">
+    <div class="pipeline" aria-label="シンプルなアプリ登録フロー">
       <div class="packet" aria-hidden="true"></div>
       <div class="stage" data-step="1">
-        <strong>APK受領</strong>
-        <span>CIまたは開発者がAPKとchangelog、build情報を登録する。</span>
+        <strong>APK選択</strong>
+        <span>管理者またはCIが登録したいAPKファイルだけを選ぶ。</span>
       </div>
       <div class="stage" data-step="2">
-        <strong>メタデータ抽出</strong>
-        <span>packageName、versionCode、署名、sha256、サイズを確定する。</span>
+        <strong>1回のPOST</strong>
+        <span>multipart/form-dataのfileとしてinput[:file]をAPIへ送る。</span>
       </div>
       <div class="stage" data-step="3">
-        <strong>受け入れ判定</strong>
-        <span>署名互換性、downgrade、既存releaseとの重複を確認する。</span>
+        <strong>S3保存</strong>
+        <span>APIサーバーが受け取ったファイルをそのままS3へ保存する。</span>
       </div>
       <div class="stage" data-step="4">
-        <strong>Release化</strong>
-        <span>artifact storageとrelease catalogに登録し、配信対象にできる状態にする。</span>
+        <strong>DB確定</strong>
+        <span>artifactsを作り、appsとreleasesを必要に応じて作成・更新する。</span>
       </div>
       <div class="stage" data-step="5">
-        <strong>AMAPI準備</strong>
-        <span>Managed端末向けにCUSTOM設定とfingerprintの整合性を確認する。</span>
+        <strong>Release削除</strong>
+        <span>Release destroyからArtifactとS3 objectの削除へ推移する。</span>
       </div>
     </div>
     <script>

@@ -234,11 +234,11 @@
     </style>
   </head>
   <body>
-    <div class="chrome" aria-label="Chrome風の管理画面でAPKアップロード先を作成">
+    <div class="chrome" aria-label="Chrome風の管理画面でAPKファイルをアップロード">
       <div class="chrome-top" aria-hidden="true">
         <div class="traffic"><span></span><span></span><span></span></div>
         <div class="tab">Distribution Admin</div>
-        <div class="address">https://distribution.example.test/admin/apps/releases/new</div>
+        <div class="address">https://distribution.example.test/admin/apps/artifacts/new</div>
       </div>
       <div class="admin">
         <aside class="nav">
@@ -249,24 +249,19 @@
           <span>Audit log</span>
         </aside>
         <main class="main">
-          <h1>APK登録を開始</h1>
+          <h1>APKを登録</h1>
           <div class="layout">
             <section>
               <label>APKファイル</label>
-              <div class="drop">qa-camera-2.4.0-42.apk</div>
-              <label>Changelog</label>
-              <div class="field">Camera upload retry and QA logging fixes.</div>
-              <label>Build source</label>
-              <div class="field">main / 8f4c2a1 / build 42</div>
-              <span class="button">アップロード先を作成</span>
-              <div class="db-note">この操作だけではapps、artifacts、releasesは作成されません。</div>
+              <div class="drop">qa-camera-2.4.0-42.apk をドラッグ&amp;ドロップ または クリックして選択</div>
+              <span class="button">アップロードして登録</span>
+              <div class="db-note">APKは1回のアップロードで登録されます。バージョン情報や署名はファイルから自動で読み取ります。</div>
             </section>
             <aside class="result">
-              <h2>Shrine cache multipart issued</h2>
-              <div class="url">storage: cache</div>
-              <div class="url">key: apk_uploads/01HX9J6/qa-camera-2.4.0-42.apk</div>
-              <div class="url">sign / complete endpoints ready</div>
-              <span class="pill">expires in 15 minutes</span>
+              <h2>選択中のファイル</h2>
+              <div class="url">qa-camera-2.4.0-42.apk</div>
+              <div class="url">48.2 MB</div>
+              <span class="pill">未アップロード</span>
             </aside>
           </div>
         </main>

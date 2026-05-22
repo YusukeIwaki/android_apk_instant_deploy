@@ -237,11 +237,11 @@
     </style>
   </head>
   <body>
-    <div class="chrome" aria-label="Chrome風の管理画面でアプリ登録結果を表示">
+    <div class="chrome" aria-label="Chrome風の管理画面でRelease削除とS3 cleanupを表示">
       <div class="chrome-top" aria-hidden="true">
         <div class="traffic"><span></span><span></span><span></span></div>
         <div class="tab">Distribution Admin</div>
-        <div class="address">https://distribution.example.test/admin/apps/releases/result</div>
+        <div class="address">https://distribution.example.test/admin/apps/releases/301/delete</div>
       </div>
       <div class="admin">
         <aside class="nav">
@@ -252,30 +252,27 @@
           <span>Audit log</span>
         </aside>
         <main class="main">
-          <h1>登録結果</h1>
+          <h1>バージョン削除</h1>
           <div class="result-grid">
             <section class="panel success">
-              <h2>Release registered</h2>
-              <p class="message">releases行が作成され、配信ジョブで選択できるようになりました。</p>
+              <h2>削除しました</h2>
+              <p class="message">このバージョンは配信できなくなりました。APKファイルもサーバーから削除しています。</p>
               <dl class="kv">
-                <div><dt>release.id</dt><dd>301</dd></div>
-                <div><dt>app.id</dt><dd>12</dd></div>
-                <div><dt>versionCode</dt><dd>42</dd></div>
-                <div><dt>AMAPI</dt><dd>CUSTOM / fingerprint matched</dd></div>
+                <div><dt>アプリ</dt><dd>com.example.qacamera</dd></div>
+                <div><dt>バージョン</dt><dd>2.4.0-qa (42)</dd></div>
+                <div><dt>削除日時</dt><dd>2026-05-21 09:10</dd></div>
               </dl>
-              <span class="badge green">catalog updated</span>
+              <span class="badge green">完了</span>
             </section>
             <section class="panel reject">
-              <h2>Rejected build</h2>
-              <p class="message">古いversionCodeまたは署名不一致の場合は、release catalogを変更しません。</p>
+              <h2>影響範囲</h2>
+              <p class="message">このバージョンを必須または任意として設定していたデバイスのPolicyからも自動で外れます。</p>
               <dl class="kv">
-                <div><dt>code</dt><dd>VERSION_CODE_NOT_ACCEPTED</dd></div>
-                <div><dt>found</dt><dd>versionCode 39</dd></div>
-                <div><dt>latest</dt><dd>versionCode 42</dd></div>
-                <div><dt>DB</dt><dd>releases unchanged</dd></div>
+                <div><dt>配信対象</dt><dd>12 デバイス</dd></div>
+                <div><dt>必須として配信中</dt><dd>8 デバイス</dd></div>
+                <div><dt>任意として配信中</dt><dd>4 デバイス</dd></div>
               </dl>
-              <span class="badge red">no release created</span>
-              <span class="badge gold">cache file discarded</span>
+              <span class="badge gold">Policy要更新</span>
             </section>
           </div>
         </main>
