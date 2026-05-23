@@ -78,84 +78,102 @@
         margin: 0 0 14px;
       }
 
-      .panel {
-        border: 1px solid var(--line);
-        margin-bottom: 12px;
-        padding: 12px;
+      .shade {
+        background: rgba(20, 28, 40, 0.92);
+        color: #f7f9fa;
+        min-height: 600px;
+        padding: 14px 12px;
       }
 
-      .panel h2 {
-        font-size: 16px;
-        margin: 0 0 6px;
-      }
-
-      .silent {
-        border-left: 5px solid var(--green);
-      }
-
-      .fallback {
-        border-left: 5px solid var(--gold);
-      }
-
-      .panel span {
-        color: var(--muted);
-        display: block;
+      .shade-header {
+        align-items: center;
+        color: #c9cdd1;
+        display: flex;
         font-size: 12px;
-        line-height: 1.45;
+        justify-content: space-between;
+        margin-bottom: 14px;
       }
 
       .notification {
         background: #fff;
-        border: 1px solid #c9cdd1;
-        box-shadow: 0 8px 18px rgba(27, 27, 27, 0.16);
-        margin-top: 12px;
-        padding: 12px;
+        border-radius: 16px;
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+        color: var(--ink);
+        margin-bottom: 10px;
+        overflow: hidden;
+        padding: 14px;
       }
 
-      .notification b {
-        display: block;
+      .notification-app {
+        align-items: center;
+        color: var(--muted);
+        display: flex;
+        font-size: 11px;
+        gap: 6px;
+        margin-bottom: 6px;
+        text-transform: uppercase;
+      }
+
+      .app-icon {
+        background: var(--blue);
+        border-radius: 4px;
+        height: 16px;
+        width: 16px;
+      }
+
+      .notification-title {
+        font-size: 15px;
+        font-weight: 700;
         margin-bottom: 3px;
       }
 
-      .notification small {
+      .notification-body {
         color: var(--muted);
-        display: block;
+        font-size: 13px;
         line-height: 1.45;
       }
 
-      .state {
-        background: #e7f6f8;
-        border-left: 5px solid var(--blue);
-        color: #3d4551;
+      .notification-actions {
+        border-top: 1px solid var(--line);
+        display: flex;
+        gap: 16px;
+        margin-top: 10px;
+        padding-top: 8px;
+      }
+
+      .notification-actions span {
+        color: var(--blue);
         font-size: 13px;
-        line-height: 1.45;
-        margin-top: 12px;
-        padding: 10px;
+        font-weight: 700;
       }
     </style>
   </head>
   <body>
-    <div class="phone" aria-label="スマートフォン上の強制インストール経路">
+    <div class="phone" aria-label="スマートフォン上の通知シェードに表示される必須アプリのインストール通知">
       <div class="screen">
         <div class="statusbar"><span>10:14</span><span>5G 100%</span></div>
-        <div class="bar">APK Remote Companion</div>
-        <div class="body">
-          <h1>必須アプリの入れ方</h1>
-          <p>端末の権限に合わせて、自動か手動のどちらかで進みます。</p>
-          <section class="panel silent">
-            <h2>自動インストールが可能な端末</h2>
-            <span>App A をユーザー操作なしで入れます。配信対象から外れた Legacy App も自動で削除します。</span>
-          </section>
-          <section class="panel fallback">
-            <h2>自動インストールができない端末</h2>
-            <span>下の通知が表示され続けます。タップして手動でインストールしてください。</span>
-            <div class="notification" aria-label="必須アプリのインストール通知">
-              <b>必須アプリのインストールが必要です</b>
-              <small>タップして App A をインストールしてください。インストールが終わるまでこの通知は残ります。</small>
+        <div class="shade">
+          <div class="shade-header">
+            <span>通知</span>
+            <span>10:14</span>
+          </div>
+          <div class="notification" aria-label="必須アプリのインストール通知">
+            <div class="notification-app"><span class="app-icon" aria-hidden="true"></span>APK Remote Companion</div>
+            <div class="notification-title">必須アプリのインストールが必要です</div>
+            <div class="notification-body">タップして App A をインストールしてください。</div>
+            <div class="notification-actions">
+              <span>インストール</span>
+              <span>あとで</span>
             </div>
-          </section>
-          <div class="state">
-            必須アプリが揃うまで、アプリを起動するたびに再確認します。任意アプリ (App D) のように一覧にあるだけのアプリは、ユーザー自身が選んだときだけインストールされます。
+          </div>
+          <div class="notification">
+            <div class="notification-app"><span class="app-icon" aria-hidden="true"></span>APK Remote Companion</div>
+            <div class="notification-title">必須アプリのインストールが必要です</div>
+            <div class="notification-body">タップして App C をインストールしてください。</div>
+            <div class="notification-actions">
+              <span>インストール</span>
+              <span>あとで</span>
+            </div>
           </div>
         </div>
       </div>

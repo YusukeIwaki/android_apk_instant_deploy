@@ -136,90 +136,46 @@
         padding: 20px;
       }
 
-      .layout {
-        display: grid;
-        gap: 16px;
-        grid-template-columns: minmax(0, 1fr) 280px;
+      table {
+        border-collapse: collapse;
+        width: 100%;
       }
 
-      .metadata {
-        border: 1px solid var(--line);
-      }
-
-      .metadata div {
-        display: grid;
-        gap: 10px;
-        grid-template-columns: 150px minmax(0, 1fr);
-        padding: 10px 12px;
-      }
-
-      .metadata div + div {
-        border-top: 1px solid var(--line);
-      }
-
-      .metadata dt {
-        color: var(--muted);
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
         font-size: 13px;
+        padding: 11px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: var(--bg);
         font-weight: 700;
       }
 
-      .metadata dd {
+      tr.new td {
+        background: #ecf3ec;
+      }
+
+      .pkg {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 13px;
-        margin: 0;
-        overflow-wrap: anywhere;
       }
 
-      .button {
-        background: var(--blue);
-        color: #fff;
-        display: inline-block;
-        font-weight: 700;
-        margin-top: 16px;
-        padding: 10px 14px;
+      .version {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
 
-      .checklist {
-        border: 1px solid var(--line);
-      }
-
-      .row {
-        display: grid;
-        gap: 10px;
-        grid-template-columns: 26px minmax(0, 1fr);
-        padding: 10px;
-      }
-
-      .row + .row {
-        border-top: 1px solid var(--line);
-      }
-
-      .icon {
+      .badge {
         background: var(--green);
         color: #fff;
-        display: grid;
-        font-size: 12px;
+        display: inline-block;
+        font-size: 11px;
         font-weight: 700;
-        height: 26px;
-        place-items: center;
-        width: 26px;
-      }
-
-      .row span {
-        color: var(--muted);
-        display: block;
-        font-size: 12px;
-        margin-top: 2px;
-      }
-
-      .note {
-        background: #e7f6f8;
-        border-left: 4px solid var(--blue);
-        color: #3d4551;
-        font-size: 13px;
-        line-height: 1.45;
-        margin-top: 12px;
-        padding: 9px 10px;
+        margin-left: 6px;
+        padding: 2px 6px;
       }
 
       @media (max-width: 720px) {
@@ -231,20 +187,18 @@
           display: none;
         }
 
-        .admin,
-        .layout,
-        .metadata div {
+        .admin {
           grid-template-columns: 1fr;
         }
       }
     </style>
   </head>
   <body>
-    <div class="chrome" aria-label="Chrome風の管理画面でappとreleaseを確定">
+    <div class="chrome" aria-label="Chrome風の管理画面でアプリ一覧を表示">
       <div class="chrome-top" aria-hidden="true">
         <div class="traffic"><span></span><span></span><span></span></div>
         <div class="tab">Distribution Admin</div>
-        <div class="address">https://distribution.example.test/admin/apps/artifacts/101</div>
+        <div class="address">https://distribution.example.test/admin/apps</div>
       </div>
       <div class="admin">
         <aside class="nav">
@@ -255,33 +209,33 @@
           <span>Audit log</span>
         </aside>
         <main class="main">
-          <h1>登録結果</h1>
-          <div class="layout">
-            <section>
-              <dl class="metadata">
-                <div><dt>パッケージ名</dt><dd>com.example.qacamera</dd></div>
-                <div><dt>バージョン</dt><dd>2.4.0-qa (42)</dd></div>
-                <div><dt>ファイル</dt><dd>qa-camera-2.4.0-42.apk</dd></div>
-                <div><dt>SHA-256</dt><dd>58f7d4b7e9...</dd></div>
-                <div><dt>署名証明書</dt><dd>9a5c0e14b2...</dd></div>
-              </dl>
-              <span class="button">配信設定を開く</span>
-            </section>
-            <aside class="checklist">
-              <div class="row">
-                <div class="icon">OK</div>
-                <div><b>新規アプリ</b><span>「com.example.qacamera」を登録しました</span></div>
-              </div>
-              <div class="row">
-                <div class="icon">OK</div>
-                <div><b>新規バージョン</b><span>v2.4.0-qa (42) を追加しました</span></div>
-              </div>
-              <div class="row">
-                <div class="icon">OK</div>
-                <div><b>配信可能</b><span>デバイスのPolicyから参照できます</span></div>
-              </div>
-            </aside>
-          </div>
+          <h1>アプリ一覧</h1>
+          <table aria-label="登録されたアプリの一覧">
+            <thead>
+              <tr>
+                <th>パッケージ名</th>
+                <th>最新バージョン</th>
+                <th>リリース数</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="new">
+                <td class="pkg">com.example.qacamera<span class="badge">NEW</span></td>
+                <td class="version">2.4.0-qa (42)</td>
+                <td>1</td>
+              </tr>
+              <tr>
+                <td class="pkg">com.example.scanner</td>
+                <td class="version">1.3.0 (7)</td>
+                <td>2</td>
+              </tr>
+              <tr>
+                <td class="pkg">com.example.kiosk</td>
+                <td class="version">3.1.0 (12)</td>
+                <td>1</td>
+              </tr>
+            </tbody>
+          </table>
         </main>
       </div>
     </div>

@@ -8,31 +8,80 @@ const updatePolicyCurl = `curl -X PUT https://distribution.example.test/api/devi
   -H "Content-Type: application/json" \\
   -d '{
     "entries": [
-      { "package_name": "com.example.appa", "release": { "id": 301 }, "install_mode": "FORCE_INSTALLED" },
-      { "package_name": "com.example.appb", "release": { "id": 302 }, "install_mode": "FORCE_INSTALLED" },
-      { "package_name": "com.example.appc", "release": { "id": 303 }, "install_mode": "FORCE_INSTALLED" },
-      { "package_name": "com.example.appd", "release": { "id": 304 }, "install_mode": "AVAILABLE" }
+      { "app": { "id": 12 }, "install_mode": "FORCE_INSTALLED" },
+      { "app": { "id": 13 }, "install_mode": "FORCE_INSTALLED" },
+      { "app": { "id": 14 }, "install_mode": "FORCE_INSTALLED" },
+      { "app": { "id": 15 }, "install_mode": "AVAILABLE" }
     ]
-  }'`;
+  }'
+
+# entries は app の id と install_mode のみ。
+# version_code や release_id は指定しない (端末が GET 時にサーバーから最新release情報を受け取る)。`;
 
 const updatePolicyResponse = `HTTP/1.1 200 OK
 {
   "device_policy": {
     "identifier": "drt_01HX9A2W...",
     "current_revision": { "id": 901 },
-    "updated_at": "2026-05-19T10:12:00+09:00",
+    "updated_at": "2026-05-23T10:12:00+09:00",
     "entries": [
-      { "package_name": "com.example.appa", "release": { "id": 301 }, "version_code": 1, "install_mode": "FORCE_INSTALLED" },
-      { "package_name": "com.example.appb", "release": { "id": 302 }, "version_code": 1, "install_mode": "FORCE_INSTALLED" },
-      { "package_name": "com.example.appc", "release": { "id": 303 }, "version_code": 1, "install_mode": "FORCE_INSTALLED" },
-      { "package_name": "com.example.appd", "release": { "id": 304 }, "version_code": 1, "install_mode": "AVAILABLE" }
+      {
+        "app": { "id": 12, "package_name": "com.example.appa", "deleted_at": null },
+        "install_mode": "FORCE_INSTALLED",
+        "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa" }
+      },
+      {
+        "app": { "id": 13, "package_name": "com.example.appb", "deleted_at": null },
+        "install_mode": "FORCE_INSTALLED",
+        "install": { "release": { "id": 410 }, "version_code": 5, "version_name": "1.2.0" }
+      },
+      {
+        "app": { "id": 14, "package_name": "com.example.appc", "deleted_at": null },
+        "install_mode": "FORCE_INSTALLED",
+        "install": { "release": { "id": 520 }, "version_code": 9, "version_name": "0.9.3" }
+      },
+      {
+        "app": { "id": 15, "package_name": "com.example.appd", "deleted_at": null },
+        "install_mode": "AVAILABLE",
+        "install": { "release": { "id": 612 }, "version_code": 3, "version_name": "0.3.1" }
+      }
     ]
-  },
-  "push": {
-    "type": "POLICY_UPDATED",
-    "notification": null
   }
-}`;
+}
+
+# 応答の install は更新時点で解決した最新リリース。
+# 端末が後で GET したときには更にもう一つ上のリリースが解決される可能性もある。
+# FCM への push 送信は副作用として行うが、応答ボディには含めない (失敗してもログだけ残し、Policy は更新済みのまま)。`;
+
+const adminPolicyGetCurl = `curl -X GET https://distribution.example.test/api/devices/drt_01HX9A2W.../policy \\
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Policy 編集前にポリシー編集画面が呼ぶ admin 用 GET。
+# 削除済みアプリの entry もそのまま含まれ、UI で「削除されたアプリ」として表示する。`;
+
+const adminPolicyGetResponse = `HTTP/1.1 200 OK
+{
+  "device_policy": {
+    "identifier": "drt_01HX9A2W...",
+    "current_revision": { "id": 901 },
+    "updated_at": "2026-05-23T10:12:00+09:00",
+    "entries": [
+      {
+        "app": { "id": 12, "package_name": "com.example.appa", "deleted_at": null },
+        "install_mode": "FORCE_INSTALLED",
+        "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa" }
+      },
+      {
+        "app": { "id": 8, "package_name": "com.example.removed", "deleted_at": "2026-05-21T03:11:00+09:00" },
+        "install_mode": "FORCE_INSTALLED",
+        "install": null
+      }
+    ]
+  }
+}
+
+# 削除済みアプリの entry は install: null。
+# admin UI ではバッジで「削除されたアプリ」と表記する。`;
 
 const fcmDataMessage = `{
   "message": {
@@ -40,13 +89,13 @@ const fcmDataMessage = `{
     "data": {
       "type": "POLICY_UPDATED",
       "identifier": "drt_01HX9A2W...",
-      "device_policy_updated_at": "2026-05-19T10:12:00+09:00"
+      "device_policy_updated_at": "2026-05-23T10:12:00+09:00"
     }
   }
 }
 
 # notification payload は含めない。
-# FCM push はユーザー向け通知ではなく、Policy 再取得の契機だけを与える。`;
+# 端末はこの受信で pending_policy_fetch フラグを立て、次のオンライン時または起動時に Policy 取得を試みる。`;
 
 const fetchPolicyCurl = `curl -X GET https://distribution.example.test/api/devices/me/policy \\
   -H "Authorization: Bearer $DEVICE_AUTH_TOKEN"`;
@@ -54,21 +103,41 @@ const fetchPolicyCurl = `curl -X GET https://distribution.example.test/api/devic
 const fetchPolicyResponse = `HTTP/1.1 200 OK
 {
   "device_policy_revision": { "id": 901 },
-  "updated_at": "2026-05-19T10:12:00+09:00",
-  "server_time": "2026-05-19T10:12:04+09:00",
+  "updated_at": "2026-05-23T10:12:00+09:00",
+  "server_time": "2026-05-23T10:12:04+09:00",
   "entries": [
-    { "package_name": "com.example.appa", "release": { "id": 301 }, "version_code": 1, "install_mode": "FORCE_INSTALLED" },
-    { "package_name": "com.example.appb", "release": { "id": 302 }, "version_code": 1, "install_mode": "FORCE_INSTALLED" },
-    { "package_name": "com.example.appc", "release": { "id": 303 }, "version_code": 1, "install_mode": "FORCE_INSTALLED" },
-    { "package_name": "com.example.appd", "release": { "id": 304 }, "version_code": 1, "install_mode": "AVAILABLE" }
+    {
+      "app": { "id": 12, "package_name": "com.example.appa" },
+      "install_mode": "FORCE_INSTALLED",
+      "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa" }
+    },
+    {
+      "app": { "id": 13, "package_name": "com.example.appb" },
+      "install_mode": "FORCE_INSTALLED",
+      "install": { "release": { "id": 410 }, "version_code": 5, "version_name": "1.2.0" }
+    },
+    {
+      "app": { "id": 14, "package_name": "com.example.appc" },
+      "install_mode": "FORCE_INSTALLED",
+      "install": { "release": { "id": 520 }, "version_code": 9, "version_name": "0.9.3" }
+    },
+    {
+      "app": { "id": 15, "package_name": "com.example.appd" },
+      "install_mode": "AVAILABLE",
+      "install": { "release": { "id": 612 }, "version_code": 3, "version_name": "0.3.1" }
+    }
   ]
-}`;
+}
+
+# 端末向け応答は install が必ず非null。
+# サーバー側で「削除されたアプリ (apps.deleted_at が立っている entry)」は除外する。`;
 
 const downloadUrlCurl = `curl -X GET https://distribution.example.test/api/releases/301/artifact_url \\
   -H "Authorization: Bearer $DEVICE_AUTH_TOKEN"
 
-# FORCE_INSTALLED で未インストール、または要求version_codeと異なる場合だけ取得する。
-# AVAILABLE のApp Dは、ユーザーがアプリ内UIから選んだときだけ取得する。
+# Policy fetch で受け取った install.release.id をそのまま使う。
+# FORCE_INSTALLED で未インストールまたは要求 version_code と異なる場合だけ取得する。
+# AVAILABLE のアプリは、ユーザーがアプリ内 UI から選んだときだけ取得する。
 # 応答は短命の presigned URL を返し、端末は受け取った直後にダウンロードする。`;
 
 const syncReportCurl = `curl -X POST https://distribution.example.test/api/devices/me/policy_sync_results \\
@@ -76,52 +145,72 @@ const syncReportCurl = `curl -X POST https://distribution.example.test/api/devic
   -H "Content-Type: application/json" \\
   -d '{
     "device_policy_revision": { "id": 901 },
-    "fetched_policy_updated_at": "2026-05-19T10:12:04+09:00",
-    "applied_policy_updated_at": "2026-05-19T10:13:20+09:00",
+    "fetched_policy_updated_at": "2026-05-23T10:12:04+09:00",
+    "applied_policy_updated_at": "2026-05-23T10:13:20+09:00",
     "actions": [
       { "package_name": "com.example.appa", "action": "INSTALL", "route": "DEVICE_OWNER", "result": "INSTALLED" },
+      { "package_name": "com.example.appc", "action": "INSTALL", "route": "DEVICE_OWNER", "result": "FAILED", "phase": "INSTALL", "code": "SIGNATURE_MISMATCH" },
+      { "package_name": "com.example.appb", "action": "INSTALL", "route": "DEVICE_OWNER", "result": "FAILED", "phase": "DOWNLOAD", "code": "ARTIFACT_GONE" },
       { "package_name": "com.example.legacy", "action": "UNINSTALL", "route": "PACKAGE_MANAGER", "result": "UNINSTALLED" }
     ]
-  }'`;
+  }'
+
+# 1回の sync attempt が「全 entry について 成功 or リカバリ不能な失敗 で確定」した段階でまとめて送る。
+# リカバリ可能なエラーはこの一括報告には含めない (端末側でリトライ継続中のため)。
+# phase / code は失敗時のみ。下記 errors テーブル参照。`;
 
 const policyFlow = `flowchart TD
-  PolicyEdit["管理者 / CIがDevicePolicyを更新"] --> ServerPolicy["device_policy_revisions<br/>あるべき状態を保存"]
+  PolicyEdit["管理者 / CIがDevicePolicyを更新<br/>app.id を指定"] --> ServerPolicy["device_policy_revisions<br/>あるべき状態を保存"]
   ServerPolicy --> Push["FCM data message<br/>POLICY_UPDATED"]
-  Push --> Fetch["端末がPolicyを再取得"]
-  Manual["アプリUIの手動更新"] --> Fetch
-  Launch["アプリ起動"] --> NeedSync{"fetched snapshotが<br/>applied snapshotより新しい?"}
-  Fetch --> LocalFetched["端末ローカルストア<br/>fetched policy snapshotを保存"]
-  LocalFetched --> NeedSync
-  NeedSync -->|はい| Compare["インストール済みアプリとPolicyを比較"]
-  NeedSync -->|いいえ| Idle["同期不要"]
-  Compare --> Install["FORCE_INSTALLEDをインストール"]
-  Compare --> Keep["AVAILABLEは手動導線だけ表示"]
-  Compare --> Uninstall["Policyにない<br/>companion-installed appを削除"]
-  Install --> Route{"DeviceOwnerまたは<br/>権限委譲あり?"}
-  Route -->|はい| Silent["サイレントインストール"]
-  Route -->|いいえ| Sticky["Sticky通知でユーザーに促す"]
-  Silent --> Report["結果報告 + applied snapshot更新"]
-  Sticky --> Report
-  Uninstall --> Report`;
+  Manual["アプリUIの手動更新"] -.-> Flag["pending_policy_fetch を立てる"]
+  Push --> Flag
+  Launch["アプリ起動"] --> NeedFetch{"pending_policy_fetch?"}
+  NeedFetch -->|はい| Fetch["GET /api/devices/me/policy"]
+  NeedFetch -->|いいえ| MaybeSync{"fetched > applied?"}
+  Fetch -->|成功| Resolve["サーバーが app_id ごとに<br/>最新リリースを解決して付与"]
+  Fetch -->|ネットワーク失敗等| Fail1["pending_policy_fetch を残す<br/>次の機会にリトライ"]
+  Resolve --> ClearFlag["pending_policy_fetch を解除<br/>fetched_policy_snapshot 更新"]
+  ClearFlag --> MaybeSync
+  MaybeSync -->|いいえ| Idle["同期不要"]
+  MaybeSync -->|はい| Plan["entry ごとに DOWNLOAD / INSTALL / UNINSTALL を判定"]
+  Plan --> DL{"必要な artifact をダウンロード"}
+  DL -->|成功| Apply["インストール / アンインストール実行"]
+  DL -->|リカバリ可能な失敗| DLRetry["entry を pending に残す<br/>次の機会にダウンロードからリトライ"]
+  DL -->|リカバリ不能な失敗| MarkDL["entry を failed としてマーク<br/>失敗詳細をローカルに保持"]
+  Apply -->|成功| MarkOK["entry を applied としてマーク"]
+  Apply -->|リカバリ可能な失敗| ApplyRetry["entry を pending に残す<br/>次の機会にダウンロード/インストールからリトライ"]
+  Apply -->|リカバリ不能な失敗| MarkAp["entry を failed としてマーク<br/>失敗詳細をローカルに保持"]
+  MarkOK --> AllDone{"全 entry が applied または failed?"}
+  MarkDL --> AllDone
+  MarkAp --> AllDone
+  AllDone -->|いいえ| Plan
+  AllDone -->|はい| Report["POST policy_sync_results<br/>(成功 + リカバリ不能な失敗を一括報告)"]
+  Report --> UpdateApplied["applied_policy_snapshot 更新"]`;
 
 const dataModel = `flowchart LR
   subgraph Server["APIサーバー / DB"]
     DP["device_policies<br/>device_id / current_revision_id<br/>updated_at"]
-    DPR["device_policy_revisions<br/>id / device_policy_id<br/>created_at / created_by"]
-    DPE["device_policy_app_entries<br/>device_policy_revision_id / release_id<br/>package_name / version_code / install_mode"]
-    Releases["releases<br/>app_id / version_code / artifact"]
+    DPR["device_policy_revisions<br/>id / device_policy_id<br/>created_at"]
+    DPE["device_policy_app_entries<br/>device_policy_revision_id / app_id<br/>install_mode"]
+    Apps["apps<br/>id / package_name<br/>deleted_at (soft delete)"]
+    Releases["releases<br/>app_id / version_code / artifact_id"]
   end
 
   subgraph DeviceLocal["端末ローカルストア"]
-    Fetched["fetched_policy_snapshot<br/>最後に取得したPolicy本文<br/>updated_at"]
-    Applied["applied_policy_snapshot<br/>実際にインストール状態が追いついたPolicy<br/>updated_at"]
+    FetchFlag["pending_policy_fetch<br/>(FCM受信 or 手動更新で立つ)"]
+    Fetched["fetched_policy_snapshot<br/>各 entry に install (release info) 付き<br/>updated_at"]
+    EntryState["entry_sync_state[]<br/>app_id / phase / status<br/>failure_code / failure_phase"]
+    Applied["applied_policy_snapshot<br/>updated_at"]
     Pkgs["installed_package_index<br/>package_name / version_code<br/>installed_by_companion"]
   end
 
   DP --> DPR --> DPE
-  DPE --> Releases
+  DPE -->|"app_id 参照"| Apps
+  Apps -->|"latest release は<br/>fetch 時に解決"| Releases
   DPE -. "GET policy" .-> Fetched
-  Fetched -. "sync成功時のみ" .-> Applied
+  FetchFlag -. "解除のトリガ" .-> Fetched
+  Fetched -. "entry ごとの進捗" .-> EntryState
+  EntryState -. "全 entry 確定で更新" .-> Applied
   Pkgs --- Applied`;
 
 const sequence = `sequenceDiagram
@@ -135,53 +224,79 @@ const sequence = `sequenceDiagram
   participant Owner as DeviceOwner / 権限委譲
   participant Os as Android PackageInstaller
 
-  Admin->>Api: DevicePolicyを更新
-  Api->>Api: device_policy_revisionsとentriesを保存
-  Api->>Push: POLICY_UPDATED data messageを送信
+  Admin->>Api: PUT policy (entries は app.id)
+  Api->>Api: device_policy_revisions と entries を保存
+  Api->>Push: POLICY_UPDATED data message を送信
   Push-->>App: data message、通知表示なし
-  App->>Api: 最新Policyを取得
-  App->>Local: fetched policy snapshotを保存
-  User->>App: 手動でPolicy更新を実行
-  App->>Api: 最新Policyを取得
-  App->>Local: fetched policy snapshotを上書き
-  App->>Local: fetched snapshot > applied snapshotなら同期開始
-  App->>App: FORCE_INSTALLED / AVAILABLE / 削除対象を判定
-  alt DeviceOwnerまたは権限委譲あり
-    App->>Owner: サイレントインストール / アンインストール
-    Owner-->>App: 結果
-  else 権限なし
-    App->>App: Sticky通知を維持
-    User->>App: 通知からインストール操作
-    App->>Os: PackageInstaller UIを起動
-    Os-->>App: 結果
+  App->>Local: pending_policy_fetch を立てる
+  Note over App,Local: ここで通信できなくても、フラグは残ったまま
+
+  alt 直後に通信可能
+    App->>Api: GET /api/devices/me/policy
+  else 失敗したら次の機会
+    Note over App: 起動時 / 周期ジョブ / 再ネットワーク到達で再試行
+    App->>Api: GET /api/devices/me/policy
   end
-  App->>Local: 同期完了時にapplied policy snapshotを更新
-  App->>Api: policy sync resultを報告`;
+  Api->>Api: 各 entry の app_id から最新release を解決
+  Api-->>App: entries に install (release情報) を含めて返す
+  App->>Local: pending_policy_fetch を解除 + fetched_policy_snapshot 保存
+
+  Note over App,Local: 以降は fetched > applied の間だけ同期を試みる
+
+  loop 全 entry が applied または failed になるまで
+    App->>App: entry の phase を判定 (DOWNLOAD / INSTALL / UNINSTALL)
+    App->>Api: GET /api/releases/:id/artifact_url (必要な entry のみ)
+    Api-->>App: 短命 presigned URL
+    App->>App: artifact ダウンロード
+    alt ダウンロード成功
+      alt 権限あり
+        App->>Owner: サイレントインストール / アンインストール
+        Owner-->>App: 結果 (成功 or 失敗)
+      else 権限なし
+        App->>App: Sticky通知を維持
+        User->>App: 通知タップ
+        App->>Os: PackageInstaller UI 起動
+        Os-->>App: 結果
+      end
+      App->>Local: entry_sync_state を更新 (applied or failed)
+    else ダウンロード失敗 (リカバリ可能)
+      App->>Local: entry を pending のままに残す
+      Note over App: 次の機会にダウンロードからリトライ
+    else ダウンロード失敗 (リカバリ不能)
+      App->>Local: entry を failed としてマーク (phase=DOWNLOAD, code)
+    end
+  end
+
+  App->>Api: POST policy_sync_results (成功 + リカバリ不能な失敗を一括)
+  Api-->>App: 201 Created
+  App->>Local: applied_policy_snapshot 更新`;
 
 const lifecycle = `stateDiagram-v2
   [*] --> Synced
-  Synced --> PolicyFetched: FCM data message / 手動更新 / app起動時取得
-  PolicyFetched --> SyncNeeded: fetched_policy.updated_at > applied_policy.updated_at
-  PolicyFetched --> Synced: fetched snapshotとapplied snapshotが同じ
-  SyncNeeded --> Planning: installed packagesとPolicyを比較
-  Planning --> ApplyingSilent: DeviceOwnerまたは権限委譲あり
-  Planning --> WaitingUserInstall: 権限なし + FORCE_INSTALLED不足
-  ApplyingSilent --> Synced: install / uninstall完了
-  WaitingUserInstall --> ApplyingUserInstall: ユーザーがSticky通知から操作
-  ApplyingUserInstall --> Synced: PackageInstaller完了
-  WaitingUserInstall --> SyncNeeded: app起動時に再通知 / 再同期
+  Synced --> NeedFetch: FCM受信 / 手動更新
+  NeedFetch --> NeedFetch: fetch失敗 (リカバリ可能)<br/>次の機会まで待つ
+  NeedFetch --> Fetched: fetch成功 (pending_policy_fetch 解除)
+  Fetched --> Synced: fetched == applied (差分なし)
+  Fetched --> Syncing: fetched > applied
+  Syncing --> Syncing: entry ごとの DOWNLOAD/INSTALL<br/>リカバリ可能エラーで該当 entry のみ pending 保持
+  Syncing --> AwaitingUser: 権限なし + FORCE_INSTALLED 不足<br/>Sticky通知を維持
+  AwaitingUser --> Syncing: ユーザーが通知から操作
+  Syncing --> Reporting: 全 entry が applied or failed に確定
+  Reporting --> Synced: POST policy_sync_results 成功<br/>applied_policy_snapshot 更新
+  Reporting --> Reporting: 報告自体が失敗 (リカバリ可能)<br/>次の機会にリトライ
   Synced --> [*]`;
 ---
 
 <BaseLayout
   title="アプリの配信"
-  description="デバイスごとのDevicePolicyを更新し、端末がPolicyを再取得して、強制インストール・手動提供・削除を同期します。"
+  description="DevicePolicyを app ベースで更新し、端末は必要なときだけ Policy を取得して最新リリースに同期します。失敗はフェーズ別にリトライまたは一括失敗報告します。"
   currentPath="/use-cases/app-distribution/"
 >
   <p class="lede">
     アプリ配信は、個別の配信ジョブを端末へ投げる処理ではなく、デバイスごとに1つあるDevicePolicyを更新し、端末がその「あるべき状態」に同期する処理です。
-    FCM push はユーザー向けの通知ではなく、Policyが更新されたことをコンパニオンアプリに知らせ、Policy再取得の契機を与えるためだけに使います。
-    端末は <code>fetched_policy_snapshot</code> (最後に取得したPolicy) と <code>applied_policy_snapshot</code> (実際にインストール状態が追いついたPolicy) を別オブジェクトとして持ち、両者を比較して同期の要否を判断します。
+    DevicePolicy が指定するのは <strong>app</strong> (どのアプリを必須/任意で入れるか) であって、特定の release バージョンではありません。配信したいリリースは端末が Policy を取得するたびにサーバーが「その app の最新リリース」を解決して entry に付与します。
+    FCM push はユーザー向けの通知ではなく、端末側の <code>pending_policy_fetch</code> フラグを立てる契機にのみ使います。Policy 取得は「フラグが立っているとき」だけ行い、起動の度に毎回叩くわけではありません。
+    Fetch / Download / Install のどこで失敗するかで取り扱いを分け、リカバリ可能なエラーは該当フェーズだけリトライし、リカバリ不能なエラーは entry 単位で「失敗」と確定してまとめてサーバーへ報告します。
   </p>
 
   <section aria-labelledby="actors">
@@ -201,14 +316,14 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">管理者 / CI</th>
             <td>デバイスへ配るアプリ構成を変えたい</td>
-            <td>PUT /api/devices/:identifier/policy で DevicePolicy を更新する。release は事前に「アプリの登録」で用意しておく。</td>
+            <td>PUT /api/devices/:identifier/policy で DevicePolicy を更新する。entry は app.id と install_mode のみで、release / version は指定しない。</td>
             <td>device_policies, device_policy_revisions, device_policy_app_entries</td>
           </tr>
           <tr>
             <th scope="row">APIサーバー</th>
-            <td>PUT policy / GET policy / POST policy_sync_results</td>
-            <td>Policy更新を不変revisionとして保存し、FCM data messageを送信。GETでは最新revisionを返す。同期結果報告は監査ログとして書く (Policy本文は書き換えない)。</td>
-            <td>device_policies, device_policy_revisions, device_policy_app_entries, device_policy_sync_reports, fcm_push_tokens (送信先解決)</td>
+            <td>PUT policy / GET policy (admin/device) / POST policy_sync_results</td>
+            <td>Policy更新を不変revisionとして保存し、FCM data messageを送信。GET時に各 entry の app_id から最新release を解決して install フィールドに乗せる。削除されたアプリの entry は、admin GET には含めるが device GET からは除外する。一括失敗報告 (policy_sync_results) を受領して監査ログに残す。</td>
+            <td>device_policies, device_policy_revisions, device_policy_app_entries, apps, releases, device_policy_sync_reports, fcm_push_tokens</td>
           </tr>
           <tr>
             <th scope="row">FCM</th>
@@ -218,9 +333,9 @@ const lifecycle = `stateDiagram-v2
           </tr>
           <tr>
             <th scope="row">コンパニオンアプリ</th>
-            <td>FCM受信 / 手動更新 / app起動時</td>
-            <td>Policyを再取得して fetched snapshot を保存。fetched と applied が一致するまで、インストール・更新・削除を試みる。完了時に applied snapshot を更新し、結果をサーバーへ報告する。</td>
-            <td>fetched_policy_snapshot, applied_policy_snapshot, installed_package_index, DeviceOwner SDK / PackageInstaller</td>
+            <td>FCM受信 / 手動更新 / 再ネットワーク到達 / アプリ起動 (フラグがある時のみ fetch)</td>
+            <td>pending_policy_fetch / fetched_policy_snapshot / entry_sync_state / applied_policy_snapshot を管理する。フェーズ別にリトライ判定し、確定したら一括で結果を報告する。</td>
+            <td>端末ローカルストア各種, DeviceOwner SDK / PackageInstaller</td>
           </tr>
           <tr>
             <th scope="row">端末利用者</th>
@@ -236,31 +351,35 @@ const lifecycle = `stateDiagram-v2
   <section aria-labelledby="data-model">
     <p class="section-kicker">Data model</p>
     <h2 id="data-model">DevicePolicy と端末ローカルストアの関係</h2>
-    <Mermaid chart={dataModel} title="サーバー側のdevice_policy_*と端末側のpolicy snapshotの関係" />
+    <Mermaid chart={dataModel} title="サーバー側のdevice_policy_*、apps、releases と端末側のフラグ・スナップショット・entry状態の関係" />
     <dl class="key-value-list">
       <div>
-        <dt>device_policies</dt>
-        <dd>device 1つにつき1行。<code>current_revision_id</code> と <code>updated_at</code> を持ち、識別は devices.identifier で行う。Policy 本体の内容はここには持たず、revision を参照する。</dd>
+        <dt>device_policies / device_policy_revisions / device_policy_app_entries</dt>
+        <dd>device 1つにつき 1 device_policy。Policy 更新は新しい不変 revision の追加で表現する。entries は app_id と install_mode のみで、release_id や version_code は持たない。配信すべきリリースは GET 時にサーバーが apps.id から最新版を解決する。</dd>
       </div>
       <div>
-        <dt>device_policy_revisions</dt>
-        <dd>不変のrevision行。device_policy_id、created_at、created_by を持つ。Policyの変更はこのテーブルへの新規行追加で表現し、過去revisionは消さない。独自のrevision用identifierは作らず、ActiveRecord id を使う。</dd>
+        <dt>apps</dt>
+        <dd>package_name で識別される配布対象アプリの identity。<code>deleted_at</code> による soft delete を許容する。全ての関連 release が削除された時点で deleted_at を立て、以後 release 登録があれば null に戻して復活させる。</dd>
       </div>
       <div>
-        <dt>device_policy_app_entries</dt>
-        <dd>revisionに紐づくapp単位のエントリ。device_policy_revision_id、release_id、package_name、version_code、install_mode (FORCE_INSTALLED | AVAILABLE) を持つ。release_id は releases.id を参照する。</dd>
+        <dt>pending_policy_fetch (端末ローカル)</dt>
+        <dd>boolean。FCM data message を受け取った時、またはユーザーが手動更新を要求した時に true にする。GET /api/devices/me/policy が成功して fetched_policy_snapshot を保存できた瞬間に false に戻す。端末はこのフラグが true のときだけ Policy 取得を試みる (起動するたびに毎回 fetch するわけではない)。</dd>
       </div>
       <div>
         <dt>fetched_policy_snapshot (端末ローカル)</dt>
-        <dd>サーバーから最後に取得できたPolicy本文。FCM受信、手動更新、アプリ起動時取得で上書きされる。updated_at はこのsnapshotが置き換わった時刻。SQLiteの別テーブルでも Jetpack DataStore のobjectでもよい。</dd>
+        <dd>サーバーから最後に取得できた Policy 本文 (各 entry に install を含む)。fetch が成功するたびに置き換える。</dd>
+      </div>
+      <div>
+        <dt>entry_sync_state[] (端末ローカル)</dt>
+        <dd>fetched_policy_snapshot の各 entry に対する進捗。<code>status: pending | applied | failed</code>、<code>failure_phase: DOWNLOAD | INSTALL</code> (failed の場合)、<code>failure_code</code> (失敗詳細) を保持する。リカバリ可能な失敗では status を pending のままにし、リカバリ不能な失敗では failed に確定する。すべての entry が applied or failed になった時点で、まとめて報告する。</dd>
       </div>
       <div>
         <dt>applied_policy_snapshot (端末ローカル)</dt>
-        <dd>端末上のインストール状態が実際に追いついたPolicy。同期成功時だけ fetched から複製される。<code>fetched.updated_at &gt; applied.updated_at</code> の間は同期対象。メタデータ更新ではこの値を動かさない。</dd>
+        <dd>「全 entry の処理が確定し、一括報告まで完了した時点」の Policy。fetched_policy_snapshot からの完全コピーで置き換える。報告途中・部分成功の段階では更新しない。</dd>
       </div>
       <div>
         <dt>installed_package_index (端末ローカル)</dt>
-        <dd>端末上の package_name、version_code、installed_by_companion を保持または再スキャン。「ユーザーが外部で入れたアプリ」と「このアプリが入れたアプリ」を区別し、UNINSTALL対象を絞り込む。</dd>
+        <dd>端末上の package_name、version_code、installed_by_companion。「ユーザーが他経路で入れた」と「このアプリが入れた」を区別し、UNINSTALL対象を絞り込む。</dd>
       </div>
     </dl>
   </section>
@@ -274,7 +393,7 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">1</span>
         <div>
           <h3 id="step-1">管理者がデバイスのDevicePolicyを更新する</h3>
-          <p>1デバイスにつき1つのDevicePolicyを持ちます。例ではApp A/B/Cのversion_code 1を強制インストール (FORCE_INSTALLED)、App Dのversion_code 1をユーザー手動インストール可能 (AVAILABLE) として定義します。Policy更新は新しい revision の追加であり、過去 revision は不変です。</p>
+          <p>1デバイスにつき1つのDevicePolicyを持ちます。entry には app.id と install_mode のみを指定し、配信するリリースを指定しません。「このアプリは必須」「このアプリは任意」というあるべき状態だけを宣言し、実際のリリース解決はサーバーが GET 時に行います。Policy更新は新しい revision の追加であり、過去 revision は不変です。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -282,36 +401,25 @@ const lifecycle = `stateDiagram-v2
           <DiagramFrame src="/mocks/app-distribution/step-1-policy-editor.html" title="管理画面: デバイスPolicy編集" />
         </div>
         <div class="flow-step__details">
-          <h4>API呼び出し</h4>
+          <h4>Policy ロード (編集前)</h4>
+          <pre class="curl-block"><code>{adminPolicyGetCurl}</code></pre>
+          <h4>応答 (削除アプリ entry を含む例)</h4>
+          <pre class="curl-block"><code>{adminPolicyGetResponse}</code></pre>
+          <h4>Policy 更新</h4>
           <pre class="curl-block"><code>{updatePolicyCurl}</code></pre>
           <h4>応答</h4>
           <pre class="curl-block"><code>{updatePolicyResponse}</code></pre>
           <h4>作成・更新されるDBデータ</h4>
           <dl class="db-list">
             <div>
-              <dt>device_policies</dt>
-              <dd>device_id ごとに1行。current_revision_id と updated_at を更新する。deviceの特定は devices.identifier で行い、devices 本体にPolicy内容を混ぜない。</dd>
-            </div>
-            <div>
-              <dt>device_policy_revisions</dt>
-              <dd>新しい revision を不変行として作成する。id、device_policy_id、created_at、created_by を持つ。</dd>
-            </div>
-            <div>
-              <dt>device_policy_app_entries</dt>
-              <dd>新しい revision に紐づく entry を作成する。release_id は releases.id を参照する。install_mode は FORCE_INSTALLED または AVAILABLE。</dd>
+              <dt>device_policies / device_policy_revisions / device_policy_app_entries</dt>
+              <dd>新しい revision を作成し entries を保存する。version_code や release_id は格納しない。FCM data message も同期的に送信する (送信失敗してもログだけ取り、Policy は変更しない)。</dd>
             </div>
           </dl>
-          <h4>作成しないもの</h4>
-          <dl class="db-list">
-            <div>
-              <dt>rollout_jobs / device_install_tasks</dt>
-              <dd>作成しない。端末はDevicePolicyを取得して自分で差分同期する。</dd>
-            </div>
-            <div>
-              <dt>過去 revision の更新・削除</dt>
-              <dd>過去 revision は不変。差し戻しは古い revision を current にし直すのではなく、同じ内容で新しい revision を作る。</dd>
-            </div>
-          </dl>
+          <h4>過去 revision の扱い</h4>
+          <p>過去 revision は不変。差し戻しは古い revision を current にし直すのではなく、同じ内容で新しい revision を作る。</p>
+          <h4>削除されたアプリ参照のルール</h4>
+          <p>新しい revision の entries に <code>apps.deleted_at</code> が立っている app の id を含めることは拒否する (400 APP_DELETED)。古い revision にあった削除アプリ entry は、新 revision でも維持したい場合は許容する。</p>
         </div>
       </div>
     </article>
@@ -320,8 +428,8 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">2</span>
         <div>
-          <h3 id="step-2">FCM pushまたは手動操作を契機にPolicyを再取得する</h3>
-          <p>FCMは data message としてPolicy更新だけを届けます。notification payload は含めず、端末通知も表示しません。アプリUIからの手動更新、およびアプリ起動時にも同じPolicy取得APIを呼び、fetched snapshot を最新に保ちます。</p>
+          <h3 id="step-2">FCM push を契機に pending_policy_fetch を立て、可能なときに Policy を取得する</h3>
+          <p>FCM は data message として Policy 更新だけを届けます。端末はこの受信で <code>pending_policy_fetch</code> フラグを立て、それ以後の最初に Policy API を呼べる機会 (直後に通信できればその場で、ダメなら次のオンライン到達時、再起動時、定期同期ジョブの実行時など) で GET を1回試みます。<strong>起動するたびに無条件で fetch することはしません</strong>。fetch が失敗してもフラグは立ったままにし、次の機会に再試行します。fetch が成功して fetched_policy_snapshot を上書きした瞬間に、フラグを下ろします。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -331,23 +439,35 @@ const lifecycle = `stateDiagram-v2
         <div class="flow-step__details">
           <h4>FCM data message</h4>
           <pre class="curl-block"><code>{fcmDataMessage}</code></pre>
-          <h4>API呼び出し</h4>
+          <h4>Policy 取得 API 呼び出し</h4>
           <pre class="curl-block"><code>{fetchPolicyCurl}</code></pre>
           <h4>応答</h4>
           <pre class="curl-block"><code>{fetchPolicyResponse}</code></pre>
           <h4>端末ローカルデータの扱い</h4>
           <dl class="db-list">
             <div>
+              <dt>pending_policy_fetch</dt>
+              <dd>FCM 受信または手動更新で true。GET 成功 → fetched_policy_snapshot 保存 が完了した瞬間に false。GET 失敗 (タイムアウト、5xx、ネットワーク不到達、認証エラー以外の一時的失敗) では true のまま。</dd>
+            </div>
+            <div>
               <dt>fetched_policy_snapshot</dt>
-              <dd>取得したPolicy本文で上書きする。サーバー側の device_policy_revisions は読み取りだけで変更しない。</dd>
+              <dd>取得した Policy 本文 (install 付き) で上書き。サーバー側の device_policy_revisions は読み取りだけで変更しない。</dd>
+            </div>
+            <div>
+              <dt>entry_sync_state[]</dt>
+              <dd>fetched_policy_snapshot が置き換わったタイミングで、新しい entries を pending として再構築する。前回の sync で確定していた failed 情報は、entry の app_id + install.version_code が同じなら引き継ぐ (同じ artifact で再試行しない判断材料に使う)、release.id や version_code が変わっていたらクリアして pending にする (新リリースは試す価値がある)。</dd>
             </div>
             <div>
               <dt>applied_policy_snapshot</dt>
-              <dd>この時点では更新しない。fetched と applied を別オブジェクトとして持つことで、取得済みだが未適用のPolicyを表現する。</dd>
+              <dd>この時点では更新しない。fetched との差で「同期がまだ要る」と判断する。</dd>
+            </div>
+            <div>
+              <dt>削除アプリの扱い</dt>
+              <dd>device GET 応答ではサーバー側で除外する。端末側のローカルストアにも持ち込まないため、端末側で「削除されたアプリ」を意識する必要はない。</dd>
             </div>
             <div>
               <dt>端末通知</dt>
-              <dd>FCM data message 受信そのものでは表示しない。表示するのは、強制インストールが必要で権限がない場合だけ後続ステップで出すSticky通知のみ。</dd>
+              <dd>FCM data message 受信そのものでは表示しない。Sticky 通知は後続ステップ (権限なし + FORCE_INSTALLED 不足) のときだけ出す。</dd>
             </div>
           </dl>
         </div>
@@ -358,8 +478,8 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">3</span>
         <div>
-          <h3 id="step-3">取得済みPolicyと端末状態を比較して同期計画を作る</h3>
-          <p>fetched_policy.updated_at が applied_policy.updated_at より新しい限り、アプリ起動時にも同期を試みます。強制対象 (FORCE_INSTALLED) の不足分はインストールし、Policy から消えた companion-installed app は削除します。AVAILABLE はユーザー導線にだけ並べ、自動で入れません。</p>
+          <h3 id="step-3">entry ごとに DOWNLOAD と INSTALL を進め、リカバリ可能な失敗はリトライする</h3>
+          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code」と「端末上の installed_package_index の version_code」。同期は <strong>entry 単位の状態機械</strong>として扱います: <code>pending → (DOWNLOADする必要があれば downloading) → installing → applied</code>。各フェーズで失敗したら、リカバリ可能であれば該当 entry を pending に戻して次の機会にそのフェーズから再試行。リカバリ不能であれば該当 entry を failed として確定し、以後はその artifact では再試行しません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -372,22 +492,39 @@ const lifecycle = `stateDiagram-v2
           <h4>同期対象の決め方</h4>
           <dl class="db-list">
             <div>
-              <dt>installed_package_index</dt>
-              <dd>端末上の package_name、version_code、installed_by_companion を保持または PackageManager から再スキャン。ユーザーが外部で入れたアプリとこのアプリが入れたアプリを区別する。</dd>
-            </div>
-            <div>
               <dt>INSTALL対象</dt>
-              <dd>FORCE_INSTALLED かつ「未インストール」または「要求version_codeと異なる」package。</dd>
+              <dd>FORCE_INSTALLED かつ「未インストール」または「インストール済み version_code &lt; Policy install.version_code」の entry。</dd>
             </div>
             <div>
               <dt>UNINSTALL対象</dt>
-              <dd>Policyに定義がなく、かつ <code>installed_by_companion = true</code> の package。PolicyにAVAILABLEとして残るApp Dは削除しない。ユーザーが他経路で入れたものも対象外。</dd>
+              <dd>Policy entries に存在せず、かつ <code>installed_by_companion = true</code> の package。PolicyにAVAILABLEとして残るアプリは削除しない。ユーザーが他経路で入れたものは触らない。</dd>
             </div>
             <div>
               <dt>SHOW対象 (AVAILABLE)</dt>
-              <dd>アプリ内UIの一覧に表示するだけで自動インストールしない。ユーザーが選んだときに artifact URL を取得してインストールする。</dd>
+              <dd>アプリ内 UI の一覧に表示するだけで自動インストールしない。ユーザーが選んだときに install.release.id を使って artifact URL を取得してインストールする。AVAILABLE entry はこの sync attempt の「全 entry 確定判定」には含めない (常に skip 扱い)。</dd>
             </div>
           </dl>
+          <h4>リカバリ可能 / 不能の判定</h4>
+          <dl class="db-list">
+            <div>
+              <dt>リカバリ可能 (DOWNLOAD フェーズ)</dt>
+              <dd>ネットワークタイムアウト、5xx、TLS 接続失敗、artifact_url 期限切れ (再取得すれば良い)、端末ストレージ一時不足 → entry を pending のままにし、次の同期試行で同じ install.release.id から再取得する。</dd>
+            </div>
+            <div>
+              <dt>リカバリ不能 (DOWNLOAD フェーズ)</dt>
+              <dd>release が削除されて 404 が返り続ける (ARTIFACT_GONE)、sha256 不一致 (ARTIFACT_CORRUPTED) など、その install.release.id に対してリトライしても結果が変わらないもの → 該当 entry を failed として確定。同じ install.version_code が変わらない限り同 entry を試さない。</dd>
+            </div>
+            <div>
+              <dt>リカバリ可能 (INSTALL フェーズ)</dt>
+              <dd>権限なし状態で Sticky 通知を維持 (ユーザーが反応すればインストール進行)、DeviceOwner SDK の一時的エラー、PackageInstaller の "in use" 一時エラーなど → entry を pending のままにし、次の同期で DOWNLOAD は飛ばして INSTALL から再試行する (artifact がローカルに残っていれば)。</dd>
+            </div>
+            <div>
+              <dt>リカバリ不能 (INSTALL フェーズ)</dt>
+              <dd>署名不一致 (SIGNATURE_MISMATCH)、minSdk 不足 (INCOMPATIBLE_OS)、ユーザーが拒否してアプリ削除 (USER_DECLINED) など、その artifact で再試行しても結果が変わらないもの → 該当 entry を failed として確定。</dd>
+            </div>
+          </dl>
+          <h4>確定判定</h4>
+          <p>FORCE_INSTALLED / UNINSTALL の全 entry が <code>applied</code> または <code>failed</code> になるまで sync attempt は終わらない。リカバリ可能な失敗を抱えた entry が残っている限り、確定判定にも到達しないため一括報告も applied 更新も行わない。次の機会 (再ネットワーク到達、起動、定期ジョブ) に該当フェーズから再試行する。</p>
         </div>
       </div>
     </article>
@@ -396,34 +533,38 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">4</span>
         <div>
-          <h3 id="step-4">権限に応じて強制インストールを実行し、同期完了を記録する</h3>
-          <p>DeviceOwner権限またはインストール権限の委譲があればサイレントインストールします。権限がなければ、強制対象が満たされるまでStickyな通知でユーザーにインストールを促し続けます。同期が成功した範囲だけ applied snapshot を更新します。</p>
+          <h3 id="step-4">確定した結果をまとめて報告し、applied_policy_snapshot を更新する</h3>
+          <p>全 entry が確定したら、成功した entry と <strong>リカバリ不能な失敗だけ</strong>を一括で POST します。リカバリ可能な失敗を抱えている entry は報告対象に含めません (=端末がリトライ継続中であることを意味する)。報告が 201 で受理されたら applied_policy_snapshot を更新します。報告自体が失敗した場合はリトライキューに残し、次の機会に同じペイロードで再送します。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-distribution/step-4-install-route.html" title="コンパニオンアプリ: 強制インストール経路" />
+          <DiagramFrame src="/mocks/app-distribution/step-4-install-route.html" title="スマートフォン: 必須アプリのインストールを促す通知" />
         </div>
         <div class="flow-step__details">
-          <h4>同期結果報告</h4>
+          <h4>一括結果報告</h4>
           <pre class="curl-block"><code>{syncReportCurl}</code></pre>
-          <h4>記録するDBと端末ローカルデータ</h4>
+          <h4>記録するデータ</h4>
           <dl class="db-list">
             <div>
               <dt>applied_policy_snapshot (端末)</dt>
-              <dd>必要なインストールと削除が完了したときだけ、fetched snapshot の device_policy_revision.id、Policy本文、updated_at を applied へ反映する。部分成功では更新しない。</dd>
+              <dd>policy_sync_results が 201 で受け付けられた直後に、fetched_policy_snapshot からコピーで上書き。部分成功でも (失敗が確定済みであれば) 更新する。これにより「処理は終わったが一部失敗が残っている状態」を「fetched == applied」で表現できる。</dd>
+            </div>
+            <div>
+              <dt>entry_sync_state[] (端末)</dt>
+              <dd>報告完了後、failed エントリのみ failure 情報を保持したまま applied に再分類してもよい (次回 fetch で release.id / version_code が更新されたら再試行可能なため)。</dd>
             </div>
             <div>
               <dt>Sticky install notification (端末)</dt>
-              <dd>権限なしで FORCE_INSTALLED が未達の場合だけ表示する。ユーザーがキャンセルしてもPolicyが未同期なら、アプリ起動時や再同期時に再表示する。</dd>
+              <dd>権限なしで FORCE_INSTALLED が未達かつ未確定の場合だけ表示する。INSTALL が確定 (成功 or リカバリ不能失敗) したら下げる。</dd>
             </div>
             <div>
               <dt>device_policy_sync_reports (サーバー)</dt>
-              <dd>device_policy_revision_id、実行した action、route (DEVICE_OWNER / PACKAGE_MANAGER)、result、reported_at を記録する。Policy本体は結果報告では書き換えない。</dd>
+              <dd>device_policy_revision_id、actions[]、reported_at を保存する。actions の各エントリは <code>{`package_name, action, route, result, phase?, code?`}</code> を持つ。Policy 本体は書き換えない。</dd>
             </div>
             <div>
               <dt>fcm_push_tokens / releases / artifacts</dt>
-              <dd>同期結果報告では更新しない。push宛先とrelease metadataは別のライフサイクルで管理する。</dd>
+              <dd>同期結果報告では更新しない。</dd>
             </div>
           </dl>
         </div>
@@ -434,7 +575,7 @@ const lifecycle = `stateDiagram-v2
   <section aria-labelledby="ownership">
     <p class="section-kicker">Data ownership</p>
     <h2 id="ownership">Policy同期で誰がどのデータを持つか</h2>
-    <Mermaid chart={policyFlow} title="DevicePolicy更新から端末同期完了まで" />
+    <Mermaid chart={policyFlow} title="DevicePolicy更新から端末同期完了まで (リトライとリカバリ可能/不能の分岐を含む)" />
     <div class="table-wrap">
       <table class="usa-table">
         <thead>
@@ -446,34 +587,49 @@ const lifecycle = `stateDiagram-v2
         </thead>
         <tbody>
           <tr>
-            <th scope="row">DevicePolicy</th>
+            <th scope="row">DevicePolicy (app_id ベース)</th>
             <td>サーバーの device_policies / device_policy_revisions / device_policy_app_entries</td>
-            <td>1デバイスのあるべきアプリ状態を表す。devicesのidentityには混ぜない。</td>
+            <td>1デバイスのあるべきアプリ状態を app 単位で表す。release / version は持たない。</td>
           </tr>
           <tr>
-            <th scope="row">install_mode</th>
-            <td>device_policy_app_entries</td>
-            <td>FORCE_INSTALLEDは同期時に満たす対象、AVAILABLEはユーザーがアプリUIから手動取得できる対象。</td>
+            <th scope="row">install (release.id, version_code, version_name)</th>
+            <td>サーバーが GET 応答時に各 entry へ付与</td>
+            <td>その時点で配信すべき具体的リリース。サーバーが apps.id から「最新release」を解決した結果。DB には保存せず、毎回の GET で算出する。</td>
           </tr>
           <tr>
-            <th scope="row">fetched policy snapshot</th>
-            <td>端末ローカルストア</td>
-            <td>最後にサーバーから取得できたPolicy本文。FCM受信、手動更新、アプリ起動時取得で更新される。</td>
+            <th scope="row">apps.deleted_at</th>
+            <td>apps テーブル</td>
+            <td>全ての関連release が削除された時点で立てる。DevicePolicy の app_id 参照は残るため、admin UI で「削除されたアプリ」表記を出すための判定材料。</td>
           </tr>
           <tr>
-            <th scope="row">applied policy snapshot</th>
-            <td>端末ローカルストア (fetched とは別オブジェクト)</td>
-            <td>端末上のインストール状態が実際に追いついたPolicy。<code>fetched.updated_at &gt; applied.updated_at</code> の間は同期対象。</td>
+            <th scope="row">pending_policy_fetch</th>
+            <td>端末ローカル</td>
+            <td>「Policy 取得が必要」というフラグ。FCM 受信や手動更新で立ち、fetch 成功で下がる。起動時は無条件 fetch ではなくこのフラグだけを見て判断する。</td>
+          </tr>
+          <tr>
+            <th scope="row">fetched_policy_snapshot</th>
+            <td>端末ローカル</td>
+            <td>最後に成功した fetch の結果。各 entry に install (release情報) 付き。</td>
+          </tr>
+          <tr>
+            <th scope="row">entry_sync_state[]</th>
+            <td>端末ローカル</td>
+            <td>各 entry の sync 進捗。pending / applied / failed と failure_phase / failure_code を持ち、リカバリ可能/不能の判断と一括報告の元データになる。</td>
+          </tr>
+          <tr>
+            <th scope="row">applied_policy_snapshot</th>
+            <td>端末ローカル</td>
+            <td>「全 entry の処理が確定し、結果を一括報告し終えた」時点の Policy。fetched との一致で「同期完了」を表す。</td>
           </tr>
           <tr>
             <th scope="row">installed_by_companion</th>
             <td>端末ローカルの installed_package_index</td>
-            <td>Policyから消えたアプリを削除してよいか判断する。このアプリが入れたものだけ削除対象にする。</td>
+            <td>Policy から消えたアプリを削除してよいか判断。このアプリが入れたものだけ削除対象にする。</td>
           </tr>
           <tr>
             <th scope="row">device_policy_sync_reports</th>
             <td>サーバー</td>
-            <td>各revisionに対する端末側の同期結果ログ。Policy本体は書き換えない。</td>
+            <td>各 revision に対する端末側の同期結果ログ。actions 内の各 entry が phase / code を持つ。Policy 本体は書き換えない。</td>
           </tr>
         </tbody>
       </table>
@@ -483,19 +639,19 @@ const lifecycle = `stateDiagram-v2
   <section aria-labelledby="sequence">
     <p class="section-kicker">Sequence</p>
     <h2 id="sequence">配信時の責務分担</h2>
-    <Mermaid chart={sequence} title="管理者、APIサーバー、FCM、コンパニオンアプリ、Androidの関係" />
+    <Mermaid chart={sequence} title="管理者、APIサーバー、FCM、コンパニオンアプリ、Androidの関係 (リトライ含む)" />
   </section>
 
   <section aria-labelledby="lifecycle">
     <p class="section-kicker">Lifecycle</p>
     <h2 id="lifecycle">端末内Policy同期のライフサイクル</h2>
-    <Mermaid chart={lifecycle} title="fetched policy snapshotとapplied policy snapshotの関係" />
+    <Mermaid chart={lifecycle} title="pending_policy_fetch / fetched / entry進捗 / applied のライフサイクル" />
   </section>
 
   <section aria-labelledby="errors">
     <p class="section-kicker">Errors</p>
     <h2 id="errors">主要エラーと応答</h2>
-    <p>Policy同期は「fetched と applied の不一致を解消する」ループです。失敗しても次の起動時・次のFCM受信時に再試行できる前提なので、サーバー側で過剰なリトライ管理はせず、端末側に判断を寄せます。</p>
+    <p>失敗はフェーズ別に「リカバリ可能 (端末が同じフェーズからリトライ)」と「リカバリ不能 (entry を failed として確定し一括報告)」に分けます。サーバー側の policy_sync_results はリカバリ不能な失敗だけが届く想定で、リカバリ可能な失敗で同じレポートが何度も来ることはありません。</p>
     <div class="table-wrap">
       <table class="usa-table">
         <thead>
@@ -503,7 +659,7 @@ const lifecycle = `stateDiagram-v2
             <th scope="col">状況</th>
             <th scope="col">HTTP / code</th>
             <th scope="col">サーバー側の扱い</th>
-            <th scope="col">端末側の扱い</th>
+            <th scope="col">端末 / 管理者側の扱い</th>
           </tr>
         </thead>
         <tbody>
@@ -511,43 +667,73 @@ const lifecycle = `stateDiagram-v2
             <th scope="row">device_auth_token が無効 / 期限切れ</th>
             <td>401 DEVICE_AUTH_REQUIRED</td>
             <td>fcm_push_tokens は触らない。Policy更新もできない。</td>
-            <td>クライアント側で再登録導線を出す。registration tokenの再発行を管理者に依頼する。</td>
+            <td>クライアント側で再登録導線を出す。registration tokenの再発行を管理者に依頼する。リトライ自体は無意味なので pending_policy_fetch は解除しない (再登録後に再試行)。</td>
           </tr>
           <tr>
-            <th scope="row">FCM data message が届かない (token失効、ネットワーク等)</th>
-            <td>(push送信失敗)</td>
-            <td>送信失敗ログだけ取り、Policy本体は変更しない。</td>
-            <td>アプリ起動時に必ずPolicyを取得し直すため、FCM単独の失敗で同期不能にはならない。</td>
+            <th scope="row">FCM 受信後、GET policy が失敗 (タイムアウト / 5xx / ネットワーク不到達)</th>
+            <td>—</td>
+            <td>送信は完了済み、サーバーは何もしない。</td>
+            <td>pending_policy_fetch は true のまま維持。次の機会 (再オンライン、再起動、定期ジョブ) に再試行。</td>
           </tr>
           <tr>
-            <th scope="row">DevicePolicy がまだ作られていない端末がPolicyを取りに来た</th>
-            <td>200 OK (空のentries) または 404 DEVICE_POLICY_NOT_FOUND</td>
-            <td>空のentriesで返すことを推奨。端末側で「対象アプリなし = 何もしない」と扱える。</td>
-            <td>installed_by_companion のアプリは全てUNINSTALL候補になることに注意。最初の同期は空Policyでも実行される。</td>
+            <th scope="row">DevicePolicy がまだ作られていない端末が Policy を取りに来た</th>
+            <td>200 OK (空のentries)</td>
+            <td>空のentriesで返す。</td>
+            <td>installed_by_companion のアプリは全て UNINSTALL 候補になる。pending_policy_fetch は解除する。</td>
           </tr>
           <tr>
-            <th scope="row">artifact_url がダウンロード前に期限切れ</th>
-            <td>403 / S3 SignatureDoesNotMatch</td>
-            <td>presigned URL を短命に発行する。</td>
-            <td>取得失敗時は再度 /api/releases/:id/artifact_url を呼び直す。失敗したentryだけは applied snapshot に反映しない。</td>
+            <th scope="row">PUT で削除済みアプリの app.id を新規 entry に指定</th>
+            <td>400 APP_DELETED</td>
+            <td>Policy は変更しない。entries は古い revision のまま。</td>
+            <td>admin UI 側で「このアプリは削除されました」と表示し、別のアプリを選び直させる。</td>
+          </tr>
+          <tr>
+            <th scope="row">PUT で存在しない app.id を指定</th>
+            <td>400 APP_NOT_FOUND_FOR_ENTRY</td>
+            <td>Policy は変更しない。</td>
+            <td>admin UI で対象を選び直させる。</td>
+          </tr>
+          <tr>
+            <th scope="row">artifact_url の DL がリカバリ可能な失敗 (5xx / TLS / タイムアウト / 期限切れ)</th>
+            <td>(DL先 5xx) / 403 SignatureDoesNotMatch 等</td>
+            <td>presigned URL を短命に発行する。期限切れは再取得 (/api/releases/:id/artifact_url) で対応可能。</td>
+            <td>entry を pending のまま保持。同じ install.release.id で次の機会に再取得 → 再ダウンロード。policy_sync_results には含めない。</td>
+          </tr>
+          <tr>
+            <th scope="row">artifact_url の DL がリカバリ不能な失敗 (release削除直後で 404 が続く / sha256不一致)</th>
+            <td>404 RELEASE_NOT_FOUND など</td>
+            <td>—</td>
+            <td>entry を failed として確定 (phase=DOWNLOAD, code=ARTIFACT_GONE or ARTIFACT_CORRUPTED)。一括報告に含める。同 install.release.id では再試行しない。次回 fetch で release.id か version_code が変わったら再試行可能。</td>
           </tr>
           <tr>
             <th scope="row">インストール権限なし + FORCE_INSTALLED 不足</th>
             <td>(該当なし)</td>
             <td>—</td>
-            <td>Sticky通知を維持。applied snapshotは更新しない。次の起動/同期で再評価する。</td>
+            <td>Sticky 通知を維持。entry は pending のまま (= リカバリ可能扱い)。ユーザーが反応するか、次回起動で再評価。一括報告も applied 更新もしない。</td>
           </tr>
           <tr>
-            <th scope="row">PackageInstaller / DeviceOwner インストール失敗 (署名不一致など)</th>
-            <td>(該当なし、結果報告のresultで表現)</td>
-            <td>device_policy_sync_reports にresult=FAILEDで記録する。Policy本体は変えない。</td>
-            <td>該当entryは未達のまま。次回再同期で再試行する。署名不一致は端末側で復旧不能なので、管理者に再リリースを依頼する。</td>
+            <th scope="row">INSTALL がリカバリ不能な失敗 (署名不一致 / OS 非互換 / ユーザーが明示拒否)</th>
+            <td>(該当なし、結果報告で表現)</td>
+            <td>device_policy_sync_reports に actions[].result=FAILED で記録。Policy本体は変えない。</td>
+            <td>entry を failed として確定 (phase=INSTALL, code=SIGNATURE_MISMATCH など)。一括報告に含める。同じ artifact では再試行しない。管理者に再リリースを依頼する。</td>
           </tr>
           <tr>
-            <th scope="row">同期中にPolicyがさらに更新された (revision跳び)</th>
+            <th scope="row">policy_sync_results 自体の POST が失敗</th>
+            <td>—</td>
+            <td>—</td>
+            <td>送信ペイロードはローカルに保持し、次の機会に同じ内容で再送 (冪等扱い)。applied_policy_snapshot は受理されるまで更新しない。</td>
+          </tr>
+          <tr>
+            <th scope="row">同期中に Policy がさらに更新された (revision跳び)</th>
             <td>—</td>
             <td>最新revisionが正。古いrevisionに対する結果報告も受け付けるが、applied snapshotに反映するかは端末判断。</td>
-            <td>fetched が古ければ取り直す。applied は「最後に整合した revision」を表すため、古いrevisionで applied を更新してしまわない。</td>
+            <td>FCM 再受信で pending_policy_fetch が立つ。途中の同期は最後まで進めても、次の fetch で fetched が更新され、entry_sync_state を再構築。</td>
+          </tr>
+          <tr>
+            <th scope="row">差し替えで release.id は同じだが artifact が更新された</th>
+            <td>—</td>
+            <td>install.version_name のみが変わる。release.id は同じ。</td>
+            <td>端末は version_code を見て差分を判断するので、同じ release.id でも version_name のみが変わった場合は同期不要。version_code が変わっていれば更新する。</td>
           </tr>
         </tbody>
       </table>
@@ -560,13 +746,19 @@ const lifecycle = `stateDiagram-v2
     <p>このページに書かれていないケースは、まず次の原則で判断してください。</p>
     <ol>
       <li><strong>「あるべき状態 (Policy)」と「実際の状態 (端末)」の差分で考える。</strong> 個別のジョブやキューを作らない。新しい配信要件が出たら、まずPolicyのスキーマで表現できないかを検討する。</li>
-      <li><strong>FCMは「再取得の合図」だけ。</strong> Policy本文をdata payloadに載せない。ユーザー向け通知も出さない。FCMが失敗しても、アプリ起動時取得と手動更新で必ず追いつける構造にする。</li>
-      <li><strong>fetched と applied は別オブジェクト。</strong> 「取得済み」と「適用済み」を1つの値に潰さない。同期失敗時の挙動はこの2つの差分だけで説明できる。</li>
-      <li><strong>過去revisionは消さない。</strong> Policy変更は新規revision追加で表現する。「ロールバックしたい」も古い内容をコピーした新revisionで実現する。</li>
-      <li><strong>端末側で判断できる事はサーバーに持ち込まない。</strong> install_mode、現在のpackage一覧、権限の有無は端末が知っている。サーバーはあるべき状態だけ持ち、リトライ・経路選択・通知制御は端末に寄せる。</li>
-      <li><strong>installed_by_companion を立てたものだけ削除する。</strong> ユーザーが他経路で入れたアプリは絶対にUNINSTALLしない。たとえPolicyに無くても触らない。</li>
-      <li><strong>結果報告はログ。Policy本体を書き換えない。</strong> device_policy_sync_reports は監査・観測用。「失敗したからPolicyを変える」ような副作用を入れない。</li>
-      <li><strong>AVAILABLEに自動インストールを足さない。</strong> ユーザー導線が前提のentryで、UIから選ばれた時だけ artifact_url を取りに行く。</li>
+      <li><strong>DevicePolicy は app 単位、release は引かない。</strong> 「このデバイスにこの version を固定したい」要件は、Policy が release を指す形ではなく、別の "pinning" 概念を後付けする形で考える。今の Policy 設計は「最新版を配信する」を基本にする。</li>
+      <li><strong>release 削除 / app 削除は DevicePolicy をカスケードしない。</strong> Policy の app_id 参照は残し、必要なら soft delete (<code>apps.deleted_at</code>) と組み合わせて表示側で「削除されたアプリ」と分かるようにする。</li>
+      <li><strong>Policy 取得は必要なときだけ。</strong> 起動時に毎回叩かない。FCM 受信 / 手動更新 / 報告未送信 などで立つフラグやキューを見て、必要があるときだけ叩く。</li>
+      <li><strong>失敗はフェーズ単位で分類する。</strong> 「リカバリ可能 → そのフェーズからリトライ」「リカバリ不能 → entry を failed として確定」。新しいエラーが出てきたらまずこの2分類に当てはめる。</li>
+      <li><strong>サーバー報告はリカバリ不能な失敗だけ。</strong> リカバリ可能な失敗 (一時的) は端末側のリトライで吸収する。サーバー側で「同じエラーが何度も来ている」を観測したくなったら、それはリカバリ可能/不能の判定を見直す合図。</li>
+      <li><strong>FCMは「再取得の合図」だけ。</strong> Policy本文をdata payloadに載せない。ユーザー向け通知も出さない。</li>
+      <li><strong>fetched / applied / entry_sync_state を別オブジェクトで持つ。</strong> 「取得済み」「処理進捗」「報告まで完了したか」を1つの値に潰さない。</li>
+      <li><strong>過去revisionは消さない。</strong> Policy変更は新規revision追加で表現する。</li>
+      <li><strong>端末側で判断できる事はサーバーに持ち込まない。</strong> install_mode、現在のpackage一覧、権限の有無、フェーズ別エラーの分類は端末が知っている。サーバーはあるべき状態だけ持ち、リトライ・経路選択・通知制御は端末に寄せる。</li>
+      <li><strong>installed_by_companion を立てたものだけ削除する。</strong> ユーザーが他経路で入れたアプリは絶対にUNINSTALLしない。</li>
+      <li><strong>結果報告はログ。Policy本体を書き換えない。</strong> device_policy_sync_reports は監査・観測用。失敗が観測されたから Policy を変えるようなフィードバックを入れない。</li>
+      <li><strong>AVAILABLEに自動インストールを足さない。</strong> ユーザー導線が前提で、確定判定にも含めない (常に skip)。</li>
+      <li><strong>削除アプリの entry はサーバーから消さない。</strong> admin UI で見える状態を保ち、admin が明示的に PUT で entries を変更したときだけ消える。</li>
     </ol>
     <p>判断に詰まったら <code>AGENTS.md</code> の "Data Modeling" セクション、および本ページの Data model 表を参照してください。AMAPI管理対象端末・非管理端末の差は「権限経路の差 (route)」として記録するだけで、Policyのスキーマでは区別しません。</p>
   </section>

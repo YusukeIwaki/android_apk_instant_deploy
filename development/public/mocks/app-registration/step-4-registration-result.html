@@ -137,33 +137,21 @@
         padding: 20px;
       }
 
-      .result-grid {
-        display: grid;
-        gap: 16px;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
       .panel {
         border: 1px solid var(--line);
-        padding: 14px;
+        border-top: 5px solid var(--green);
+        margin: 0 auto;
+        max-width: 480px;
+        padding: 20px;
       }
 
       .panel h2 {
-        font-size: 17px;
-        margin: 0 0 10px;
-      }
-
-      .success {
-        border-top: 5px solid var(--green);
-      }
-
-      .reject {
-        border-top: 5px solid var(--red);
+        font-size: 18px;
+        margin: 0 0 14px;
       }
 
       .kv {
-        border-top: 1px solid var(--line);
-        margin-top: 10px;
+        margin: 0;
       }
 
       .kv div {
@@ -179,44 +167,21 @@
 
       .kv dt {
         color: var(--muted);
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 700;
       }
 
       .kv dd {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
+        font-size: 13px;
         margin: 0;
         overflow-wrap: anywhere;
       }
 
-      .message {
-        color: #3d4551;
-        font-size: 13px;
-        line-height: 1.5;
-      }
-
-      .badge {
+      .back-link {
+        color: var(--blue);
         display: inline-block;
-        font-size: 12px;
         font-weight: 700;
-        margin-top: 10px;
-        padding: 4px 7px;
-      }
-
-      .badge.green {
-        background: #ecf3ec;
-        color: var(--green);
-      }
-
-      .badge.gold {
-        background: #fff5c2;
-        color: #7d5f00;
-      }
-
-      .badge.red {
-        background: #fde0db;
-        color: var(--red);
+        margin-top: 18px;
       }
 
       @media (max-width: 720px) {
@@ -229,7 +194,6 @@
         }
 
         .admin,
-        .result-grid,
         .kv div {
           grid-template-columns: 1fr;
         }
@@ -237,11 +201,11 @@
     </style>
   </head>
   <body>
-    <div class="chrome" aria-label="Chrome風の管理画面でRelease削除とS3 cleanupを表示">
+    <div class="chrome" aria-label="Chrome風の管理画面でリリース削除の完了を表示">
       <div class="chrome-top" aria-hidden="true">
         <div class="traffic"><span></span><span></span><span></span></div>
         <div class="tab">Distribution Admin</div>
-        <div class="address">https://distribution.example.test/admin/apps/releases/301/delete</div>
+        <div class="address">https://distribution.example.test/admin/apps</div>
       </div>
       <div class="admin">
         <aside class="nav">
@@ -252,29 +216,14 @@
           <span>Audit log</span>
         </aside>
         <main class="main">
-          <h1>バージョン削除</h1>
-          <div class="result-grid">
-            <section class="panel success">
-              <h2>削除しました</h2>
-              <p class="message">このバージョンは配信できなくなりました。APKファイルもサーバーから削除しています。</p>
-              <dl class="kv">
-                <div><dt>アプリ</dt><dd>com.example.qacamera</dd></div>
-                <div><dt>バージョン</dt><dd>2.4.0-qa (42)</dd></div>
-                <div><dt>削除日時</dt><dd>2026-05-21 09:10</dd></div>
-              </dl>
-              <span class="badge green">完了</span>
-            </section>
-            <section class="panel reject">
-              <h2>影響範囲</h2>
-              <p class="message">このバージョンを必須または任意として設定していたデバイスのPolicyからも自動で外れます。</p>
-              <dl class="kv">
-                <div><dt>配信対象</dt><dd>12 デバイス</dd></div>
-                <div><dt>必須として配信中</dt><dd>8 デバイス</dd></div>
-                <div><dt>任意として配信中</dt><dd>4 デバイス</dd></div>
-              </dl>
-              <span class="badge gold">Policy要更新</span>
-            </section>
-          </div>
+          <section class="panel">
+            <h2>リリースを削除しました</h2>
+            <dl class="kv">
+              <div><dt>アプリ</dt><dd>com.example.qacamera</dd></div>
+              <div><dt>バージョン</dt><dd>2.4.0-qa (42)</dd></div>
+            </dl>
+            <a class="back-link" href="#">アプリ一覧に戻る</a>
+          </section>
         </main>
       </div>
     </div>

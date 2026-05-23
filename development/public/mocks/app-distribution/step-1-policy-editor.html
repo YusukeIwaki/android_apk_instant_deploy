@@ -180,6 +180,39 @@
         color: #7d5f00;
       }
 
+      .badge-deleted {
+        background: #f8dfe2;
+        color: #b50909;
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 700;
+        margin-left: 6px;
+        padding: 2px 6px;
+      }
+
+      .pkg {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .row-action {
+        color: var(--blue);
+        font-weight: 700;
+      }
+
+      .add-row {
+        border: 2px dashed #8d9297;
+        color: var(--blue);
+        font-weight: 700;
+        margin-top: 12px;
+        padding: 10px;
+        text-align: center;
+      }
+
       .actions {
         align-items: center;
         display: flex;
@@ -245,20 +278,47 @@
             <thead>
               <tr>
                 <th>アプリ</th>
-                <th>バージョン</th>
+                <th>現在配信中バージョン</th>
                 <th>配信方法</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr><td>App A</td><td>1.0.0 (1)</td><td><span class="mode force">必須</span></td></tr>
-              <tr><td>App B</td><td>1.0.0 (1)</td><td><span class="mode force">必須</span></td></tr>
-              <tr><td>App C</td><td>1.0.0 (1)</td><td><span class="mode force">必須</span></td></tr>
-              <tr><td>App D</td><td>1.0.0 (1)</td><td><span class="mode available">任意</span></td></tr>
+              <tr>
+                <td class="pkg">com.example.appa</td>
+                <td>2.4.0-qa (42)</td>
+                <td><span class="mode force">必須</span></td>
+                <td><span class="row-action">削除</span></td>
+              </tr>
+              <tr>
+                <td class="pkg">com.example.appb</td>
+                <td>1.2.0 (5)</td>
+                <td><span class="mode force">必須</span></td>
+                <td><span class="row-action">削除</span></td>
+              </tr>
+              <tr>
+                <td class="pkg">com.example.appc</td>
+                <td>0.9.3 (9)</td>
+                <td><span class="mode force">必須</span></td>
+                <td><span class="row-action">削除</span></td>
+              </tr>
+              <tr>
+                <td class="pkg">com.example.appd</td>
+                <td>0.3.1 (3)</td>
+                <td><span class="mode available">任意</span></td>
+                <td><span class="row-action">削除</span></td>
+              </tr>
+              <tr>
+                <td class="pkg">com.example.removed<span class="badge-deleted">削除されたアプリ</span></td>
+                <td class="muted">—</td>
+                <td><span class="mode force">必須</span></td>
+                <td><span class="row-action">削除</span></td>
+              </tr>
             </tbody>
           </table>
+          <div class="add-row">+ アプリを追加</div>
           <div class="actions">
             <span class="button">保存して反映</span>
-            <span class="note">保存するとこの端末で同期が開始されます。</span>
           </div>
         </main>
       </div>

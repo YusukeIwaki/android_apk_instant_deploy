@@ -95,7 +95,7 @@ const sequence = `sequenceDiagram
   Launcher->>App: custom schemeでアプリ起動
   App->>Api: device create(same identifier, secret)
   Api->>Registry: token行なし、devices.identifierあり
-  Api-->>App: 410 DEVICE_ALREADY_REGISTERED
+  Api-->>App: 403 DEVICE_ALREADY_REGISTERED
   App-->>User: 登録済みリンクとして表示`;
 
 const state = `stateDiagram-v2
@@ -225,7 +225,7 @@ const identityFlow = `flowchart LR
           <dl class="db-list">
             <div>
               <dt>device_registration_tokens</dt>
-              <dd>identifier、secret_hash、issued_at、expires_at、created_by を保存する。状態カラムは持たない。secret は hash だけ保存し、平文は応答にのみ含める。</dd>
+              <dd>identifier、secret_hash、issued_at、expires_at を保存する。状態カラムは持たない。secret は hash だけ保存し、平文は応答にのみ含める。発行者の記録は持たない (現設計には admin user の概念が無く、行は登録成功時に削除される)。</dd>
             </div>
             <div>
               <dt>devices</dt>

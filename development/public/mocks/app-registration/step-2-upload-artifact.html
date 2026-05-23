@@ -136,31 +136,26 @@
         padding: 20px;
       }
 
-      .layout {
-        display: grid;
-        gap: 16px;
-        grid-template-columns: minmax(0, 1fr) 280px;
+      .upload-card {
+        border: 1px solid var(--line);
+        padding: 18px;
       }
 
-      .terminal {
-        background: #1b1b1b;
-        color: #f7f9fa;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 13px;
-        line-height: 1.55;
-        min-height: 190px;
-        padding: 14px;
-      }
-
-      .terminal b {
-        color: #9bdaf1;
+      .upload-filename {
         font-weight: 700;
+        margin-bottom: 4px;
+      }
+
+      .upload-size {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 14px;
       }
 
       .progress {
         background: #dfe1e2;
-        height: 18px;
-        margin: 14px 0;
+        height: 14px;
+        margin: 6px 0 10px;
         overflow: hidden;
       }
 
@@ -168,50 +163,12 @@
         background: var(--green);
         display: block;
         height: 100%;
-        width: 100%;
+        width: 65%;
       }
 
-      .check {
-        border: 1px solid var(--line);
-      }
-
-      .row {
-        display: grid;
-        gap: 10px;
-        grid-template-columns: 26px minmax(0, 1fr);
-        padding: 10px;
-      }
-
-      .row + .row {
-        border-top: 1px solid var(--line);
-      }
-
-      .icon {
-        background: var(--green);
-        color: #fff;
-        display: grid;
-        font-size: 12px;
-        font-weight: 700;
-        height: 26px;
-        place-items: center;
-        width: 26px;
-      }
-
-      .row span {
+      .upload-status {
         color: var(--muted);
-        display: block;
-        font-size: 12px;
-        margin-top: 2px;
-      }
-
-      .note {
-        background: #fff5c2;
-        border-left: 4px solid var(--gold);
-        color: #3d4551;
         font-size: 13px;
-        line-height: 1.45;
-        margin-top: 12px;
-        padding: 9px 10px;
       }
 
       @media (max-width: 720px) {
@@ -223,8 +180,7 @@
           display: none;
         }
 
-        .admin,
-        .layout {
+        .admin {
           grid-template-columns: 1fr;
         }
       }
@@ -247,31 +203,11 @@
         </aside>
         <main class="main">
           <h1>アップロード中</h1>
-          <div class="layout">
-            <section>
-              <div class="terminal">
-                qa-camera-2.4.0-42.apk<br />
-                <br />
-                ファイルをアップロード中... 100%<br />
-                APKを解析中...<br />
-                登録を確定中...
-              </div>
-              <div class="progress" aria-hidden="true"><span></span></div>
-            </section>
-            <aside class="check">
-              <div class="row">
-                <div class="icon">OK</div>
-                <div><b>ファイル送信</b><span>APKファイルを受け取りました</span></div>
-              </div>
-              <div class="row">
-                <div class="icon">OK</div>
-                <div><b>APK解析</b><span>パッケージ名・バージョン・署名を取得</span></div>
-              </div>
-              <div class="row">
-                <div class="icon">OK</div>
-                <div><b>登録</b><span>配信できる状態にしました</span></div>
-              </div>
-            </aside>
+          <div class="upload-card">
+            <div class="upload-filename">qa-camera-2.4.0-42.apk</div>
+            <div class="upload-size">48.2 MB</div>
+            <div class="progress" aria-hidden="true"><span></span></div>
+            <div class="upload-status">アップロード中... 65%</div>
           </div>
         </main>
       </div>
