@@ -3,7 +3,7 @@ import DiagramFrame from "../../../components/DiagramFrame.astro";
 import Mermaid from "../../../components/Mermaid.astro";
 import BaseLayout from "../../../layouts/BaseLayout.astro";
 
-const uploadCurl = `curl -X POST https://distribution.example.test/api/artifacts \\
+const uploadCurl = `curl -X POST https://distribution.example.test/admin/artifacts \\
   -H "Authorization: Bearer $ADMIN_TOKEN" \\
   -F "file=@qa-camera-2.4.0-42.apk;type=application/vnd.android.package-archive"`;
 
@@ -18,7 +18,7 @@ const uploadResponse = `HTTP/1.1 201 Created
   }
 }`;
 
-const newVersionCurl = `curl -X POST https://distribution.example.test/api/artifacts \\
+const newVersionCurl = `curl -X POST https://distribution.example.test/admin/artifacts \\
   -H "Authorization: Bearer $ADMIN_TOKEN" \\
   -F "file=@qa-camera-2.4.1-43.apk;type=application/vnd.android.package-archive"
 
@@ -40,7 +40,7 @@ const newVersionResponse = `HTTP/1.1 201 Created
 
 # 応答形は新規パッケージの初回アップロード時と同じ。
 # 既存パッケージへの新バージョン追加でも、artifact メタデータのみを返す。
-# 「どの release が増えたか」は次の GET /api/apps から確認する。`;
+# 「どの release が増えたか」は次の GET /admin/apps から確認する。`;
 
 const versionAlreadyExistsResponse = `HTTP/1.1 400 Bad Request
 {
@@ -76,7 +76,7 @@ const signingCertMismatchResponse = `HTTP/1.1 400 Bad Request
 # 同じ package_name で過去に登録済みの release と署名が異なる場合は拒否する。
 # 端末側のPackageInstallerが署名差し替えを許可しないため、配信前に検出する。`;
 
-const listAppsCurl = `curl -X GET https://distribution.example.test/api/apps \\
+const listAppsCurl = `curl -X GET https://distribution.example.test/admin/apps \\
   -H "Authorization: Bearer $ADMIN_TOKEN"`;
 
 const listAppsResponse = `HTTP/1.1 200 OK
@@ -107,10 +107,10 @@ const listAppsResponse = `HTTP/1.1 200 OK
   ]
 }
 
-# POST /api/artifacts でアップロードが成功すると、次の GET /api/apps からこの一覧に新しい app または release が現れる。
+# POST /admin/artifacts でアップロードが成功すると、次の GET /admin/apps からこの一覧に新しい app または release が現れる。
 # 管理者はこの一覧を見て「アップロードが反映された」ことを確認する。`;
 
-const deleteReleaseCurl = `curl -X DELETE https://distribution.example.test/api/releases/301 \\
+const deleteReleaseCurl = `curl -X DELETE https://distribution.example.test/admin/releases/301 \\
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # Response: 204 No Content`;
@@ -118,6 +118,8 @@ const deleteReleaseCurl = `curl -X DELETE https://distribution.example.test/api/
 const relationshipDiagram = `flowchart LR
   subgraph App["apps: アプリidentity"]
     AppNode["id: 12 (AR primary key)<br/>package_name: com.example.qacamera<br/>created_at"]
+    ProfileNode["app_profiles<br/>app_id: 12<br/>display_name: QA Camera"]
+    IconNode["app_icons<br/>app_id: 12<br/>image_data (Shrine/S3)"]
   end
 
   subgraph Releases["releases: 配信で選ぶバージョン単位"]
@@ -132,6 +134,8 @@ const relationshipDiagram = `flowchart LR
 
   AppNode -->|"1 app has many releases"| Release1
   AppNode -->|"1 app has many releases"| Release2
+  AppNode -->|"表示名は別概念"| ProfileNode
+  AppNode -->|"アイコン画像は別model"| IconNode
   Release1 -->|"uses this APK"| Artifact1
   Release2 -->|"uses this APK"| Artifact2`;
 
@@ -152,6 +156,8 @@ const ownershipFlow = `flowchart LR
 
   subgraph DB["DB / ActiveRecord"]
     Apps["apps<br/>id / package_name"]
+    Profiles["app_profiles<br/>app_id / display_name"]
+    Icons["app_icons<br/>app_id / image_data (Shrine)"]
     Artifacts["artifacts<br/>id / s3_key / sha256 / size_bytes / signing_cert_sha256"]
     Releases["releases<br/>id / app_id / artifact_id / version_code / version_name"]
   end
@@ -163,6 +169,8 @@ const ownershipFlow = `flowchart LR
   S3Object --> ArtifactService
   ArtifactService --> Artifacts
   ArtifactService --> Apps
+  ArtifactService --> Profiles
+  ArtifactService --> Icons
   ArtifactService --> Releases
   Releases --> Artifacts
   Apps --> Releases
@@ -170,9 +178,9 @@ const ownershipFlow = `flowchart LR
   Artifacts -. "S3 cleanup" .-> S3Object`;
 
 const artifactFlow = `flowchart TD
-  Start["管理者 / CIがAPKを選択"] --> Post["POST /api/artifacts<br/>multipart field: file"]
+  Start["管理者 / CIがAPKを選択"] --> Post["POST /admin/artifacts<br/>multipart field: file"]
   Post --> Receive["APIサーバーがinput[:file]を受け取る"]
-  Receive --> Parse["APKを解析<br/>package_name / version_code / version_name / sha256 / cert"]
+  Receive --> Parse["APKを解析<br/>package_name / version_code / version_name / sha256 / cert<br/>application label / icon"]
   Parse --> Valid{"APKとして受け入れ可能か"}
   Valid -->|いいえ| Reject["400 INVALID_APK で拒否<br/>apps / releases / artifacts / S3は変更しない"]
   Valid -->|はい| Dup{"(package_name, version_code) が<br/>既に release に存在?"}
@@ -181,14 +189,17 @@ const artifactFlow = `flowchart TD
   CertCheck -->|不一致| RejectCert["400 SIGNING_CERT_MISMATCH で拒否<br/>S3にも書かない"]
   CertCheck -->|一致 or 新規 package| Upload["input[:file]をS3へアップロード"]
   Upload --> Artifact["artifacts作成<br/>S3 keyとAPK由来metadataを保存"]
-  Artifact --> App["appsをpackage_nameで作成または参照<br/>(deleted_atを再アクティブ化することもある)"]
-  App --> CreateRelease["releases を新規作成<br/>artifact_idを設定 (append-only)"]
+  Artifact --> App["appsをpackage_nameで作成または参照<br/>(行が無ければ新しいidで新規作成)"]
+  App --> Profile["app_profiles を更新<br/>APK label を表示名として保存"]
+  App --> Icon["app_icons を更新<br/>抽出iconをShrineでS3保存"]
+  Profile --> CreateRelease["releases を新規作成<br/>artifact_idを設定 (append-only)"]
+  Icon --> CreateRelease
   CreateRelease --> Done["登録完了"]
   Done --> ReleaseDelete["後日、管理者が release を明示的に削除"]
   ReleaseDelete --> ArtifactDestroy["release削除から artifact 削除へ推移"]
   ArtifactDestroy --> Cleanup["artifact destroy callback で S3 objectを削除"]
   ReleaseDelete --> AppCheck{"その app の release が<br/>1つも残らない?"}
-  AppCheck -->|はい| SoftDelete["apps.deleted_at を立てる<br/>(行は残す)"]
+  AppCheck -->|はい| HardDelete["apps を hard delete<br/>device_policy_app_entries も FK CASCADE で削除"]
   AppCheck -->|いいえ| Keep["apps はそのまま"]`;
 
 const sequence = `sequenceDiagram
@@ -199,43 +210,44 @@ const sequence = `sequenceDiagram
   participant S3 as S3 artifact bucket
   participant AR as ActiveRecord / DB
 
-  Operator->>Api: POST /api/artifacts(file)
-  Api->>Inspector: input[:file]からAPK metadataを抽出
+  Operator->>Api: POST /admin/artifacts(file)
+    Api->>Inspector: input[:file]からAPK metadata / label / iconを抽出
   alt APKとして受け入れ可能 + 同じ (app, version_code) が無い + 署名一致
     Api->>S3: input[:file]をS3 objectとして保存
     Api->>AR: artifactsを作成
     Api->>AR: appsをpackage_nameで作成または参照
+    Api->>AR: app_profiles / app_iconsを作成または更新
     Api->>AR: releasesを新規作成 (append-only)
     Api-->>Operator: artifact メタデータを返す
   else 不正なAPK / 既存 (app, version_code) / 署名不一致
     Api-->>Operator: 400 INVALID_APK / VERSION_ALREADY_EXISTS / SIGNING_CERT_MISMATCH を返す
   end
 
-  Operator->>Api: DELETE /api/releases/:id
+  Operator->>Api: DELETE /admin/releases/:id
   Api->>AR: Release.destroy
   AR->>AR: 関連artifactをdestroy
   AR->>S3: artifact destroy callback で S3 objectを削除
-  AR->>AR: その app の release が無くなれば apps.deleted_at を立てる
+  AR->>AR: その app の release が無くなれば apps を hard delete<br/>(device_policy_app_entries も FK CASCADE)
   Api-->>Operator: 204 No Content`;
 
 const lifecycle = `stateDiagram-v2
-  [*] --> FileSubmitted: POST /api/artifacts(file)
+  [*] --> FileSubmitted: POST /admin/artifacts(file)
   FileSubmitted --> Inspecting: input[:file]を解析
   Inspecting --> Rejected: APKではない / 解析不可 / 同 (app, version_code) 既存 / 署名不一致
   Inspecting --> StoredInS3: 受け入れ可能
   StoredInS3 --> ArtifactRecorded: artifacts作成
-  ArtifactRecorded --> AppResolved: apps を作成 or 参照<br/>(deleted_at が立っていれば null に戻す)
-  AppResolved --> ReleaseLinked: releases を新規作成 (append-only)
+  ArtifactRecorded --> AppResolved: apps を作成 or 参照<br/>(行が無ければ新しい app.id で新規作成)
+  AppResolved --> DisplayMetadata: app_profiles / app_icons を更新
+  DisplayMetadata --> ReleaseLinked: releases を新規作成 (append-only)
   ReleaseLinked --> Registered: 登録結果を返す
   Registered --> Active: 配信可能
-  Active --> ReleaseDeleting: DELETE /api/releases/:id
+  Active --> ReleaseDeleting: DELETE /admin/releases/:id
   ReleaseDeleting --> ArtifactDestroying: Release 削除から推移
   ArtifactDestroying --> S3Deleted: S3 object 削除
-  S3Deleted --> AppSoftDeleted: その app の release が0件<br/>apps.deleted_at を立てる
+  S3Deleted --> AppHardDeleted: その app の release が0件<br/>apps を hard delete<br/>device_policy_app_entries も FK CASCADE で削除
   S3Deleted --> Active: 他にも release が残っている
   Rejected --> [*]
-  AppSoftDeleted --> Active: 同 package_name で再アップロード<br/>(deleted_at を null に戻す)
-  AppSoftDeleted --> [*]`;
+  AppHardDeleted --> [*]: 同 package_name で再アップロードしても<br/>別の apps.id として新規作成される (復活はしない)`;
 ---
 
 <BaseLayout
@@ -245,8 +257,8 @@ const lifecycle = `stateDiagram-v2
 >
   <p class="lede">
     アプリ登録は、管理者またはCIがAPKファイルを1つアップロードする操作で完結します。
-    APIサーバーは受け取った <code>input[:file]</code> を解析・検証し、APKとして妥当ならS3へ保存して、APKから読み取った package_name、version_code、version_name、署名、hash、サイズをもとに、artifacts、apps、releases を必要な分だけ作成または更新します。
-    ユーザー操作として扱うのは <strong>Artifact作成 (POST /api/artifacts)</strong> と <strong>Release削除 (DELETE /api/releases/:id)</strong> の2つだけで、artifact 単体の作成・削除APIは提供しません。
+    APIサーバーは受け取った <code>input[:file]</code> を解析・検証し、APKとして妥当ならS3へ保存して、APKから読み取った package_name、version_code、version_name、署名、hash、サイズ、application label、icon をもとに、artifacts、apps、app_profiles、app_icons、releases を必要な分だけ作成または更新します。
+    ユーザー操作として扱うのは <strong>Artifact作成 (POST /admin/artifacts)</strong> と <strong>Release削除 (DELETE /admin/releases/:id)</strong> の2つだけで、artifact 単体の作成・削除APIは提供しません。
     build source や changelog はこの登録データでは管理しません。
   </p>
 
@@ -267,19 +279,19 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">管理者 / CI</th>
             <td>新しいAPK ができた (新規 package or 新バージョン) / 配信対象から外したい</td>
-            <td>POST /api/artifacts でAPKをアップロードする。配信終了時は DELETE /api/releases/:id を呼ぶ。</td>
+            <td>POST /admin/artifacts でAPKをアップロードする。配信終了時は DELETE /admin/releases/:id を呼ぶ。</td>
             <td>artifacts, releases (経由で apps)</td>
           </tr>
           <tr>
             <th scope="row">APIサーバー</th>
-            <td>POST /api/artifacts / DELETE /api/releases/:id</td>
-            <td>APK解析 → 重複バージョンチェック → 署名検証 → S3保存 → artifact / (必要なら apps) / releases を1トランザクションで確定 (releases は常に append-only)。Release削除時は artifact を destroy して S3 object を削除し、その app の release が0件になったら apps.deleted_at を立てる。</td>
+            <td>POST /admin/artifacts / DELETE /admin/releases/:id</td>
+            <td>APK解析 → 重複バージョンチェック → 署名検証 → S3保存 → artifact / (必要なら apps) / releases を1トランザクションで確定 (releases は常に append-only)。Release削除時は artifact を destroy して S3 object を削除し、その app の release が0件になったら apps を hard delete (関連 device_policy_app_entries も FK CASCADE で削除)。</td>
             <td>apps, artifacts, releases, S3 bucket</td>
           </tr>
           <tr>
             <th scope="row">S3 bucket</th>
             <td>APIサーバーからの put_object / delete_object</td>
-            <td>APK bytes の保存先。key は <code>{`artifacts/{artifact.id}/{filename}`}</code>。</td>
+            <td>APK bytes の保存先。key は <code>{`artifacts/{artifact.id}/{filename}`}</code>。本番は AWS S3、ローカル開発は S3互換エミュレータの <a href="https://github.com/floci-io/floci">floci</a> を使う (MinIO ではない)。サーバー側のクライアントは AWS SDK そのままで、エンドポイントだけ環境変数で差し替える。</td>
             <td>artifacts に紐づく単一の object</td>
           </tr>
         </tbody>
@@ -298,11 +310,19 @@ const lifecycle = `stateDiagram-v2
       </div>
       <div>
         <dt>apps</dt>
-        <dd>package_name で識別される配布対象アプリのidentity。解析した package_name に対応する行がなければ作成し、あれば既存行を参照する。changelogやbuild sourceは持たない。</dd>
+        <dd>package_name で識別される配布対象アプリのidentity。解析した package_name に対応する行がなければ作成し、あれば既存行を参照する。表示名、アイコン、changelog、build sourceは持たない。</dd>
+      </div>
+      <div>
+        <dt>app_profiles</dt>
+        <dd>APKから抽出した application label を、利用者向けの表示名として app_id と分けて保存する。package_name と lifecycle が異なる表示メタデータなので apps には混ぜない。</dd>
+      </div>
+      <div>
+        <dt>app_icons</dt>
+        <dd>APKから抽出した launcher icon を画像として保存する別model。Shrine の <code>image_data</code> でS3へアップロードし、アプリ一覧・任意アプリ詳細のアイコン表示に使う。</dd>
       </div>
       <div>
         <dt>releases</dt>
-        <dd>app_id、artifact_id、version_code、version_name を持つバージョン単位の配信対象。app_id + version_code の release がなければ作成し、既にあれば artifact_id と version_name を更新する。ユーザーが削除する単位でもあり、削除時には関連artifactの削除へ推移する。</dd>
+        <dd>app_id、artifact_id、version_code、version_name を持つバージョン単位の配信対象。app_id + version_code の release がなければ作成し、既にあれば 400 VERSION_ALREADY_EXISTS で拒否する。ユーザーが削除する単位でもあり、削除時には関連artifactの削除へ推移する。</dd>
       </div>
     </dl>
   </section>
@@ -340,7 +360,7 @@ const lifecycle = `stateDiagram-v2
             </div>
           </dl>
           <h4>応答の責務</h4>
-          <p>応答は作成された artifact のメタデータ (<code>id</code>、<code>filename</code>、<code>sha256</code>、<code>size_bytes</code>、<code>signing_cert_sha256</code>) のみ。S3 の storage 種別や key などバックエンド都合の情報は含めない。サーバー内部では artifact と同じトランザクションで app と release も作成・更新するが、その結果は応答では返さず、管理者は次ステップの GET /api/apps で確認する。</p>
+          <p>応答は作成された artifact のメタデータ (<code>id</code>、<code>filename</code>、<code>sha256</code>、<code>size_bytes</code>、<code>signing_cert_sha256</code>) のみ。S3 の storage 種別や key などバックエンド都合の情報は含めない。サーバー内部では artifact と同じトランザクションで app と release も作成・更新するが、その結果は応答では返さず、管理者は次ステップの GET /admin/apps で確認する。</p>
         </div>
       </div>
     </article>
@@ -350,7 +370,7 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">2</span>
         <div>
           <h3 id="step-2">APIサーバーが <code>input[:file]</code> を検証・保存して artifact を作る</h3>
-          <p>サーバーは受け取ったファイルをAPKとして解析し、APKとして妥当で、かつ既存 release との署名互換性も満たす場合に限りS3へアップロードします。「検証 → 保存」の順序を守ることで、不正リクエストでS3に孤児オブジェクトを残さないようにします。</p>
+          <p>サーバーは受け取ったファイルをAPKとして解析し、APKとして妥当で、かつ既存 release との署名互換性も満たす場合に限りS3へアップロードします。同時に application label と launcher icon を抽出し、表示名は <code>app_profiles</code>、アイコンは Shrine 管理の <code>app_icons</code> として保存します。「検証 → 保存」の順序を守ることで、不正リクエストでS3に孤児オブジェクトを残さないようにします。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -368,6 +388,10 @@ const lifecycle = `stateDiagram-v2
               <dt>artifacts</dt>
               <dd>S3 key と、APKから抽出した sha256、size_bytes、signing_cert_sha256 を保存する。artifact 独自の外部識別子は増やさず、行参照には ActiveRecord id を使う。</dd>
             </div>
+            <div>
+              <dt>app_profiles / app_icons</dt>
+              <dd>APKから抽出した application label を <code>app_profiles.display_name</code> に保存し、launcher icon は <code>app_icons.image_data</code> として Shrine でS3に保存する。アイコン抽出や画像保存に失敗した場合は artifact 登録全体を失敗させるか、既定アイコンにフォールバックするかを実装前に選ぶ。</dd>
+            </div>
           </dl>
         </div>
       </div>
@@ -377,8 +401,8 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">3</span>
         <div>
-          <h3 id="step-3">GET /api/apps で登録結果を確認する</h3>
-          <p>POST /api/artifacts の応答は artifact メタデータだけなので、管理者は GET /api/apps を呼んで「アップロードしたアプリが一覧に増えているか」を確認します。新規 package なら apps 一覧に1行追加され、既存 package への新バージョンなら該当 app の releases に新しい行が <strong>追加</strong> されます (古いリリースはそのまま残ります)。</p>
+          <h3 id="step-3">GET /admin/apps で登録結果を確認する</h3>
+          <p>POST /admin/artifacts の応答は artifact メタデータだけなので、管理者は GET /admin/apps を呼んで「アップロードしたアプリが一覧に増えているか」を確認します。新規 package なら apps 一覧に1行追加され、既存 package への新バージョンなら該当 app の releases に新しい行が <strong>追加</strong> されます (古いリリースはそのまま残ります)。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -436,11 +460,11 @@ const lifecycle = `stateDiagram-v2
             </div>
             <div>
               <dt>apps</dt>
-              <dd>その app の release が全て削除された時点で <code>apps.deleted_at</code> を立てて soft-delete する。行自体は残し、同じ package_name で再アップロードがあったら deleted_at を null に戻して復活させる。DevicePolicy entries は app_id 参照を維持し、admin UI 側で「削除されたアプリ」として表示する (アプリの配信ページ参照)。</dd>
+              <dd>その app の release が全て削除された時点で <strong>hard delete</strong> する。soft-delete 用の <code>deleted_at</code> カラムは持たない。同じ <code>package_name</code> で再アップロードがあった場合は <em>新しい <code>apps.id</code> として新規作成</em> し、旧 id は復活させない。</dd>
             </div>
             <div>
               <dt>device_policy_app_entries</dt>
-              <dd>release 削除や app の soft-delete では一切触らない。Policy を変更したい場合は管理者が明示的に PUT する。</dd>
+              <dd>apps の hard delete に伴い、FK CASCADE で関連 entry も同時に削除される。「削除されたアプリ entry」 が宙に浮く状態は発生しない。Policy を再構成したい場合は admin が明示的に新しい app.id で PUT する。</dd>
             </div>
           </dl>
         </div>
@@ -480,6 +504,12 @@ const lifecycle = `stateDiagram-v2
             <td>APK解析</td>
             <td>apps</td>
             <td>配布対象アプリを識別する安定した事実。DB行の参照には apps.id を使う。</td>
+          </tr>
+          <tr>
+            <th scope="row">application label / launcher icon</th>
+            <td>APK解析</td>
+            <td>app_profiles / app_icons (Shrine/S3)</td>
+            <td>Androidアプリの任意アプリ一覧・詳細で表示するアプリ名とアイコン。identity ではないため apps には保存しない。</td>
           </tr>
           <tr>
             <th scope="row">version_code / version_name</th>
@@ -547,7 +577,7 @@ const lifecycle = `stateDiagram-v2
             <th scope="row">S3アップロード失敗</th>
             <td>502 ARTIFACT_UPLOAD_FAILED</td>
             <td>DBには何も書かない。S3 objectは部分的に残る可能性があるが、artifact行と紐付かないため定期cleanupの対象として扱う。</td>
-            <td>同じファイルで再試行。S3 cleanup ジョブは「artifactsに紐付かないオブジェクトを一定期間後に削除」する。</td>
+            <td>同じファイルで再試行。S3 cleanup はバケット lifecycle rule を第一候補とし、<code>tmp/</code> や孤児 prefix の object を7日後に削除する。DBとの照合が必要な保存方式に変えた場合だけバッチジョブにする。</td>
           </tr>
           <tr>
             <th scope="row">multipart に file がない / 複数</th>
@@ -589,15 +619,16 @@ const lifecycle = `stateDiagram-v2
     <h2 id="guidance">不足ユースケースに遭遇したときの判断指針</h2>
     <p>このページに書かれていないケースは、まず次の原則で判断してください。</p>
     <ol>
-      <li><strong>ユーザー操作の入口は2つだけ。</strong> Artifact作成 (POST /api/artifacts) と Release削除 (DELETE /api/releases/:id)。artifact 単体の作成・削除APIや、apps を直接編集するAPIは追加しない。</li>
+      <li><strong>ユーザー操作の入口は2つだけ。</strong> Artifact作成 (POST /admin/artifacts) と Release削除 (DELETE /admin/releases/:id)。artifact 単体の作成・削除APIや、apps を直接編集するAPIは追加しない。</li>
       <li><strong>artifactsはAPK bytesと保存先の事実だけを持つ。</strong> changelog、build source、CI metadata、ブランチ名などを足したくなったら別テーブルを検討する。</li>
+      <li><strong>表示メタデータはappsに混ぜない。</strong> application label は <code>app_profiles</code>、launcher icon は Shrine-backed の <code>app_icons</code> に保存する。package_name identity と表示名・画像の lifecycle を分ける。</li>
       <li><strong>build由来情報を登録データに混ぜない。</strong> branch、commit SHA、CIビルド番号、Slack通知用のリリースノートなどは、必要なら別ユースケースとして別の paths / tables で扱う。</li>
       <li><strong>署名は配信前に必ず検証する。</strong> 同じ package_name で署名が変わると、端末のPackageInstallerが必ず失敗する。サーバー側で先に検出して、不整合のあるartifactをS3に書かない。</li>
       <li><strong>releases は append-only。「差し替え」は無い。</strong> 同じ (package_name, version_code) を後から差し替える経路は提供しない。中身を直したい場合は APK の version_code を上げて新しい release として登録する。古い release が不要なら管理者が明示的に DELETE する。</li>
       <li><strong>削除は管理者の明示的な操作のみ。</strong> アップロードや新バージョン追加では古い release / artifact / S3 object を一切自動削除しない。これにより「いつの時点でも管理者が知らないうちに過去成果物が消える」状況を避ける。</li>
       <li><strong>S3に書く前にDB検証を終える。</strong> S3 objectを書いてからDB保存に失敗するパターンは作らない。「検証 → S3保存 → DB作成」の順で、DB作成失敗時はS3も巻き戻すか、cleanupジョブで掃除可能な状態にしておく。</li>
       <li><strong>「直接削除したい」は通常 release.delete で十分。</strong> 配信から外す = release削除。APK bytes だけ消したい要求が来ても、通常は release を消すことで artifact も S3 も連動して消えるため、別APIを足す前にユースケースを問い直す。</li>
-      <li><strong>app の deleted_at は事実の記録。</strong> 「最後の release が消えた」というイベントの結果として立てる。手動でフラグを操作する API は持たず、再アップロードで自動的に null に戻る。</li>
+      <li><strong>apps の削除は hard delete。</strong> 全 release が消えた時点で apps 行を物理削除し、関連 <code>device_policy_app_entries</code> は FK CASCADE で同時に消える。<code>deleted_at</code> 列は持たない。同じ <code>package_name</code> の再アップロードは別 <code>apps.id</code> で新規作成。</li>
     </ol>
     <p>判断に詰まったら <code>AGENTS.md</code> の "Data Modeling" セクション、および本ページの Data ownership 表を参照してください。</p>
   </section>

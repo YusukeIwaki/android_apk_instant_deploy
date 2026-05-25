@@ -3,7 +3,7 @@ import DiagramFrame from "../../../components/DiagramFrame.astro";
 import Mermaid from "../../../components/Mermaid.astro";
 import BaseLayout from "../../../layouts/BaseLayout.astro";
 
-const createTokenCurl = `curl -X POST https://distribution.example.test/api/device_registration_tokens \\
+const createTokenCurl = `curl -X POST https://distribution.example.test/admin/device_registration_tokens \\
   -H "Authorization: Bearer $ADMIN_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -55,7 +55,7 @@ const alreadyRegisteredResponse = `HTTP/1.1 403 Forbidden
   }
 }
 
-# devices.identifier と同じ値が既にある場合に返す。
+# 同じ device_identifiers (identifier 文字列) を握っている devices 行が既にある場合に返す。
 # このとき device_profiles / fcm_push_tokens / device_credentials は触らない。`;
 
 const expiredOrSecretMismatchResponse = `HTTP/1.1 404 Not Found
@@ -94,7 +94,7 @@ const sequence = `sequenceDiagram
   User->>Launcher: 同じQRまたはリンクを再度開く
   Launcher->>App: custom schemeでアプリ起動
   App->>Api: device create(same identifier, secret)
-  Api->>Registry: token行なし、devices.identifierあり
+  Api->>Registry: token行なし、同 device_identifier_id の devices 行あり
   Api-->>App: 403 DEVICE_ALREADY_REGISTERED
   App-->>User: 登録済みリンクとして表示`;
 
@@ -116,7 +116,7 @@ const state = `stateDiagram-v2
 
 const identityFlow = `flowchart LR
   subgraph Token["DeviceRegistrationToken"]
-    TokenIdentifier["identifier<br/>サーバーが発行"]
+    TokenIdentifier["identifier<br/>サーバーが発行 (device_identifiers に新規行を作る)"]
     RegistrationSecret["registration secret<br/>URL/QRに含める一回限りの秘密"]
   end
 
@@ -129,21 +129,27 @@ const identityFlow = `flowchart LR
   end
 
   subgraph Server["APIサーバー"]
-    TokenRecord["device_registration_tokens<br/>identifier / secret_hash / issued_at / expires_at"]
-    DeviceRecord["devices<br/>identifier = DeviceRegistrationToken.identifierで新規作成"]
+    IdentifierRecord["device_identifiers<br/>id / identifier (UNIQUE)<br/>= identifier 文字列を一元管理"]
+    TokenRecord["device_registration_tokens<br/>id / device_identifier_id (UNIQUE FK) /<br/>secret_hash / issued_at / expires_at"]
+    DeviceRecord["devices<br/>id / device_identifier_id (UNIQUE FK) /<br/>registered_at"]
     ProfileRecord["device_profiles<br/>device_id / display_name"]
+    CredentialRecord["device_credentials<br/>device_id / token_hmac"]
     PushRecord["fcm_push_tokens<br/>device_id / token_hash / encrypted_token"]
   end
 
+  IdentifierRecord --> TokenRecord
+  IdentifierRecord -. "登録成功で device 側へ" .-> DeviceRecord
   TokenIdentifier --> Browser --> App
   RegistrationSecret --> Browser
   App -->|device create| DeviceRecord
-  TokenRecord -->|validate then delete| DeviceRecord
+  TokenRecord -->|secret 検証後に token 行のみ削除| DeviceRecord
   DisplayName -->|必須入力| ProfileRecord
   PushToken -->|同時送信| PushRecord
   DeviceRecord -->|issue| Credential
+  Credential -->|HMAC化して保管| CredentialRecord
   ProfileRecord --> DeviceRecord
-  PushRecord --> DeviceRecord`;
+  PushRecord --> DeviceRecord
+  CredentialRecord --> DeviceRecord`;
 ---
 
 <BaseLayout
@@ -153,8 +159,12 @@ const identityFlow = `flowchart LR
 >
   <p class="lede">
     デバイス登録は、事前にDeviceを作っておく処理ではありません。
-    サーバーが発行したDeviceRegistrationTokenをcustom scheme URLまたはQRコードで端末アプリへ渡し、アプリがFCM tokenを取得してから、必須入力の表示名とともにdevicesを新規作成します。
-    Android Management API のmanaged-device enrollmentとは別物で、AMAPI管理外端末も同じ流れで登録できます。
+    サーバーが発行したDeviceRegistrationTokenを端末アプリへ渡し、アプリがFCM tokenを取得してから、表示名とともにdevicesを新規作成します。
+    受け渡し経路は2つあり、AMAPI管理外端末は custom scheme URL / QR コード、AMAPI管理端末は <a href="/android-app-prereq/#managed-configuration">AMAPI policy の <code>managedConfiguration</code></a> を使います。
+    どちらも同じ <code>POST /api/devices</code> に集約され、Android Management API のmanaged-device enrollmentとは別物です。
+  </p>
+  <p class="lede">
+    identifier (端末を外部から指す文字列) は <strong>専用テーブル <code>device_identifiers</code> に UNIQUE 制約付きで一元管理</strong> します。<code>devices</code> と <code>device_registration_tokens</code> は <code>device_identifier_id</code> で同じ行を参照する形にし、<em>同一 identifier が同時に「未使用 token」と「登録済み device」になる可能性を DB レベルで排除</em> します。
   </p>
 
   <section aria-labelledby="actors">
@@ -193,7 +203,7 @@ const identityFlow = `flowchart LR
             <th scope="row">APIサーバー</th>
             <td>POST /api/devices</td>
             <td>tokenを検証し、devices / device_profiles / device_credentials / fcm_push_tokens を1トランザクションで作成し、device_registration_tokens 行を削除する。</td>
-            <td>devices.identifier (= DeviceRegistrationToken.identifier)</td>
+            <td>device_identifier_id (= devices と device_registration_tokens が共通参照する device_identifiers 行)</td>
           </tr>
         </tbody>
       </table>
@@ -224,12 +234,24 @@ const identityFlow = `flowchart LR
           <h4>作成されるDBデータ</h4>
           <dl class="db-list">
             <div>
+              <dt>device_identifiers</dt>
+              <dd>新しい identifier 文字列を生成し、<code>device_identifiers</code> 行を1つ作る。<code>identifier</code> 列に UNIQUE 制約。以後、登録 token も登録済み device もこの行を <code>device_identifier_id</code> で参照する。</dd>
+            </div>
+            <div>
               <dt>device_registration_tokens</dt>
-              <dd>identifier、secret_hash、issued_at、expires_at を保存する。状態カラムは持たない。secret は hash だけ保存し、平文は応答にのみ含める。発行者の記録は持たない (現設計には admin user の概念が無く、行は登録成功時に削除される)。</dd>
+              <dd><code>device_identifier_id</code> (UNIQUE FK)、secret_hash、issued_at、expires_at を保存する。状態カラムは持たない。secret は hash だけ保存し、平文は応答にのみ含める。行は登録成功時に削除される (= 識別子の所有権が device 側へ移る)。</dd>
+            </div>
+            <div>
+              <dt>registration_secret の保護</dt>
+              <dd>secret は128bit以上の乱数で生成し、サーバーには Argon2id または bcrypt の hash だけ保存する。照合は identifier で候補行を引いた後、定数時間比較できるライブラリに委ねる。同一 identifier と送信元IPの短時間連続失敗は rate limit する。</dd>
+            </div>
+            <div>
+              <dt>Admin API token</dt>
+              <dd>DeviceRegistrationToken 発行は admin bearer token で受け付ける。token は平文をDBに保存せず HMAC で保管する。admin / CI / readonly のロール分離は MVP では行わない (将来必要になったら別ユースケースで追加)。</dd>
             </div>
             <div>
               <dt>devices</dt>
-              <dd>まだ作成しない。DeviceRegistrationToken.identifier は未使用の登録枠に載った予約済み識別子として扱う。</dd>
+              <dd>まだ作成しない。<code>device_identifiers.identifier</code> は未使用の登録枠に載った予約済み識別子として扱う (この時点では <code>devices</code> 行は無く、<code>device_registration_tokens</code> 行だけが <code>device_identifier_id</code> を握っている)。</dd>
             </div>
           </dl>
         </div>
@@ -293,19 +315,19 @@ const identityFlow = `flowchart LR
           <dl class="db-list">
             <div>
               <dt>devices</dt>
-              <dd>identifier = DeviceRegistrationToken.identifier で新規作成。registered_at を保存する。表示名や enabled/active といった可変状態はここに持たない。</dd>
+              <dd><code>device_identifier_id</code> (UNIQUE FK) を、tokenと同じ <code>device_identifiers</code> 行に設定して新規作成。<code>registered_at</code> を保存する。identifier 文字列は <code>device_identifiers</code> 側を経由して取得し、<code>devices</code> 行には直接持たない。表示名や enabled/active といった可変状態もここに持たない。</dd>
             </div>
             <div>
               <dt>device_profiles</dt>
-              <dd>device_id、display_name、updated_at を保存する。表示名は後から変更可能で、devices.identifier を重複保持しない。OS / 機種 / SDK バージョン等の自動収集はしない。</dd>
+              <dd>device_id、display_name、updated_at を保存する。表示名は後から変更可能で、identifier を重複保持しない。OS / 機種 / SDK バージョン等の自動収集はしない。</dd>
             </div>
             <div>
               <dt>device_credentials</dt>
-              <dd>device_id、device_auth_token の hash、token_version、issued_at を保存する。平文 token は応答に1度だけ含め、サーバーは hash のみ保持する。</dd>
+              <dd>device_id、device_auth_token の HMAC 値、issued_at を保存する。平文 token は応答に1度だけ含め、サーバーは HMAC 値のみ保持する。HMAC のキーはアプリ側のシークレット (環境変数等) で管理。MVP では再発行・強制失効APIを持たない (再登録で <code>device_registration_tokens</code> を再発行する経路に集約)。</dd>
             </div>
             <div>
               <dt>fcm_push_tokens</dt>
-              <dd>device_id、token_hash、encrypted_token、last_registered_at を upsert する。同じ identifier の最新tokenとして扱い、過去値に対する別処理は行わない。</dd>
+              <dd>device_id、token_hash、encrypted_token、last_registered_at を upsert する。同じ identifier の最新tokenとして扱い、過去値に対する別処理は行わない。encrypted_token は KMS などの envelope encryption で暗号化し、復号鍵はアプリDBとは別のsecret管理に置く。</dd>
             </div>
             <div>
               <dt>device_registration_tokens</dt>
@@ -321,7 +343,7 @@ const identityFlow = `flowchart LR
         <span class="flow-step__number">4</span>
         <div>
           <h3 id="step-4">登録完了を表示し、登録済みリンクの再利用を拒否する</h3>
-          <p>登録成功時はアプリに完了画面を表示します。同じDeviceRegistrationTokenで再アクセスされた場合は、同じ値の <code>devices.identifier</code> が存在することをもって登録済みと判断し、devicesやprofileを新規作成・更新しません。</p>
+          <p>登録成功時はアプリに完了画面を表示します。同じDeviceRegistrationTokenで再アクセスされた場合は、同じ <code>device_identifier_id</code> を持つ <code>devices</code> 行が存在することをもって登録済みと判断し、devicesやprofileを新規作成・更新しません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -369,28 +391,28 @@ const identityFlow = `flowchart LR
         </thead>
         <tbody>
           <tr>
-            <th scope="row">DeviceRegistrationToken.identifier</th>
+            <th scope="row">device_identifiers.identifier</th>
             <td>APIサーバー</td>
-            <td>device_registration_tokens と URL/QR。登録成功後は同じ値が devices.identifier として残る。</td>
-            <td>リンクと新規device作成要求を対応づける。未登録段階では Device そのものではなく、未使用の登録枠に載った予約済み識別子。</td>
+            <td>専用テーブル <code>device_identifiers</code> に UNIQUE 制約付きで1行 + URL/QR と端末内 private storage。<code>devices</code> と <code>device_registration_tokens</code> は <code>device_identifier_id</code> でこの行を参照する。</td>
+            <td>identifier 文字列を1箇所で持つことで、「未使用 token」と「登録済み device」が同じ identifier を同時に握ることを DB 制約で禁止する。新規発行は常に新しい行 (= 新しい identifier) として作る。</td>
           </tr>
           <tr>
             <th scope="row">registration secret</th>
             <td>APIサーバー</td>
-            <td>URL/QR には平文、サーバー側は hash のみ。</td>
-            <td>リンクを知っているだけの第三者登録を防ぐ一回限りの秘密。期限切れ、secret不一致、または同じ値の devices.identifier がある場合は拒否する。</td>
+            <td>URL/QR には平文、サーバー側は hash のみ (<code>device_registration_tokens.secret_hash</code>)。</td>
+            <td>リンクを知っているだけの第三者登録を防ぐ一回限りの秘密。期限切れ、secret不一致、または同じ <code>device_identifier_id</code> を持つ <code>devices</code> 行がある場合は拒否する。</td>
           </tr>
           <tr>
-            <th scope="row">devices.identifier</th>
+            <th scope="row">devices.device_identifier_id (外部から見ると identifier)</th>
             <td>APIサーバー</td>
             <td>devices と端末内 private storage。</td>
-            <td>登録済み端末を外部から特定する安定した識別子。本設計では DeviceRegistrationToken.identifier の値をそのまま使う。DB上の関連は devices.id を参照する。</td>
+            <td>登録済み端末を外部から特定する安定した参照。API URL では <code>device_identifiers.identifier</code> の文字列をそのまま使う (DB上の参照は <code>devices.id</code>)。</td>
           </tr>
           <tr>
             <th scope="row">device_auth_token</th>
             <td>APIサーバー</td>
-            <td>端末内 private storage。サーバー側は hash または token version を保持。</td>
-            <td>登録済み端末からの後続API呼び出しで、identifier に対する本人性を確認する。</td>
+            <td>端末内 private storage。サーバー側は <code>device_credentials.token_hmac</code> として HMAC 値を保持する。</td>
+            <td>登録済み端末からの後続API呼び出しで、identifier に対する本人性を確認する。MVPでは強制失効・再発行APIを持たず、不要になった端末は <code>DELETE /admin/devices/:identifier</code> で device 行ごと消す。再登録は新しい DeviceRegistrationToken の発行から行う。</td>
           </tr>
           <tr>
             <th scope="row">FCM push token</th>
@@ -463,8 +485,57 @@ const identityFlow = `flowchart LR
           <tr>
             <th scope="row">トランザクション中に重複登録 (race)</th>
             <td>403 DEVICE_ALREADY_REGISTERED</td>
-            <td>devices.identifier の unique 制約で守る。重複検知時は何も書かない。</td>
+            <td>device_identifiers.identifier の UNIQUE 制約 + devices.device_identifier_id の UNIQUE 制約で守る。重複検知時は何も書かない。</td>
             <td>登録済みリンクとして扱い、ユーザーには成功または「すでに登録済み」を表示する。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="amapi-variant">
+    <p class="section-kicker">Managed-config variant</p>
+    <h2 id="amapi-variant">AMAPI管理端末はmanagedConfigurationから同じAPIに入る</h2>
+    <p>
+      AMAPI管理端末では、QRコードや deep link を使わずに、AMAPI policy の <code>managedConfiguration</code> から <code>identifier</code> / <code>secret</code> / <code>display_name</code> を受け取り、アプリ初回起動で同じ <code>POST /api/devices</code> を呼ぶバリアントが使えます。
+      導入と配布側の前提は <a href="/android-app-prereq/">Androidアプリ導入の前提</a> で扱います。ここでは登録APIから見たときの差分だけを示します。
+    </p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">処理</th>
+            <th scope="col">手動経路 (deep link)</th>
+            <th scope="col">AMAPI経路 (managedConfiguration)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">identifier / secret の運び方</th>
+            <td>custom scheme URL のクエリ。利用者がQR読み取りまたはリンクで開く。</td>
+            <td>AMAPI policy の <code>applications[].managedConfiguration</code>。policy は端末別に発行し、複数端末で共有しない。</td>
+          </tr>
+          <tr>
+            <th scope="row">表示名の入力</th>
+            <td>必須入力。アプリ画面で利用者が入れる。</td>
+            <td>managedConfiguration に含めれば入力不要。含めない場合は手動経路と同じく利用者入力に落とす。</td>
+          </tr>
+          <tr>
+            <th scope="row">アプリ起動のきっかけ</th>
+            <td>deep link を開いた瞬間。</td>
+            <td>policy 反映後の初回起動。<code>ACTION_APPLICATION_RESTRICTIONS_CHANGED</code> を契機にする場合は登録済み判定を必ず先に行う。</td>
+          </tr>
+          <tr>
+            <th scope="row">登録APIエンドポイント</th>
+            <td colspan="2">同じ <code>POST /api/devices</code>。サーバー側の token 検証・DB 更新・<code>device_registration_tokens</code> 削除は共通。</td>
+          </tr>
+          <tr>
+            <th scope="row">登録済みリンクの扱い</th>
+            <td colspan="2">同じ。同じ <code>device_identifier_id</code> を持つ <code>devices</code> 行が既にあれば 403 <code>DEVICE_ALREADY_REGISTERED</code> で拒否する。</td>
+          </tr>
+          <tr>
+            <th scope="row">secret の性質</th>
+            <td colspan="2">どちらも一回限り・短期有効。登録成功で <code>device_registration_tokens</code> 行は削除。AMAPI policy に置いた値も同様に短命扱い。</td>
           </tr>
         </tbody>
       </table>
@@ -477,11 +548,12 @@ const identityFlow = `flowchart LR
     <p>このページに書かれていないケースに遭遇したら、まず次の原則で判断してください。判断が変わるような新しい要件が出てきた場合は、原則そのものを更新してから実装に入ります。</p>
     <ol>
       <li><strong>devicesは identity に集中する。</strong> 表示名・OS情報・push token・auth credential は別テーブル。新しい属性を持ち込むときも、まず devices に足すべきかを疑い、別テーブルを検討する。</li>
-      <li><strong>状態は行の存在で表す。</strong> <code>enabled</code> / <code>status</code> / <code>used</code> / <code>CONSUMED</code> を新設しない。「登録済みかどうか」は <code>devices.identifier</code> の有無で判定する。</li>
+      <li><strong>状態は行の存在で表す。</strong> <code>enabled</code> / <code>status</code> / <code>used</code> / <code>CONSUMED</code> を新設しない。「登録済みかどうか」は「対象 <code>device_identifier_id</code> を持つ <code>devices</code> 行があるか」で判定する。</li>
+      <li><strong>identifier は <code>device_identifiers</code> に集約する。</strong> <code>devices</code> と <code>device_registration_tokens</code> の双方に <code>identifier</code> 列を持たせない (=クロステーブルでの衝突を防ぐ)。両者は <code>device_identifier_id</code> の UNIQUE FK で同じ行を排他参照する。</li>
       <li><strong>失敗理由は集約してから細分化する。</strong> リンクの有効性に関わるエラーは、まず1つに集約してから、攻撃面に影響しない範囲で細分化する。</li>
-      <li><strong>登録完了の前提を勝手に増やさない。</strong> 必要条件は「未使用の有効な登録リンク」「FCM token」「表示名」の3点。AMAPI enrollment、初期同期、policy fetch を登録完了の前提に組み込まない。</li>
+      <li><strong>登録完了の前提を勝手に増やさない。</strong> 必要条件は「未使用の有効な identifier + secret」「FCM token」「表示名」の3点。手動経路では deep link、AMAPI経路では <code>managedConfiguration</code> を入力源として、同じ <code>POST /api/devices</code> に到達する。AMAPI enrollment や初期同期そのものを登録完了の前提に組み込まない。</li>
       <li><strong>profileの自動収集はしない。</strong> 機種、OS、SDK、ロケールなどは初期登録では収集しない。あとから別ユースケースとして追加する。</li>
-      <li><strong>token rotation や再登録は別ユースケース。</strong> このページでは扱わない。`device_credentials` を別テーブルにしてあるのはそのための余地。</li>
+      <li><strong>device_auth_token は HMAC で保管、強制失効・再発行APIは持たない。</strong> 不要になった端末は <code>DELETE /admin/devices/:identifier</code> で行ごと消す。再登録が必要なら新しい DeviceRegistrationToken を発行する経路に集約する。<code>device_credentials</code> を別テーブルにしてあるのは、将来 rotation が必要になったとき列追加で対応できる余地を残すため。</li>
     </ol>
     <p>判断に詰まったら <code>AGENTS.md</code> の "Device Registration Design" と "Data Modeling" のセクションを参照してください。</p>
   </section>

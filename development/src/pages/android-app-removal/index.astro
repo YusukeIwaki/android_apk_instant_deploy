@@ -1,0 +1,275 @@
+---
+import Mermaid from "../../components/Mermaid.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const observeFlow = `flowchart TD
+  Start["アプリ削除 / データ初期化 / 再インストール"] --> LocalGone["端末側の device_auth_token / FCM token 登録状態が消える"]
+  LocalGone --> ServerBlind["サーバーは即時には気づかない"]
+  ServerBlind --> Signal1["FCM送信時に UNREGISTERED 等が観測される"]
+  ServerBlind --> Signal2["policy fetch / sync report が長期間途絶える"]
+  Signal1 --> Record1["fcm_delivery_failures に事実を記録"]
+  Signal2 --> Record2["device_contact_observations の最終時刻が古いまま"]
+  Record1 --> Console["管理画面の端末一覧 / 詳細に観測事実を表示"]
+  Record2 --> Console
+  Console --> Decide{"管理者が判断"}
+  Decide -->|削除すべき| Delete["DELETE /admin/devices/:identifier<br/>関連データを順に削除"]
+  Decide -->|保留| Wait["削除しない。次の機会に再評価"]
+  Decide -->|再接触あり| Active["device_contact_observations 更新で<br/>「生きている」と判断"]`;
+
+const sequence = `sequenceDiagram
+  autonumber
+  actor User as 端末利用者
+  actor Admin as 管理者
+  participant Device as 端末
+  participant Api as APIサーバー
+  participant FCM as FCM
+  participant Console as 管理画面
+
+  User->>Device: アプリ削除 / データ初期化 / 再インストール
+  Note over Device: ローカルの device_auth_token と<br/>登録済み FCM token が消える
+  Api->>FCM: 次回 Policy 更新時に保存済み token へ送信
+  FCM-->>Api: permanent error (UNREGISTERED 等)
+  Api->>Api: fcm_delivery_failures に事実を記録
+  Note over Api,Console: device_contact_observations は<br/>更新されないまま時間が経過
+  Admin->>Console: 端末一覧 / 詳細を開く
+  Console-->>Admin: 最終接触時刻 / FCM 失敗履歴 / 同期状態
+  Admin->>Console: 「削除」操作 (確認ダイアログ)
+  Console->>Api: DELETE /admin/devices/:identifier
+  Api->>Api: device_credentials / fcm_push_tokens<br/>device_profiles / device_policies / device_policy_revisions /<br/>device_policy_app_entries / device_policy_sync_reports / devices を削除<br/>(device_identifiers は監査用として残す)
+  Api-->>Console: 削除完了
+  opt 削除後に端末が API を叩いてきた場合
+    Device->>Api: GET /api/devices/me/policy (旧 device_auth_token)
+    Api-->>Device: 401 DEVICE_AUTH_REQUIRED
+    Note over Device: 再登録導線へ (新しい registration token が必要)
+  end`;
+
+const lifecycle = `stateDiagram-v2
+  [*] --> Registered
+  Registered --> Silent: FCM 恒久失敗 / 長期無接触
+  Silent --> Registered: 端末から API 再接触
+  Silent --> Deleted: 管理者の明示削除
+  Registered --> Deleted: 管理者の明示削除 (任意のタイミング)
+  Deleted --> [*]`;
+---
+
+<BaseLayout
+  title="Androidアプリ削除時の挙動"
+  description="コンパニオンアプリ削除・データ初期化・再インストールにより端末側の実体が消えたとき、サーバーが何を観測し、管理者がどう判断して明示削除するかを整理します。"
+  currentPath="/android-app-removal/"
+>
+  <p class="lede">
+    端末利用者による「登録解除」操作は提供しません。
+    アプリ削除・データ初期化・再インストールによって端末側の <code>device_auth_token</code> や登録済み FCM token が消えても、サーバーは即時には気づきません。
+    サーバーは <strong>FCM 配信失敗</strong> と <strong>端末からの接触途絶</strong> を観測事実として記録し、<strong>管理画面で可視化</strong> します。<strong>削除判断と実行は管理者の明示操作</strong> で行い、自動削除はしません。
+  </p>
+
+  <section aria-labelledby="design-stance">
+    <p class="section-kicker">Design stance</p>
+    <h2 id="design-stance">なぜ自動削除しないか</h2>
+    <ul class="usa-list">
+      <li><strong>FCM 恒久失敗は「端末が消えた」を意味しない。</strong> token rotation、長期バックグラウンド制限、Play services 異常、別端末移行などでも <code>UNREGISTERED</code> は起きる。「FCM 失敗 = アプリ削除」と短絡できない。</li>
+      <li><strong>長期無接触も「消えた」を意味しない。</strong> 長期保管中の検証端末、出張・休暇中の利用者、ネットワーク隔離環境など、生きているが沈黙している端末は普通にある。猶予期間を切って自動削除すると、戻ってきた端末が「自分はもう存在しない」状態で迷子になる。</li>
+      <li><strong>本システムは検証端末規模 (数十〜数百) を想定。</strong> 管理者が画面で観測事実を見て判断するほうが、複雑な自動判定ロジックより誤動作が少なく、説明可能性も高い。</li>
+      <li><strong>自動候補抽出は将来拡張に格下げ。</strong> 大規模化したときに「削除候補レポート」を画面に出して <em>管理者の判断材料</em> にする可能性はある。それでも実行は管理者の明示操作で行う。</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="actors">
+    <p class="section-kicker">Actors and responsibilities</p>
+    <h2 id="actors">登場人物と責務</h2>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr><th scope="col">登場人物</th><th scope="col">きっかけ</th><th scope="col">責務</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">端末利用者</th>
+            <td>アプリ削除、データ初期化、再インストール</td>
+            <td>端末ローカルの登録情報を消す。サーバーへ明示的な登録解除APIは呼ばない。</td>
+          </tr>
+          <tr>
+            <th scope="row">APIサーバー</th>
+            <td>FCM 送信結果、端末 API 接触</td>
+            <td>観測された事実 (FCM 配信失敗、端末からの接触) を記録し、管理画面に提供する。<strong>自動削除はしない。</strong></td>
+          </tr>
+          <tr>
+            <th scope="row">管理画面</th>
+            <td>管理者の閲覧操作</td>
+            <td>端末一覧 / 詳細に最終接触時刻・FCM 失敗履歴・同期状態を表示し、管理者の判断材料にする。削除操作は確認ダイアログを必須にする。</td>
+          </tr>
+          <tr>
+            <th scope="row">管理者</th>
+            <td>管理画面での観測事実の確認</td>
+            <td>沈黙の理由を判断し、削除すべきと判定したら <code>DELETE /admin/devices/:identifier</code> を発行する。判断に迷うときは保留する。</td>
+          </tr>
+          <tr>
+            <th scope="row">コンパニオンアプリ</th>
+            <td>再インストール後の通常起動</td>
+            <td>ローカル credential がなければ「登録リンク待ち」を表示する。既存サーバーデータを使って自己復旧しない。詳細は <a href="/use-cases/device-registration/">デバイスの登録</a>。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="data-model">
+    <p class="section-kicker">Data model</p>
+    <h2 id="data-model">観測事実テーブル</h2>
+    <p>下記テーブルの目的は <strong>管理画面に観測事実を出すこと</strong> です。自動削除の判定ロジックには使いません。識別テーブル (<code>devices</code>) には <code>last_seen_at</code> のような mutable state を置かず、事実は別テーブルに append する設計のままです。</p>
+    <dl class="key-value-list">
+      <div>
+        <dt>fcm_delivery_failures</dt>
+        <dd><code>device_id</code>、<code>token_hash</code>、<code>failure_code</code>、<code>failed_at</code> を記録する配送失敗の事実テーブル。<code>UNREGISTERED</code> など恒久失敗の発生事実そのものを管理画面で表示する。<strong>device identity には状態フラグを足さない</strong>。</dd>
+      </div>
+      <div>
+        <dt>device_contact_observations</dt>
+        <dd>policy fetch、policy_sync_results、FCM token 登録など、端末から接触があった事実を <code>device_id</code>、<code>kind</code>、<code>observed_at</code> で記録する。管理画面では最新の <code>observed_at</code> を「最後の接触」として表示する。</dd>
+      </div>
+      <div>
+        <dt>fcm_push_tokens</dt>
+        <dd>最新の push 宛先。FCM が <code>UNREGISTERED</code> 等の恒久失敗を返した時点で、その token 行は削除してよい (送信先として無効なため)。token 削除は <strong>device の削除を意味しない</strong> 点に注意する。</dd>
+      </div>
+    </dl>
+    <p><code>fcm_push_tokens</code> の自動削除は「送信先 cleanup」であり「端末の cleanup」ではありません。device の削除条件として扱わず、管理画面上の事実として <code>fcm_delivery_failures</code> 側で表示します。</p>
+  </section>
+
+  <section aria-labelledby="console-signals">
+    <p class="section-kicker">Console signals</p>
+    <h2 id="console-signals">管理画面に出す信号</h2>
+    <p>管理者が「この端末はもう消してよいか」を判断するために、端末詳細画面で以下を出します。すべて永続データから derive します。</p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr><th scope="col">信号</th><th scope="col">由来</th><th scope="col">判断への使い方</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">最後の接触時刻</th>
+            <td><code>device_contact_observations</code> の最新 <code>observed_at</code></td>
+            <td>長期間途絶えていれば「生存確認の対象」。即削除の根拠にはしない。</td>
+          </tr>
+          <tr>
+            <th scope="row">接触の種類別の最終時刻</th>
+            <td><code>device_contact_observations.kind</code> ごとの最新</td>
+            <td>policy fetch だけ来て sync report が来ない、など同期不全のパターンが見える。</td>
+          </tr>
+          <tr>
+            <th scope="row">直近の FCM 配信結果</th>
+            <td><code>fcm_delivery_failures</code> の最新数件</td>
+            <td>連続して <code>UNREGISTERED</code> が出ている端末はアプリ削除 / token 失効の可能性が高い。</td>
+          </tr>
+          <tr>
+            <th scope="row">最後の policy_sync_results 内容</th>
+            <td><code>device_policy_sync_reports</code></td>
+            <td>ポリシー適用後に sync が止まったのか、適用前から沈黙しているのかが分かる。詳細は <a href="/sync-retry/">同期/リトライ機構</a>。</td>
+          </tr>
+          <tr>
+            <th scope="row">登録メタ情報</th>
+            <td><code>devices</code> / <code>device_profiles</code></td>
+            <td>表示名・モデル・登録日時など。誰の端末だったかを判断するため。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>これらは「自動削除のしきい値」ではなく「管理者の判断材料」です。何日無接触で警告色にするか等の表示ルールは UI 側のチューニングであり、削除の発動条件ではありません。</p>
+  </section>
+
+  <section aria-labelledby="flow">
+    <p class="section-kicker">Flow with data</p>
+    <h2 id="flow">観測から削除までの流れ</h2>
+    <Mermaid chart={observeFlow} title="サーバーは観測事実を蓄積し、管理画面が可視化し、管理者が判断して明示削除する" />
+    <ol class="usa-list">
+      <li>アプリ削除・データ初期化・再インストール直後、サーバーは即時には気づかない。</li>
+      <li>次回 Policy 更新等で FCM 送信した結果、恒久失敗が返れば <code>fcm_delivery_failures</code> に事実を記録する。送信先として無効になった <code>fcm_push_tokens</code> 行は削除してよい (= 送信先 cleanup)。</li>
+      <li>端末から policy fetch / sync report が来ない期間は、<code>device_contact_observations</code> の最終時刻が古いまま据え置かれる。サーバーは特別な状態変化を起こさない。</li>
+      <li>管理者が管理画面で端末詳細を開くと、最終接触時刻・FCM 失敗履歴・同期状態が並ぶ。これを見て削除すべきかを判断する。</li>
+      <li>削除すべきと判断したら、管理者は確認ダイアログを経て <code>DELETE /admin/devices/:identifier</code> を発行する。サーバーは関連データを順に削除する。</li>
+      <li>削除前に端末から再接触があれば <code>device_contact_observations</code> が更新され、画面表示も自動的に「直近接触あり」に切り替わる。管理者は削除を保留すればよい。</li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="delete-api">
+    <p class="section-kicker">Delete API</p>
+    <h2 id="delete-api">削除APIの責務</h2>
+    <p><code>DELETE /admin/devices/:identifier</code> は管理者トークンでのみ受け付けます。発行時に下記を1トランザクションで実行します。</p>
+    <ol class="usa-list">
+      <li><code>device_credentials</code> を削除する (端末からの API 認証を即時に無効化)。</li>
+      <li><code>fcm_push_tokens</code> を削除する。</li>
+      <li><code>device_profiles</code>、<code>device_policies</code>、<code>device_policy_revisions</code>、<code>device_policy_app_entries</code>、<code>device_policy_sync_reports</code> を削除する。</li>
+      <li><code>devices</code> を削除する。</li>
+      <li><strong><code>device_identifiers</code> 行は残す。</strong> identifier 文字列は監査ログとの突き合わせに使うため、device 削除後も保持する (これにより、誤って同じ identifier が再発行されることもない)。同じ identifier での再登録は提供しない。</li>
+      <li><code>fcm_delivery_failures</code> および <code>device_contact_observations</code> は監査用途として一定期間残し、削除イベント自体も操作ログに記録する。<strong>過去の観測事実は消さない</strong>。</li>
+    </ol>
+    <p>関連の <code>device_registration_tokens</code> はそもそも device と並存しない (登録完了時に削除されており、同じ <code>device_identifier_id</code> に対しては UNIQUE 制約で再発行できない) ため、削除APIで触る必要はありません。再登録が必要な場合は admin が <strong>新しい</strong> DeviceRegistrationToken を発行します。詳細は <a href="/use-cases/device-registration/">デバイスの登録</a>。</p>
+  </section>
+
+  <section aria-labelledby="ownership">
+    <p class="section-kicker">Data ownership</p>
+    <h2 id="ownership">誰がどの事実を持つか</h2>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr><th scope="col">事実</th><th scope="col">保持場所</th><th scope="col">削除条件</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">端末 identity</th><td>devices</td><td>管理者の明示削除のみ。観測事実だけでは削除しない。</td></tr>
+          <tr><th scope="row">identifier 文字列</th><td>device_identifiers</td><td>device 削除後も残す (監査ログ突き合わせ用)。同じ identifier の再利用は提供しない。</td></tr>
+          <tr><th scope="row">credential</th><td>device_credentials</td><td>device 削除時に削除。単独の失効フラグは持たず、HMAC値のみ保持。</td></tr>
+          <tr><th scope="row">push 宛先</th><td>fcm_push_tokens</td><td>FCM 恒久失敗で削除 (送信先 cleanup)。device の削除とは独立。rotation 時は identifier で upsert。</td></tr>
+          <tr><th scope="row">FCM 配信結果</th><td>fcm_delivery_failures</td><td>device 削除後も監査用として一定期間保持。</td></tr>
+          <tr><th scope="row">端末接触履歴</th><td>device_contact_observations</td><td>device 削除後も監査用として一定期間保持。</td></tr>
+          <tr><th scope="row">Policy 履歴 / 同期報告</th><td>device_policy_* / device_policy_sync_reports</td><td>device 削除時に削除または監査用アーカイブへ移す。</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="sequence">
+    <p class="section-kicker">Sequence</p>
+    <h2 id="sequence">観測から管理者削除まで</h2>
+    <Mermaid chart={sequence} title="FCM 失敗と無接触を観測し、管理者が管理画面で確認して明示削除する" />
+  </section>
+
+  <section aria-labelledby="lifecycle">
+    <p class="section-kicker">Lifecycle</p>
+    <h2 id="lifecycle">デバイスのライフサイクル</h2>
+    <Mermaid chart={lifecycle} title="Registered / Silent / Deleted。Silent から Registered への復帰は普通に起きる" />
+    <p>Silent は「観測上沈黙している」だけの状態で、サーバー側で特別なフラグや row を作るわけではありません。<code>device_contact_observations</code> の最終時刻が古いことから derive される表示上の概念です。</p>
+  </section>
+
+  <section aria-labelledby="errors">
+    <p class="section-kicker">Errors</p>
+    <h2 id="errors">主要エラーと境界事例</h2>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr><th scope="col">状況</th><th scope="col">扱い</th><th scope="col">DB変更</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>FCM 一時失敗 / rate limit</td><td>送信先は保持。観測事実として扱わない (削除判断にも影響させない)。</td><td>必要なら配送失敗ログのみ。</td></tr>
+          <tr><td>FCM 恒久失敗 (<code>UNREGISTERED</code> 等)</td><td>送信先として無効と判断。device の生死とは切り離す。</td><td><code>fcm_push_tokens</code> 削除。<code>fcm_delivery_failures</code> に事実を記録。</td></tr>
+          <tr><td>長期無接触</td><td>サーバーは何もしない。管理画面で「最後の接触」として可視化するだけ。</td><td>DBは変更しない。</td></tr>
+          <tr><td>削除前に端末から再接触</td><td>画面表示が自動的に最新になる。管理者は削除を保留すればよい。</td><td><code>device_contact_observations</code> に追記。</td></tr>
+          <tr><td>削除後に端末が旧 token で API を叩いてきた</td><td>device も credential も無いため 401 を返す。端末は再登録導線へ。</td><td>DBは変更しない。管理者が新しい <code>device_registration_token</code> を発行する。</td></tr>
+          <tr><td>削除直後に端末が再接触してきた (タイミング競合)</td><td>404 / 401 として扱う。観測事実テーブルが先にあると整合しなくなる場合は、削除トランザクションで identity と同時に整合させる。</td><td>削除トランザクション側で完結。</td></tr>
+          <tr><td>誤って削除した</td><td>復元はしない。管理者が新しい登録リンクを発行して再登録する。過去の観測事実テーブルは監査ログとして残っているので説明可能。</td><td>新しい <code>device_registration_token</code> を発行。</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="guidance">
+    <p class="section-kicker">Out-of-spec guidance</p>
+    <h2 id="guidance">判断指針</h2>
+    <ol>
+      <li><strong>端末側から登録解除APIは呼ばない。</strong> ローカル実体が消えたかどうかをサーバーが推定する責務は持たない。</li>
+      <li><strong>サーバー側で自動削除しない。</strong> 削除は管理者の明示操作のみ。観測事実は管理画面に出して判断材料にする。</li>
+      <li><strong>identity table に状態フラグを足さない。</strong> 「Silent」「沈黙中」のようなフラグを <code>devices</code> に置かない。事実は別テーブル (<code>fcm_delivery_failures</code> / <code>device_contact_observations</code>) から derive する。</li>
+      <li><strong>送信先 cleanup と device cleanup を混同しない。</strong> <code>fcm_push_tokens</code> は FCM 恒久失敗で消えてよいが、それは「次に通知を送らない」ためであり、device を消す根拠ではない。</li>
+      <li><strong>削除前の確認を必須にする。</strong> 管理画面の削除操作は確認ダイアログ付き。観測事実をその場で再表示し、誤操作の余地を減らす。</li>
+      <li><strong>再利用ではなく再登録。</strong> 削除済み端末は管理者が新しい <code>device_registration_token</code> を発行して登録し直す。古いリンクは使えない。</li>
+      <li><strong>大規模化したら候補抽出レポートを検討する。</strong> 「FCM 恒久失敗が連続している」「N 日以上無接触」の端末を一覧化するレポートを管理画面に追加する。<em>あくまで管理者の判断材料</em>。自動実行は採用しない。</li>
+    </ol>
+  </section>
+</BaseLayout>

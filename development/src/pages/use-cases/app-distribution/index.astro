@@ -3,7 +3,7 @@ import DiagramFrame from "../../../components/DiagramFrame.astro";
 import Mermaid from "../../../components/Mermaid.astro";
 import BaseLayout from "../../../layouts/BaseLayout.astro";
 
-const updatePolicyCurl = `curl -X PUT https://distribution.example.test/api/devices/drt_01HX9A2W.../policy \\
+const updatePolicyCurl = `curl -X PUT https://distribution.example.test/admin/devices/drt_01HX9A2W.../policy \\
   -H "Authorization: Bearer $ADMIN_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -51,9 +51,11 @@ const updatePolicyResponse = `HTTP/1.1 200 OK
 
 # 応答の install は更新時点で解決した最新リリース。
 # 端末が後で GET したときには更にもう一つ上のリリースが解決される可能性もある。
+# entries に存在しない app.id を1つでも含めば 400 APP_NOT_FOUND_FOR_ENTRY を返し、Policy は変更しない (= バリデーション成功時のみ revision を追加)。
+# 同じ内容で複数回 PUT しても結果は同じ (admin による冪等更新を前提に楽観的ロックは入れない。最後に書いた内容が current_revision になる)。
 # FCM への push 送信は副作用として行うが、応答ボディには含めない (失敗してもログだけ残し、Policy は更新済みのまま)。`;
 
-const adminPolicyGetCurl = `curl -X GET https://distribution.example.test/api/devices/drt_01HX9A2W.../policy \\
+const adminPolicyGetCurl = `curl -X GET https://distribution.example.test/admin/devices/drt_01HX9A2W.../policy \\
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # Policy 編集前にポリシー編集画面が呼ぶ admin 用 GET。
@@ -67,21 +69,18 @@ const adminPolicyGetResponse = `HTTP/1.1 200 OK
     "updated_at": "2026-05-23T10:12:00+09:00",
     "entries": [
       {
-        "app": { "id": 12, "package_name": "com.example.appa", "deleted_at": null },
+        "app": { "id": 12, "package_name": "com.example.appa" },
         "install_mode": "FORCE_INSTALLED",
         "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa" }
-      },
-      {
-        "app": { "id": 8, "package_name": "com.example.removed", "deleted_at": "2026-05-21T03:11:00+09:00" },
-        "install_mode": "FORCE_INSTALLED",
-        "install": null
       }
     ]
   }
 }
 
-# 削除済みアプリの entry は install: null。
-# admin UI ではバッジで「削除されたアプリ」と表記する。`;
+# entry に並ぶ app は全て現存する apps 行。
+# 過去に存在したが既に削除された app の entry は、
+# app の hard delete に伴って device_policy_app_entries も CASCADE 削除されているため、
+# admin GET 応答には現れない (= 「削除されたアプリ」状態は存在しない)。`;
 
 const fcmDataMessage = `{
   "message": {
@@ -95,7 +94,8 @@ const fcmDataMessage = `{
 }
 
 # notification payload は含めない。
-# 端末はこの受信で pending_policy_fetch フラグを立て、次のオンライン時または起動時に Policy 取得を試みる。`;
+# 端末はこの受信で pending_policy_fetch フラグを立て、次のオンライン時または起動時に Policy 取得を試みる。
+# FCM を取りこぼした場合でも、利用者がアプリを明示起動して手動更新すれば復旧できる設計にする。`;
 
 const fetchPolicyCurl = `curl -X GET https://distribution.example.test/api/devices/me/policy \\
   -H "Authorization: Bearer $DEVICE_AUTH_TOKEN"`;
@@ -129,8 +129,8 @@ const fetchPolicyResponse = `HTTP/1.1 200 OK
   ]
 }
 
-# 端末向け応答は install が必ず非null。
-# サーバー側で「削除されたアプリ (apps.deleted_at が立っている entry)」は除外する。`;
+# 端末向け応答も admin GET と同じ entries (削除済み app の entry は存在し得ない)。
+# install は必ず非null (release が無い app は entry を持てないため)。`;
 
 const downloadUrlCurl = `curl -X GET https://distribution.example.test/api/releases/301/artifact_url \\
   -H "Authorization: Bearer $DEVICE_AUTH_TOKEN"
@@ -148,16 +148,21 @@ const syncReportCurl = `curl -X POST https://distribution.example.test/api/devic
     "fetched_policy_updated_at": "2026-05-23T10:12:04+09:00",
     "applied_policy_updated_at": "2026-05-23T10:13:20+09:00",
     "actions": [
-      { "package_name": "com.example.appa", "action": "INSTALL", "route": "DEVICE_OWNER", "result": "INSTALLED" },
-      { "package_name": "com.example.appc", "action": "INSTALL", "route": "DEVICE_OWNER", "result": "FAILED", "phase": "INSTALL", "code": "SIGNATURE_MISMATCH" },
-      { "package_name": "com.example.appb", "action": "INSTALL", "route": "DEVICE_OWNER", "result": "FAILED", "phase": "DOWNLOAD", "code": "ARTIFACT_GONE" },
-      { "package_name": "com.example.legacy", "action": "UNINSTALL", "route": "PACKAGE_MANAGER", "result": "UNINSTALLED" }
+      { "package_name": "com.example.appa", "action": "INSTALL", "route": "AMAPI_CUSTOM_APP", "result": "INSTALLED" },
+      { "package_name": "com.example.appc", "action": "INSTALL", "route": "AMAPI_CUSTOM_APP", "result": "FAILED", "phase": "INSTALL", "code": "SIGNATURE_MISMATCH" },
+      { "package_name": "com.example.appb", "action": "INSTALL", "route": "AMAPI_CUSTOM_APP", "result": "FAILED", "phase": "DOWNLOAD", "code": "ARTIFACT_GONE" },
+      { "package_name": "com.example.legacy", "action": "UNINSTALL", "route": "PACKAGE_INSTALLER", "result": "UNINSTALLED" }
     ]
   }'
 
-# 1回の sync attempt が「全 entry について 成功 or リカバリ不能な失敗 で確定」した段階でまとめて送る。
+# 1回の sync attempt が「全 work item について 成功 or リカバリ不能な失敗 で確定」した段階でまとめて送る。
 # リカバリ可能なエラーはこの一括報告には含めない (端末側でリトライ継続中のため)。
-# phase / code は失敗時のみ。下記 errors テーブル参照。`;
+# route は端末が実際に使ったインストール経路。AMAPI SDK custom app install を使えた場合は AMAPI_CUSTOM_APP、PackageInstaller UI を経由した場合は PACKAGE_INSTALLER。
+# AMAPI_CUSTOM_APP が使える前提条件は Androidアプリ導入の前提 (/android-app-prereq/#install-axis) を参照。
+# phase / code は失敗時のみ。下記 errors テーブル参照。
+# 冪等性: device_policy_sync_reports は (device_id, device_policy_revision_id) に UNIQUE 制約を持つ。
+# 同じ revision に対する2回目以降の POST はサーバー側で「既存 row の上書き」または「既受領として 200 を返す」で吸収する。
+# したがって端末は idempotency-key を送らず、同じ payload をそのまま再送すればよい。`;
 
 const policyFlow = `flowchart TD
   PolicyEdit["管理者 / CIがDevicePolicyを更新<br/>app.id を指定"] --> ServerPolicy["device_policy_revisions<br/>あるべき状態を保存"]
@@ -175,16 +180,16 @@ const policyFlow = `flowchart TD
   MaybeSync -->|はい| Plan["entry ごとに DOWNLOAD / INSTALL / UNINSTALL を判定"]
   Plan --> DL{"必要な artifact をダウンロード"}
   DL -->|成功| Apply["インストール / アンインストール実行"]
-  DL -->|リカバリ可能な失敗| DLRetry["entry を pending に残す<br/>次の機会にダウンロードからリトライ"]
-  DL -->|リカバリ不能な失敗| MarkDL["entry を failed としてマーク<br/>失敗詳細をローカルに保持"]
-  Apply -->|成功| MarkOK["entry を applied としてマーク"]
-  Apply -->|リカバリ可能な失敗| ApplyRetry["entry を pending に残す<br/>次の機会にダウンロード/インストールからリトライ"]
-  Apply -->|リカバリ不能な失敗| MarkAp["entry を failed としてマーク<br/>失敗詳細をローカルに保持"]
-  MarkOK --> AllDone{"全 entry が applied または failed?"}
+  DL -->|リカバリ可能な失敗| DLRetry["何も永続化しない<br/>次の機会に work list を再計算"]
+  DL -->|リカバリ不能な失敗| MarkDL["failed_artifacts_blacklist に追記<br/>同じ artifact では再試行しない"]
+  Apply -->|成功| MarkOK["installed_package_index を更新"]
+  Apply -->|リカバリ可能な失敗| ApplyRetry["何も永続化しない<br/>通知や次回トリガで再試行"]
+  Apply -->|リカバリ不能な失敗| MarkAp["failed_artifacts_blacklist に追記<br/>同じ artifact では再試行しない"]
+  MarkOK --> AllDone{"全 work item が terminal?"}
   MarkDL --> AllDone
   MarkAp --> AllDone
-  AllDone -->|いいえ| Plan
-  AllDone -->|はい| Report["POST policy_sync_results<br/>(成功 + リカバリ不能な失敗を一括報告)"]
+  AllDone -->|いいえ| Wait["deferred のまま終了<br/>次のトリガで再計算"]
+  AllDone -->|はい| Report["pending_report_payload を作成<br/>POST policy_sync_results"]
   Report --> UpdateApplied["applied_policy_snapshot 更新"]`;
 
 const dataModel = `flowchart LR
@@ -192,14 +197,16 @@ const dataModel = `flowchart LR
     DP["device_policies<br/>device_id / current_revision_id<br/>updated_at"]
     DPR["device_policy_revisions<br/>id / device_policy_id<br/>created_at"]
     DPE["device_policy_app_entries<br/>device_policy_revision_id / app_id<br/>install_mode"]
-    Apps["apps<br/>id / package_name<br/>deleted_at (soft delete)"]
+    Apps["apps<br/>id / package_name<br/>(hard delete when last release removed)"]
     Releases["releases<br/>app_id / version_code / artifact_id"]
   end
 
   subgraph DeviceLocal["端末ローカルストア"]
     FetchFlag["pending_policy_fetch<br/>(FCM受信 or 手動更新で立つ)"]
     Fetched["fetched_policy_snapshot<br/>各 entry に install (release info) 付き<br/>updated_at"]
-    EntryState["entry_sync_state[]<br/>app_id / phase / status<br/>failure_code / failure_phase"]
+    Downloaded["downloaded_artifact_index<br/>release_id / version_code / local_path / sha256"]
+    Failed["failed_artifacts_blacklist<br/>release_id / version_code / failure_phase / failure_code"]
+    PendingReport["pending_report_payload<br/>未送信の結果報告"]
     Applied["applied_policy_snapshot<br/>updated_at"]
     Pkgs["installed_package_index<br/>package_name / version_code<br/>installed_by_companion"]
   end
@@ -209,8 +216,12 @@ const dataModel = `flowchart LR
   Apps -->|"latest release は<br/>fetch 時に解決"| Releases
   DPE -. "GET policy" .-> Fetched
   FetchFlag -. "解除のトリガ" .-> Fetched
-  Fetched -. "entry ごとの進捗" .-> EntryState
-  EntryState -. "全 entry 確定で更新" .-> Applied
+  Fetched -. "work list は毎回計算" .-> Downloaded
+  Fetched -. "恒久失敗だけ参照" .-> Failed
+  Downloaded -. "DL済み artifact を再利用" .-> Pkgs
+  Failed -. "FAILED action の材料" .-> PendingReport
+  Pkgs -. "INSTALLED / UNINSTALLED の材料" .-> PendingReport
+  PendingReport -. "受理後に更新" .-> Applied
   Pkgs --- Applied`;
 
 const sequence = `sequenceDiagram
@@ -221,8 +232,8 @@ const sequence = `sequenceDiagram
   participant Push as FCM
   participant App as コンパニオンアプリ
   participant Local as 端末ローカルストア
-  participant Owner as DeviceOwner / 権限委譲
-  participant Os as Android PackageInstaller
+  participant Amapi as AMAPI SDK custom app install (route=AMAPI_CUSTOM_APP)
+  participant Os as Android PackageInstaller (route=PACKAGE_INSTALLER)
 
   Admin->>Api: PUT policy (entries は app.id)
   Api->>Api: device_policy_revisions と entries を保存
@@ -234,7 +245,7 @@ const sequence = `sequenceDiagram
   alt 直後に通信可能
     App->>Api: GET /api/devices/me/policy
   else 失敗したら次の機会
-    Note over App: 起動時 / 周期ジョブ / 再ネットワーク到達で再試行
+    Note over App: 起動時 / 手動更新 / 再ネットワーク到達で再試行
     App->>Api: GET /api/devices/me/policy
   end
   Api->>Api: 各 entry の app_id から最新release を解決
@@ -243,33 +254,33 @@ const sequence = `sequenceDiagram
 
   Note over App,Local: 以降は fetched > applied の間だけ同期を試みる
 
-  loop 全 entry が applied または failed になるまで
+  loop 全 work item が terminal になるまで
     App->>App: entry の phase を判定 (DOWNLOAD / INSTALL / UNINSTALL)
     App->>Api: GET /api/releases/:id/artifact_url (必要な entry のみ)
     Api-->>App: 短命 presigned URL
     App->>App: artifact ダウンロード
     alt ダウンロード成功
-      alt 権限あり
-        App->>Owner: サイレントインストール / アンインストール
-        Owner-->>App: 結果 (成功 or 失敗)
-      else 権限なし
+      alt AMAPI custom app install の前提を満たす (fully managed + COMPANION_APP role + 対象APK installType=CUSTOM + signingKeyCerts一致 等)
+        App->>Amapi: AMAPI SDK でサイレントインストール / アンインストール
+        Amapi-->>App: 結果 (成功 or 失敗) → route=AMAPI_CUSTOM_APP
+      else 前提を満たさない (managed外 / role未付与 / fingerprint不一致 等)
         App->>App: Sticky通知を維持
         User->>App: 通知タップ
         App->>Os: PackageInstaller UI 起動
-        Os-->>App: 結果
+        Os-->>App: 結果 → route=PACKAGE_INSTALLER
       end
-      App->>Local: entry_sync_state を更新 (applied or failed)
+    App->>Local: installed_package_index を更新
     else ダウンロード失敗 (リカバリ可能)
-      App->>Local: entry を pending のままに残す
-      Note over App: 次の機会にダウンロードからリトライ
+      Note over App,Local: 何も永続化しない。次のトリガで work list を再計算して再試行
     else ダウンロード失敗 (リカバリ不能)
-      App->>Local: entry を failed としてマーク (phase=DOWNLOAD, code)
+      App->>Local: failed_artifacts_blacklist に追記 (phase=DOWNLOAD, code)
     end
   end
 
+  App->>Local: pending_report_payload を作成
   App->>Api: POST policy_sync_results (成功 + リカバリ不能な失敗を一括)
   Api-->>App: 201 Created
-  App->>Local: applied_policy_snapshot 更新`;
+  App->>Local: applied_policy_snapshot 更新 + pending_report_payload 破棄`;
 
 const lifecycle = `stateDiagram-v2
   [*] --> Synced
@@ -278,10 +289,10 @@ const lifecycle = `stateDiagram-v2
   NeedFetch --> Fetched: fetch成功 (pending_policy_fetch 解除)
   Fetched --> Synced: fetched == applied (差分なし)
   Fetched --> Syncing: fetched > applied
-  Syncing --> Syncing: entry ごとの DOWNLOAD/INSTALL<br/>リカバリ可能エラーで該当 entry のみ pending 保持
-  Syncing --> AwaitingUser: 権限なし + FORCE_INSTALLED 不足<br/>Sticky通知を維持
+  Syncing --> Syncing: work list を毎回計算<br/>リカバリ可能エラーは永続化しない
+  Syncing --> AwaitingUser: AMAPI custom app install 前提を満たさず<br/>+ FORCE_INSTALLED 未達<br/>(PACKAGE_INSTALLER経路でSticky通知を維持)
   AwaitingUser --> Syncing: ユーザーが通知から操作
-  Syncing --> Reporting: 全 entry が applied or failed に確定
+  Syncing --> Reporting: 全 work item が terminal<br/>pending_report_payload 作成
   Reporting --> Synced: POST policy_sync_results 成功<br/>applied_policy_snapshot 更新
   Reporting --> Reporting: 報告自体が失敗 (リカバリ可能)<br/>次の機会にリトライ
   Synced --> [*]`;
@@ -316,12 +327,12 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">管理者 / CI</th>
             <td>デバイスへ配るアプリ構成を変えたい</td>
-            <td>PUT /api/devices/:identifier/policy で DevicePolicy を更新する。entry は app.id と install_mode のみで、release / version は指定しない。</td>
+            <td>PUT /admin/devices/:identifier/policy で DevicePolicy を更新する。entry は app.id と install_mode のみで、release / version は指定しない。</td>
             <td>device_policies, device_policy_revisions, device_policy_app_entries</td>
           </tr>
           <tr>
             <th scope="row">APIサーバー</th>
-            <td>PUT policy / GET policy (admin/device) / POST policy_sync_results</td>
+            <td>PUT /admin/devices/:identifier/policy / GET /admin/devices/:identifier/policy / GET /api/devices/me/policy / POST /api/devices/me/policy_sync_results</td>
             <td>Policy更新を不変revisionとして保存し、FCM data messageを送信。GET時に各 entry の app_id から最新release を解決して install フィールドに乗せる。削除されたアプリの entry は、admin GET には含めるが device GET からは除外する。一括失敗報告 (policy_sync_results) を受領して監査ログに残す。</td>
             <td>device_policies, device_policy_revisions, device_policy_app_entries, apps, releases, device_policy_sync_reports, fcm_push_tokens</td>
           </tr>
@@ -334,13 +345,13 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">コンパニオンアプリ</th>
             <td>FCM受信 / 手動更新 / 再ネットワーク到達 / アプリ起動 (フラグがある時のみ fetch)</td>
-            <td>pending_policy_fetch / fetched_policy_snapshot / entry_sync_state / applied_policy_snapshot を管理する。フェーズ別にリトライ判定し、確定したら一括で結果を報告する。</td>
-            <td>端末ローカルストア各種, DeviceOwner SDK / PackageInstaller</td>
+            <td>pending_policy_fetch / fetched_policy_snapshot / installed_package_index / failed_artifacts_blacklist / pending_report_payload / applied_policy_snapshot を管理する。work item の進捗は永続化せず、フェーズ別にリトライ判定し、確定したら一括で結果を報告する。</td>
+            <td>端末ローカルストア各種, PackageInstaller (route=PACKAGE_INSTALLER) / AMAPI SDK custom app install (route=AMAPI_CUSTOM_APP)</td>
           </tr>
           <tr>
             <th scope="row">端末利用者</th>
-            <td>(自動経路では介在しない) / (フォールバック経路で) Sticky通知タップ</td>
-            <td>自動インストール不可の端末で、通知からPackageInstaller UIへ進む。任意アプリ (AVAILABLE) はアプリUI内から自分で選んで入れる。</td>
+            <td>(<code>AMAPI_CUSTOM_APP</code> 経路では介在しない) / (<code>PACKAGE_INSTALLER</code> 経路で) Sticky通知タップ</td>
+            <td>AMAPI custom app install の前提を満たさず自動インストールできない端末で、通知からPackageInstaller UIへ進む。任意アプリ (AVAILABLE) は経路によらずアプリUI内から自分で選んで入れる。</td>
             <td>PackageInstaller UI</td>
           </tr>
         </tbody>
@@ -359,23 +370,27 @@ const lifecycle = `stateDiagram-v2
       </div>
       <div>
         <dt>apps</dt>
-        <dd>package_name で識別される配布対象アプリの identity。<code>deleted_at</code> による soft delete を許容する。全ての関連 release が削除された時点で deleted_at を立て、以後 release 登録があれば null に戻して復活させる。</dd>
+        <dd>package_name で識別される配布対象アプリの identity。全ての関連 release が削除された時点で <strong>hard delete</strong> し、関連 <code>device_policy_app_entries</code> も FK CASCADE で同時に削除される。再アップロード時は同じ <code>package_name</code> でも <strong>別の <code>apps.id</code> として新規作成</strong> される (旧 id の復活はしない)。</dd>
       </div>
       <div>
         <dt>pending_policy_fetch (端末ローカル)</dt>
-        <dd>boolean。FCM data message を受け取った時、またはユーザーが手動更新を要求した時に true にする。GET /api/devices/me/policy が成功して fetched_policy_snapshot を保存できた瞬間に false に戻す。端末はこのフラグが true のときだけ Policy 取得を試みる (起動するたびに毎回 fetch するわけではない)。</dd>
+        <dd>boolean。FCM data message を受け取った時、またはユーザーが手動更新を要求した時に true にする。GET /api/devices/me/policy が成功して fetched_policy_snapshot を保存できた瞬間に false に戻す。端末はこのフラグが true のときだけ Policy 取得を試みる (起動するたびに毎回 fetch するわけではない)。FCM を取りこぼした端末は、利用者がアプリを明示起動して手動更新することで復旧する。</dd>
       </div>
       <div>
         <dt>fetched_policy_snapshot (端末ローカル)</dt>
         <dd>サーバーから最後に取得できた Policy 本文 (各 entry に install を含む)。fetch が成功するたびに置き換える。</dd>
       </div>
       <div>
-        <dt>entry_sync_state[] (端末ローカル)</dt>
-        <dd>fetched_policy_snapshot の各 entry に対する進捗。<code>status: pending | applied | failed</code>、<code>failure_phase: DOWNLOAD | INSTALL</code> (failed の場合)、<code>failure_code</code> (失敗詳細) を保持する。リカバリ可能な失敗では status を pending のままにし、リカバリ不能な失敗では failed に確定する。すべての entry が applied or failed になった時点で、まとめて報告する。</dd>
+        <dt>downloaded_artifact_index / failed_artifacts_blacklist (端末ローカル)</dt>
+        <dd>work item の途中進捗ではなく、再利用できる artifact と「同じ条件で結果が変わらない」と確定した失敗事実だけを保持する。リカバリ可能な失敗では何も永続化せず、次のトリガで fetched_policy_snapshot・installed_package_index・failed_artifacts_blacklist から work list を再計算する。</dd>
+      </div>
+      <div>
+        <dt>pending_report_payload (端末ローカル)</dt>
+        <dd>全 work item が terminal になった瞬間に作る未送信の policy_sync_results 本文。報告が失敗した場合はこの payload を保持し、次の機会に同じ内容を冪等再送する。</dd>
       </div>
       <div>
         <dt>applied_policy_snapshot (端末ローカル)</dt>
-        <dd>「全 entry の処理が確定し、一括報告まで完了した時点」の Policy。fetched_policy_snapshot からの完全コピーで置き換える。報告途中・部分成功の段階では更新しない。</dd>
+        <dd>「全 work item が terminal になり、一括報告まで完了した時点」の Policy。fetched_policy_snapshot からの完全コピーで置き換える。報告途中・deferred が残る段階では更新しない。</dd>
       </div>
       <div>
         <dt>installed_package_index (端末ローカル)</dt>
@@ -413,13 +428,13 @@ const lifecycle = `stateDiagram-v2
           <dl class="db-list">
             <div>
               <dt>device_policies / device_policy_revisions / device_policy_app_entries</dt>
-              <dd>新しい revision を作成し entries を保存する。version_code や release_id は格納しない。FCM data message も同期的に送信する (送信失敗してもログだけ取り、Policy は変更しない)。</dd>
+              <dd>バリデーション (全 app.id が現存するか) を通過した時点で新しい revision を作成し entries を保存する。version_code や release_id は格納しない。同じ admin が冪等に更新することを前提に <strong>楽観的ロックは入れない</strong> (最後に書いた内容が current_revision)。FCM data message も同期的に送信する (送信失敗してもログだけ取り、Policy は変更しない)。FCM が届かなかった端末は、利用者のアプリ明示起動または手動更新で復旧する。</dd>
             </div>
           </dl>
           <h4>過去 revision の扱い</h4>
-          <p>過去 revision は不変。差し戻しは古い revision を current にし直すのではなく、同じ内容で新しい revision を作る。</p>
-          <h4>削除されたアプリ参照のルール</h4>
-          <p>新しい revision の entries に <code>apps.deleted_at</code> が立っている app の id を含めることは拒否する (400 APP_DELETED)。古い revision にあった削除アプリ entry は、新 revision でも維持したい場合は許容する。</p>
+          <p>過去 revision は不変 (admin による上書きはしない)。ただし、関連 app が hard delete された場合は FK CASCADE で過去 revision の該当 entry も削除される (= 「削除されたアプリの履歴」は残らない)。差し戻しは古い revision を current にし直すのではなく、同じ内容で新しい revision を作る。</p>
+          <h4>存在しないアプリ参照のルール</h4>
+          <p>新しい revision の entries にいずれの行も無い <code>app.id</code> を含めることは拒否する (400 APP_NOT_FOUND_FOR_ENTRY)。アプリは hard delete されるため「削除済みだが id 参照は残る」状態は存在せず、判定は「現在 apps テーブルに該当 id があるか」のみ。</p>
         </div>
       </div>
     </article>
@@ -429,7 +444,7 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">2</span>
         <div>
           <h3 id="step-2">FCM push を契機に pending_policy_fetch を立て、可能なときに Policy を取得する</h3>
-          <p>FCM は data message として Policy 更新だけを届けます。端末はこの受信で <code>pending_policy_fetch</code> フラグを立て、それ以後の最初に Policy API を呼べる機会 (直後に通信できればその場で、ダメなら次のオンライン到達時、再起動時、定期同期ジョブの実行時など) で GET を1回試みます。<strong>起動するたびに無条件で fetch することはしません</strong>。fetch が失敗してもフラグは立ったままにし、次の機会に再試行します。fetch が成功して fetched_policy_snapshot を上書きした瞬間に、フラグを下ろします。</p>
+          <p>FCM は data message として Policy 更新だけを届けます。端末はこの受信で <code>pending_policy_fetch</code> フラグを立て、それ以後の最初に Policy API を呼べる機会 (直後に通信できればその場で、ダメなら次のオンライン到達時、再起動時、アプリ明示起動時など) で GET を1回試みます。<strong>起動するたびに無条件で fetch することはしません</strong>。fetch が失敗してもフラグは立ったままにし、次の機会に再試行します。fetch が成功して fetched_policy_snapshot を上書きした瞬間に、フラグを下ろします。FCM が届かなかった端末は自動では気づけないため、利用者がアプリを開いて手動更新したときに復旧できればよい、という前提にします。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -454,8 +469,8 @@ const lifecycle = `stateDiagram-v2
               <dd>取得した Policy 本文 (install 付き) で上書き。サーバー側の device_policy_revisions は読み取りだけで変更しない。</dd>
             </div>
             <div>
-              <dt>entry_sync_state[]</dt>
-              <dd>fetched_policy_snapshot が置き換わったタイミングで、新しい entries を pending として再構築する。前回の sync で確定していた failed 情報は、entry の app_id + install.version_code が同じなら引き継ぐ (同じ artifact で再試行しない判断材料に使う)、release.id や version_code が変わっていたらクリアして pending にする (新リリースは試す価値がある)。</dd>
+              <dt>failed_artifacts_blacklist</dt>
+              <dd>fetched_policy_snapshot が置き換わっても、同じ release.id + version_code に対する恒久失敗だけ参照する。release.id や version_code が変わっていれば blacklist はヒットせず、新しい artifact として試す。fetched_policy_snapshot に出てこなくなった release.id の blacklist は cleanup してよい。</dd>
             </div>
             <div>
               <dt>applied_policy_snapshot</dt>
@@ -463,11 +478,11 @@ const lifecycle = `stateDiagram-v2
             </div>
             <div>
               <dt>削除アプリの扱い</dt>
-              <dd>device GET 応答ではサーバー側で除外する。端末側のローカルストアにも持ち込まないため、端末側で「削除されたアプリ」を意識する必要はない。</dd>
+              <dd>サーバー側で app が hard delete された時点で関連 entry も CASCADE 削除される。device GET / admin GET いずれにも現れず、端末側で「削除されたアプリ」を意識する必要はない。</dd>
             </div>
             <div>
               <dt>端末通知</dt>
-              <dd>FCM data message 受信そのものでは表示しない。Sticky 通知は後続ステップ (権限なし + FORCE_INSTALLED 不足) のときだけ出す。</dd>
+              <dd>FCM data message 受信そのものでは表示しない。Sticky 通知は後続ステップ (軸B = <code>PACKAGE_INSTALLER</code> で FORCE_INSTALLED 未達) のときだけ出す。</dd>
             </div>
           </dl>
         </div>
@@ -479,7 +494,7 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">3</span>
         <div>
           <h3 id="step-3">entry ごとに DOWNLOAD と INSTALL を進め、リカバリ可能な失敗はリトライする</h3>
-          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code」と「端末上の installed_package_index の version_code」。同期は <strong>entry 単位の状態機械</strong>として扱います: <code>pending → (DOWNLOADする必要があれば downloading) → installing → applied</code>。各フェーズで失敗したら、リカバリ可能であれば該当 entry を pending に戻して次の機会にそのフェーズから再試行。リカバリ不能であれば該当 entry を failed として確定し、以後はその artifact では再試行しません。</p>
+          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code」と「端末上の installed_package_index の version_code」。同期は永続的な entry 進捗ではなく、毎反復で計算する <strong>work list</strong> として扱います。work list は fetched_policy_snapshot、installed_package_index、downloaded_artifact_index、failed_artifacts_blacklist からその場で作り、各 work item を1回進めます。リカバリ可能な失敗では何も永続化せず、次のトリガで同じ work item が再計算されます。リカバリ不能な失敗だけ failed_artifacts_blacklist に追記し、以後は同じ artifact では再試行しません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -501,30 +516,32 @@ const lifecycle = `stateDiagram-v2
             </div>
             <div>
               <dt>SHOW対象 (AVAILABLE)</dt>
-              <dd>アプリ内 UI の一覧に表示するだけで自動インストールしない。ユーザーが選んだときに install.release.id を使って artifact URL を取得してインストールする。AVAILABLE entry はこの sync attempt の「全 entry 確定判定」には含めない (常に skip 扱い)。</dd>
+              <dd>アプリ内 UI の一覧に表示するだけで自動インストールしない。ユーザーが選んだときに install.release.id を使って artifact URL を取得してインストールする。AVAILABLE entry は自動同期の work list には含めず、policy_sync_results にも含めない。任意アプリ一覧は DevicePolicy の AVAILABLE entries から作り、device 用の GET /admin/apps は追加しない (admin 用のみ)。</dd>
             </div>
           </dl>
           <h4>リカバリ可能 / 不能の判定</h4>
           <dl class="db-list">
             <div>
               <dt>リカバリ可能 (DOWNLOAD フェーズ)</dt>
-              <dd>ネットワークタイムアウト、5xx、TLS 接続失敗、artifact_url 期限切れ (再取得すれば良い)、端末ストレージ一時不足 → entry を pending のままにし、次の同期試行で同じ install.release.id から再取得する。</dd>
+              <dd>ネットワークタイムアウト、5xx、TLS 接続失敗、artifact_url 期限切れ (再取得すれば良い)、端末ストレージ一時不足 → 何も永続化しない。次の同期試行で work list を再計算し、同じ install.release.id から再取得する。</dd>
             </div>
             <div>
               <dt>リカバリ不能 (DOWNLOAD フェーズ)</dt>
-              <dd>release が削除されて 404 が返り続ける (ARTIFACT_GONE)、sha256 不一致 (ARTIFACT_CORRUPTED) など、その install.release.id に対してリトライしても結果が変わらないもの → 該当 entry を failed として確定。同じ install.version_code が変わらない限り同 entry を試さない。</dd>
+              <dd>release が削除されて 404 が返り続ける (ARTIFACT_GONE)、sha256 不一致 (ARTIFACT_CORRUPTED) など、その install.release.id に対してリトライしても結果が変わらないもの → failed_artifacts_blacklist に追記。同じ release.id + version_code では再試行しない。</dd>
             </div>
             <div>
               <dt>リカバリ可能 (INSTALL フェーズ)</dt>
-              <dd>権限なし状態で Sticky 通知を維持 (ユーザーが反応すればインストール進行)、DeviceOwner SDK の一時的エラー、PackageInstaller の "in use" 一時エラーなど → entry を pending のままにし、次の同期で DOWNLOAD は飛ばして INSTALL から再試行する (artifact がローカルに残っていれば)。</dd>
+              <dd><code>PACKAGE_INSTALLER</code> 経路で Sticky 通知を維持 (ユーザーが反応すればインストール進行)、PackageInstaller の "in use" 一時エラー、<code>AMAPI_CUSTOM_APP</code> 経路の IssueCommand 一時エラーなど → 何も永続化しない。downloaded_artifact_index に artifact が残っていれば、次の work list 再計算で DOWNLOAD は飛ばして INSTALL から再試行する。</dd>
             </div>
             <div>
               <dt>リカバリ不能 (INSTALL フェーズ)</dt>
-              <dd>署名不一致 (SIGNATURE_MISMATCH)、minSdk 不足 (INCOMPATIBLE_OS)、ユーザーが拒否してアプリ削除 (USER_DECLINED) など、その artifact で再試行しても結果が変わらないもの → 該当 entry を failed として確定。</dd>
+              <dd>署名不一致 (SIGNATURE_MISMATCH)、minSdk 不足 (INCOMPATIBLE_OS)、VERSION_DOWNGRADE など、その artifact で再試行しても結果が変わらないもの → failed_artifacts_blacklist に追記。</dd>
             </div>
           </dl>
+          <h4>artifact_url の有効期限</h4>
+          <p>artifact_url は短命 URL とし、初期値は15分を目安にする。巨大APKのダウンロード中に期限切れ・切断が起きた場合、端末は部分ファイルを破棄し、次のトリガで同じ release.id の artifact_url を取り直す。</p>
           <h4>確定判定</h4>
-          <p>FORCE_INSTALLED / UNINSTALL の全 entry が <code>applied</code> または <code>failed</code> になるまで sync attempt は終わらない。リカバリ可能な失敗を抱えた entry が残っている限り、確定判定にも到達しないため一括報告も applied 更新も行わない。次の機会 (再ネットワーク到達、起動、定期ジョブ) に該当フェーズから再試行する。</p>
+          <p>FORCE_INSTALLED / UNINSTALL の全 work item が terminal (成功、または failed_artifacts_blacklist へ追記済み) になるまで sync attempt は終わらない。リカバリ可能な失敗で deferred になった work item がある場合、確定判定には到達しないため一括報告も applied 更新も行わない。次の機会 (再ネットワーク到達、起動、手動更新) に work list を再計算して該当フェーズから再試行する。</p>
         </div>
       </div>
     </article>
@@ -534,7 +551,7 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">4</span>
         <div>
           <h3 id="step-4">確定した結果をまとめて報告し、applied_policy_snapshot を更新する</h3>
-          <p>全 entry が確定したら、成功した entry と <strong>リカバリ不能な失敗だけ</strong>を一括で POST します。リカバリ可能な失敗を抱えている entry は報告対象に含めません (=端末がリトライ継続中であることを意味する)。報告が 201 で受理されたら applied_policy_snapshot を更新します。報告自体が失敗した場合はリトライキューに残し、次の機会に同じペイロードで再送します。</p>
+          <p>全 work item が terminal になったら、成功した work item と <strong>リカバリ不能な失敗だけ</strong>を一括で POST します。リカバリ可能な失敗で deferred になった work item は報告対象に含めません (=端末がリトライ継続中であることを意味する)。報告本文は送信前に <code>pending_report_payload</code> として保存し、報告が 201 で受理されたら applied_policy_snapshot を更新して payload を破棄します。報告自体が失敗した場合は次の機会に同じペイロードで再送します。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -551,16 +568,20 @@ const lifecycle = `stateDiagram-v2
               <dd>policy_sync_results が 201 で受け付けられた直後に、fetched_policy_snapshot からコピーで上書き。部分成功でも (失敗が確定済みであれば) 更新する。これにより「処理は終わったが一部失敗が残っている状態」を「fetched == applied」で表現できる。</dd>
             </div>
             <div>
-              <dt>entry_sync_state[] (端末)</dt>
-              <dd>報告完了後、failed エントリのみ failure 情報を保持したまま applied に再分類してもよい (次回 fetch で release.id / version_code が更新されたら再試行可能なため)。</dd>
+              <dt>pending_report_payload (端末)</dt>
+              <dd>全 work item が terminal になった瞬間に作成し、POST が 201 または冪等な 200 で受理されたら破棄する。5xx / IO では保持して同じ payload を再送する。</dd>
+            </div>
+            <div>
+              <dt>failed_artifacts_blacklist (端末)</dt>
+              <dd>リカバリ不能な失敗事実だけ保持する。報告完了後も同じ release.id + version_code では再試行しない判断材料として残し、次回 fetch で release.id が変わったらヒットしなくなる。</dd>
             </div>
             <div>
               <dt>Sticky install notification (端末)</dt>
-              <dd>権限なしで FORCE_INSTALLED が未達かつ未確定の場合だけ表示する。INSTALL が確定 (成功 or リカバリ不能失敗) したら下げる。</dd>
+              <dd>軸B = <code>PACKAGE_INSTALLER</code> で FORCE_INSTALLED が未達かつ未確定の場合だけ表示する。INSTALL が確定 (成功 or リカバリ不能失敗) したら下げる。</dd>
             </div>
             <div>
               <dt>device_policy_sync_reports (サーバー)</dt>
-              <dd>device_policy_revision_id、actions[]、reported_at を保存する。actions の各エントリは <code>{`package_name, action, route, result, phase?, code?`}</code> を持つ。Policy 本体は書き換えない。</dd>
+              <dd>device_policy_revision_id、actions[]、reported_at を保存する。actions の各エントリは <code>{`package_name, action, route, result, phase?, code?`}</code> を持つ。<code>(device_id, device_policy_revision_id)</code> に UNIQUE 制約を置き、同じ revision に対する再送は冪等に吸収する (新規受領なら 201、既受領なら 200 を返す)。Policy 本体は書き換えない。</dd>
             </div>
             <div>
               <dt>fcm_push_tokens / releases / artifacts</dt>
@@ -597,9 +618,9 @@ const lifecycle = `stateDiagram-v2
             <td>その時点で配信すべき具体的リリース。サーバーが apps.id から「最新release」を解決した結果。DB には保存せず、毎回の GET で算出する。</td>
           </tr>
           <tr>
-            <th scope="row">apps.deleted_at</th>
-            <td>apps テーブル</td>
-            <td>全ての関連release が削除された時点で立てる。DevicePolicy の app_id 参照は残るため、admin UI で「削除されたアプリ」表記を出すための判定材料。</td>
+            <th scope="row">apps の hard delete</th>
+            <td>apps テーブル + FK CASCADE</td>
+            <td>全ての関連release が削除された時点で行を消す。<code>device_policy_app_entries</code> も同時に CASCADE 削除されるため、admin/device の Policy GET 応答で「削除されたアプリ」状態は発生しない。同じ <code>package_name</code> の再アップロードは別 <code>apps.id</code> での新規作成として扱う。</td>
           </tr>
           <tr>
             <th scope="row">pending_policy_fetch</th>
@@ -612,14 +633,14 @@ const lifecycle = `stateDiagram-v2
             <td>最後に成功した fetch の結果。各 entry に install (release情報) 付き。</td>
           </tr>
           <tr>
-            <th scope="row">entry_sync_state[]</th>
+            <th scope="row">downloaded_artifact_index / failed_artifacts_blacklist</th>
             <td>端末ローカル</td>
-            <td>各 entry の sync 進捗。pending / applied / failed と failure_phase / failure_code を持ち、リカバリ可能/不能の判断と一括報告の元データになる。</td>
+            <td>DL済み artifact と、同じ条件では結果が変わらない恒久失敗だけを保持する。work item の途中進捗は保持せず、毎反復で再計算する。</td>
           </tr>
           <tr>
             <th scope="row">applied_policy_snapshot</th>
             <td>端末ローカル</td>
-            <td>「全 entry の処理が確定し、結果を一括報告し終えた」時点の Policy。fetched との一致で「同期完了」を表す。</td>
+            <td>「全 work item が terminal になり、結果を一括報告し終えた」時点の Policy。fetched との一致で「同期完了」を表す。</td>
           </tr>
           <tr>
             <th scope="row">installed_by_companion</th>
@@ -645,13 +666,14 @@ const lifecycle = `stateDiagram-v2
   <section aria-labelledby="lifecycle">
     <p class="section-kicker">Lifecycle</p>
     <h2 id="lifecycle">端末内Policy同期のライフサイクル</h2>
-    <Mermaid chart={lifecycle} title="pending_policy_fetch / fetched / entry進捗 / applied のライフサイクル" />
+    <Mermaid chart={lifecycle} title="pending_policy_fetch / fetched / work list / applied のライフサイクル" />
+    <p>Policy revision と sync report は append-only。<strong>MVPでは削除ジョブは持たず、テーブル単位で物理的に保持する</strong> (将来の保持期間チューニング / アーカイブ移送は別ユースケース)。テーブル分離 (<code>device_policies</code>, <code>device_policy_revisions</code>, <code>device_policy_app_entries</code>, <code>device_policy_sync_reports</code> がそれぞれ独立) によって、後から保持期間別の cleanup ジョブを追加できる構成にしておく。</p>
   </section>
 
   <section aria-labelledby="errors">
     <p class="section-kicker">Errors</p>
     <h2 id="errors">主要エラーと応答</h2>
-    <p>失敗はフェーズ別に「リカバリ可能 (端末が同じフェーズからリトライ)」と「リカバリ不能 (entry を failed として確定し一括報告)」に分けます。サーバー側の policy_sync_results はリカバリ不能な失敗だけが届く想定で、リカバリ可能な失敗で同じレポートが何度も来ることはありません。</p>
+    <p>失敗はフェーズ別に「リカバリ可能 (端末が同じフェーズからリトライ)」と「リカバリ不能 (failed_artifacts_blacklist に追記して一括報告)」に分けます。サーバー側の policy_sync_results はリカバリ不能な失敗だけが届く想定で、リカバリ可能な失敗で同じレポートが何度も来ることはありません。</p>
     <div class="table-wrap">
       <table class="usa-table">
         <thead>
@@ -673,7 +695,7 @@ const lifecycle = `stateDiagram-v2
             <th scope="row">FCM 受信後、GET policy が失敗 (タイムアウト / 5xx / ネットワーク不到達)</th>
             <td>—</td>
             <td>送信は完了済み、サーバーは何もしない。</td>
-            <td>pending_policy_fetch は true のまま維持。次の機会 (再オンライン、再起動、定期ジョブ) に再試行。</td>
+            <td>pending_policy_fetch は true のまま維持。次の機会 (再オンライン、再起動、手動更新) に再試行。</td>
           </tr>
           <tr>
             <th scope="row">DevicePolicy がまだ作られていない端末が Policy を取りに来た</th>
@@ -682,40 +704,34 @@ const lifecycle = `stateDiagram-v2
             <td>installed_by_companion のアプリは全て UNINSTALL 候補になる。pending_policy_fetch は解除する。</td>
           </tr>
           <tr>
-            <th scope="row">PUT で削除済みアプリの app.id を新規 entry に指定</th>
-            <td>400 APP_DELETED</td>
-            <td>Policy は変更しない。entries は古い revision のまま。</td>
-            <td>admin UI 側で「このアプリは削除されました」と表示し、別のアプリを選び直させる。</td>
-          </tr>
-          <tr>
-            <th scope="row">PUT で存在しない app.id を指定</th>
+            <th scope="row">PUT で存在しない app.id を指定 (古い app.id が hard delete 済み / 編集中に削除された / typo 等)</th>
             <td>400 APP_NOT_FOUND_FOR_ENTRY</td>
-            <td>Policy は変更しない。</td>
-            <td>admin UI で対象を選び直させる。</td>
+            <td>Policy は変更しない。entries は前回 revision のまま。</td>
+            <td>admin UI で再度 GET し直し、現存する app を選び直させる。「以前 com.example.foo を配信していたが、最後の release を消したので新しい app.id で再アップロードした」場合は、admin が新しい app.id で entry を作り直す必要がある。</td>
           </tr>
           <tr>
             <th scope="row">artifact_url の DL がリカバリ可能な失敗 (5xx / TLS / タイムアウト / 期限切れ)</th>
             <td>(DL先 5xx) / 403 SignatureDoesNotMatch 等</td>
             <td>presigned URL を短命に発行する。期限切れは再取得 (/api/releases/:id/artifact_url) で対応可能。</td>
-            <td>entry を pending のまま保持。同じ install.release.id で次の機会に再取得 → 再ダウンロード。policy_sync_results には含めない。</td>
+            <td>何も永続化しない。同じ install.release.id で次の機会に再取得 → 再ダウンロード。policy_sync_results には含めない。</td>
           </tr>
           <tr>
             <th scope="row">artifact_url の DL がリカバリ不能な失敗 (release削除直後で 404 が続く / sha256不一致)</th>
             <td>404 RELEASE_NOT_FOUND など</td>
             <td>—</td>
-            <td>entry を failed として確定 (phase=DOWNLOAD, code=ARTIFACT_GONE or ARTIFACT_CORRUPTED)。一括報告に含める。同 install.release.id では再試行しない。次回 fetch で release.id か version_code が変わったら再試行可能。</td>
+            <td>failed_artifacts_blacklist に追記 (phase=DOWNLOAD, code=ARTIFACT_GONE or ARTIFACT_CORRUPTED)。一括報告に含める。同 install.release.id では再試行しない。次回 fetch で release.id か version_code が変わったら再試行可能。</td>
           </tr>
           <tr>
-            <th scope="row">インストール権限なし + FORCE_INSTALLED 不足</th>
+            <th scope="row">AMAPI custom app install の前提を満たさず (= 軸B が <code>PACKAGE_INSTALLER</code>) + FORCE_INSTALLED 未達</th>
             <td>(該当なし)</td>
             <td>—</td>
-            <td>Sticky 通知を維持。entry は pending のまま (= リカバリ可能扱い)。ユーザーが反応するか、次回起動で再評価。一括報告も applied 更新もしない。</td>
+            <td>Sticky 通知を維持。work item は deferred (= リカバリ可能扱い)。ユーザーが通知から確認画面に進むか、次回起動で再評価。一括報告も applied 更新もしない。前提条件は <a href="/android-app-prereq/#install-axis">Androidアプリ導入の前提 #インストール経路という独立した軸</a> を参照。</td>
           </tr>
           <tr>
             <th scope="row">INSTALL がリカバリ不能な失敗 (署名不一致 / OS 非互換 / ユーザーが明示拒否)</th>
             <td>(該当なし、結果報告で表現)</td>
             <td>device_policy_sync_reports に actions[].result=FAILED で記録。Policy本体は変えない。</td>
-            <td>entry を failed として確定 (phase=INSTALL, code=SIGNATURE_MISMATCH など)。一括報告に含める。同じ artifact では再試行しない。管理者に再リリースを依頼する。</td>
+            <td>failed_artifacts_blacklist に追記 (phase=INSTALL, code=SIGNATURE_MISMATCH など)。一括報告に含める。同じ artifact では再試行しない。管理者に再リリースを依頼する。</td>
           </tr>
           <tr>
             <th scope="row">policy_sync_results 自体の POST が失敗</th>
@@ -727,7 +743,7 @@ const lifecycle = `stateDiagram-v2
             <th scope="row">同期中に Policy がさらに更新された (revision跳び)</th>
             <td>—</td>
             <td>最新revisionが正。古いrevisionに対する結果報告も受け付けるが、applied snapshotに反映するかは端末判断。</td>
-            <td>FCM 再受信で pending_policy_fetch が立つ。途中の同期は最後まで進めても、次の fetch で fetched が更新され、entry_sync_state を再構築。</td>
+            <td>FCM 再受信で pending_policy_fetch が立つ。途中の同期は最後まで進めても、次の fetch で fetched が更新され、work list は永続データから再計算される。</td>
           </tr>
           <tr>
             <th scope="row">差し替えで release.id は同じだが artifact が更新された</th>
@@ -747,19 +763,22 @@ const lifecycle = `stateDiagram-v2
     <ol>
       <li><strong>「あるべき状態 (Policy)」と「実際の状態 (端末)」の差分で考える。</strong> 個別のジョブやキューを作らない。新しい配信要件が出たら、まずPolicyのスキーマで表現できないかを検討する。</li>
       <li><strong>DevicePolicy は app 単位、release は引かない。</strong> 「このデバイスにこの version を固定したい」要件は、Policy が release を指す形ではなく、別の "pinning" 概念を後付けする形で考える。今の Policy 設計は「最新版を配信する」を基本にする。</li>
-      <li><strong>release 削除 / app 削除は DevicePolicy をカスケードしない。</strong> Policy の app_id 参照は残し、必要なら soft delete (<code>apps.deleted_at</code>) と組み合わせて表示側で「削除されたアプリ」と分かるようにする。</li>
+      <li><strong>release 削除 → app の最後の release が消えれば app も hard delete。</strong> Policy entries も同時に FK CASCADE で消える。「削除されたアプリ」状態 (entry は残るが app が無い) は作らない。</li>
+      <li><strong>app が消えた package を再アップロードしたら別の app.id になる。</strong> 同じ <code>package_name</code> でも別 id。古い entry は既に CASCADE で消えているので、配信を続けたい場合は admin が新しい app.id で entry を作り直す。</li>
+      <li><strong>app の hard delete で端末は UNINSTALL 候補になる。</strong> 端末から見ると Policy 不在になるため、<code>installed_by_companion=true</code> の既存インストールは UNINSTALL 候補になる。これは「配布元から全 release が削除されたアプリは配信対象外に戻す」という運用判断として扱う。</li>
       <li><strong>Policy 取得は必要なときだけ。</strong> 起動時に毎回叩かない。FCM 受信 / 手動更新 / 報告未送信 などで立つフラグやキューを見て、必要があるときだけ叩く。</li>
-      <li><strong>失敗はフェーズ単位で分類する。</strong> 「リカバリ可能 → そのフェーズからリトライ」「リカバリ不能 → entry を failed として確定」。新しいエラーが出てきたらまずこの2分類に当てはめる。</li>
+      <li><strong>失敗はフェーズ単位で分類する。</strong> 「リカバリ可能 → 何も永続化せず次の work list 再計算でリトライ」「リカバリ不能 → failed_artifacts_blacklist に追記」。新しいエラーが出てきたらまずこの2分類に当てはめる。</li>
       <li><strong>サーバー報告はリカバリ不能な失敗だけ。</strong> リカバリ可能な失敗 (一時的) は端末側のリトライで吸収する。サーバー側で「同じエラーが何度も来ている」を観測したくなったら、それはリカバリ可能/不能の判定を見直す合図。</li>
       <li><strong>FCMは「再取得の合図」だけ。</strong> Policy本文をdata payloadに載せない。ユーザー向け通知も出さない。</li>
-      <li><strong>fetched / applied / entry_sync_state を別オブジェクトで持つ。</strong> 「取得済み」「処理進捗」「報告まで完了したか」を1つの値に潰さない。</li>
+      <li><strong>fetched / applied / failed_artifacts_blacklist / pending_report_payload を別オブジェクトで持つ。</strong> 「取得済み」「恒久失敗」「未送信報告」「報告まで完了したか」を1つの値に潰さない。work item の途中進捗は永続化しない。</li>
       <li><strong>過去revisionは消さない。</strong> Policy変更は新規revision追加で表現する。</li>
       <li><strong>端末側で判断できる事はサーバーに持ち込まない。</strong> install_mode、現在のpackage一覧、権限の有無、フェーズ別エラーの分類は端末が知っている。サーバーはあるべき状態だけ持ち、リトライ・経路選択・通知制御は端末に寄せる。</li>
       <li><strong>installed_by_companion を立てたものだけ削除する。</strong> ユーザーが他経路で入れたアプリは絶対にUNINSTALLしない。</li>
       <li><strong>結果報告はログ。Policy本体を書き換えない。</strong> device_policy_sync_reports は監査・観測用。失敗が観測されたから Policy を変えるようなフィードバックを入れない。</li>
+      <li><strong>同期失敗は監視対象にする。</strong> device_policy_sync_reports は監査ログであり、集計側で失敗率・未報告率・FCM送信失敗率をダッシュボード化する。初期アラートは「1時間のリカバリ不能失敗率5%超」「FCM恒久失敗急増」を目安にする。</li>
       <li><strong>AVAILABLEに自動インストールを足さない。</strong> ユーザー導線が前提で、確定判定にも含めない (常に skip)。</li>
-      <li><strong>削除アプリの entry はサーバーから消さない。</strong> admin UI で見える状態を保ち、admin が明示的に PUT で entries を変更したときだけ消える。</li>
+      <li><strong>admin による PUT は楽観的ロックを入れない。</strong> 同じ admin が冪等に PUT する前提。最後に書いた entries が current_revision になる。並列編集の整合は admin UI 側 (再 GET → 編集 → 再 PUT) で吸収する。</li>
     </ol>
-    <p>判断に詰まったら <code>AGENTS.md</code> の "Data Modeling" セクション、および本ページの Data model 表を参照してください。AMAPI管理対象端末・非管理端末の差は「権限経路の差 (route)」として記録するだけで、Policyのスキーマでは区別しません。</p>
+    <p>判断に詰まったら <code>AGENTS.md</code> の "Data Modeling" セクション、および本ページの Data model 表を参照してください。AMAPI管理対象端末・非管理端末、および AMAPI custom app install の前提を満たすかどうかの差は「インストール経路の差 (<code>route</code>: <code>AMAPI_CUSTOM_APP</code> / <code>PACKAGE_INSTALLER</code>)」として <code>policy_sync_results</code> に記録するだけで、Policyのスキーマでは区別しません。AMAPI custom app install の前提条件は <a href="/android-app-prereq/#install-axis">Androidアプリ導入の前提 #インストール経路という独立した軸</a> を参照。</p>
   </section>
 </BaseLayout>

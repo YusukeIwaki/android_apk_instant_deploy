@@ -1,0 +1,1170 @@
+---
+import Mermaid from "../../../components/Mermaid.astro";
+import BaseLayout from "../../../layouts/BaseLayout.astro";
+
+const normalLaunchFlow = `flowchart TB
+  Launcher["ホームアイコンから起動"] --> HasCredential{"登録済み?"}
+  HasCredential -- "いいえ" --> LinkRequired["登録リンク待ち"]
+  HasCredential -- "はい" --> Home["ホーム (状態に応じた表示)"]
+  Home --> Action["必要な対応"]
+  Home --> Errors["エラーと再試行"]
+  Home --> Catalog["任意アプリ一覧"]
+  Catalog --> Detail["任意アプリ詳細"]
+  Home --> Settings["設定"]`;
+
+const deepLinkFlow = `flowchart TB
+  Link["登録リンク / QR"] --> Status{"端末とリンクの状態"}
+  Status -- "未登録 + リンク有効" --> Register["登録 (表示名入力)"]
+  Register --> RegDone["登録完了"]
+  Register --> RegBlocked["登録リンク利用不可"]
+  Status -- "同じ端末が再度有効リンク" --> AlreadyDone["既に登録済みの案内"]
+  Status -- "リンク無効 / 期限切れ / 使用済み / secret不一致" --> RegBlocked
+  RegDone --> Home["ホーム"]`;
+
+const notificationFlow = `flowchart TB
+  Notice["OS通知を表示"] --> UserAction{"利用者の操作"}
+  UserAction -- "本文タップ" --> Home["ホーム (状態に応じて 必要な対応 / エラー)"]
+  UserAction -- "アクションボタン" --> Background["アプリ画面を開かず処理再開"]`;
+---
+
+<BaseLayout
+  title="Android画面一覧"
+  description="Androidコンパニオンアプリに必要な画面を、Material WebベースのモックとAPI・データ制約で整理します。"
+  currentPath="/openapi/android-screens/"
+  contentClass="docs-content--screens"
+>
+  <p class="lede">
+    Androidコンパニオンアプリに必要な画面の「過不足」と「ユーザ体験の筋」を議論するためのページです。
+    画面遷移の全体像を示したうえで、登録、ホーム（状態別表示）、通知、任意アプリ、復旧、設定の各画面を並べます。
+    同期機構の内部状態、API、PackageInstaller、ストレージなどの実装詳細は別資料に切り出します。
+    モックは <code>material-components/material-web</code> のWeb Componentsで作った議論用の画面案で、Android実装ではMaterial 3の同等コンポーネントに置き換える前提です。
+  </p>
+
+  <section aria-labelledby="screen-map">
+    <p class="section-kicker">Navigation map</p>
+    <h2 id="screen-map">画面遷移の全体像</h2>
+    <div class="route-diagram-grid">
+      <Mermaid chart={normalLaunchFlow} title="通常起動: ホームアイコンから開く" />
+      <Mermaid chart={deepLinkFlow} title="ディープリンク起動: apkdist://register-device" />
+      <Mermaid chart={notificationFlow} title="OS通知起動: 利用者の対応が必要" />
+    </div>
+  </section>
+
+  <section aria-labelledby="entry-routes">
+    <p class="section-kicker">Entry routes</p>
+    <h2 id="entry-routes">起動ルート別の挙動</h2>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">起動ルート</th>
+            <th scope="col">最初に判定すること</th>
+            <th scope="col">遷移先</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">通常起動</th>
+            <td>端末が登録済みかどうか。</td>
+            <td>未登録なら「登録リンク待ち」。登録済みなら「ホーム」で現在の状態（最新です / やることがあります / 更新中 / オフライン / エラー）を表示する。</td>
+          </tr>
+          <tr>
+            <th scope="row">ディープリンク起動</th>
+            <td>リンクが有効か、端末が登録済みか。</td>
+            <td>未登録 + 有効リンクなら「登録」画面、成功すれば「登録完了」。登録済み端末が再度有効リンクを踏んだ場合は「既に登録済みの案内」。リンク無効・期限切れ・使用済み・secret不一致は「登録リンク利用不可」。</td>
+          </tr>
+          <tr>
+            <th scope="row">OS通知起動</th>
+            <td>本文タップかアクションボタンか。</td>
+            <td>本文タップは「ホーム」に着地し、ホームの状態（やることがあります / エラー）から「必要な対応」や「エラーと再試行」へ進める。アクションボタンはアプリ画面を開かず処理を再開する。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="inventory">
+    <p class="section-kicker">Screen inventory</p>
+    <h2 id="inventory">画面一覧</h2>
+    <p>
+      各画面は「端末利用者がその瞬間に見るもの」と「画面外で起きるAPI/データ処理」を分けて読んでください。
+      画面モック内の文言はAndroidアプリに載せる候補、右側の説明は設計制約です。
+    </p>
+
+    <div class="screen-catalog">
+      <article class="android-screen-card" aria-labelledby="screen-link-required">
+        <div class="phone-shell" aria-label="登録リンク待ち画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>9:40</span><span>5G 100%</span></div>
+            <main class="app-body app-body--center">
+              <div class="warning-mark">!</div>
+              <h3>登録リンクが必要です</h3>
+              <p class="screen-copy">管理者から受け取ったリンクまたはQRコードを開いてください。</p>
+              <md-outlined-button>閉じる</md-outlined-button>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-link-required">登録リンク待ち</h3>
+          <p>未登録端末でホームアイコンから起動したときの画面。登録に必要な情報がない状態なので、この画面から登録処理は開始しない。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>登録情報を持たない端末で通常起動した直後。</dd></div>
+            <div><dt>主な操作</dt><dd>「閉じる」でアプリを終了する。</dd></div>
+            <div><dt>置かないもの</dt><dd>identifier手入力欄や登録ボタン。登録は登録リンク / QR経由でしか始められない。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-register">
+        <div class="phone-shell phone-shell--pulse" aria-label="登録画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>9:41</span><span>5G 100%</span></div>
+            <main class="app-body">
+              <p class="screen-eyebrow">端末登録</p>
+              <h3>表示名を入力してください</h3>
+              <p class="screen-copy">管理者にもこの名前で表示されます。</p>
+              <md-outlined-text-field label="表示名" value="" supporting-text="例: Pixel 8 QA-01"></md-outlined-text-field>
+              <md-filled-button>登録する</md-filled-button>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-register">登録</h3>
+          <p>登録リンクで起動したときの唯一の登録画面。準備中の表示は分離しない（通知トークン取得待ちのときは登録ボタンを無効にして吸収する）。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>有効な登録リンクで起動した未登録端末。</dd></div>
+            <div><dt>主な操作</dt><dd>表示名を入力して「登録する」。</dd></div>
+            <div><dt>議論ポイント</dt><dd>表示名の初期値（空にするか機種名を入れるか）。登録途中のキャンセル動線。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-register-done">
+        <div class="phone-shell" aria-label="登録完了画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>9:43</span><span>5G 100%</span></div>
+            <main class="app-body app-body--center">
+              <div class="success-mark">✓</div>
+              <h3>登録が完了しました</h3>
+              <p class="screen-copy">この端末でアプリ配信を受け取れます。</p>
+              <md-filled-button>はじめる</md-filled-button>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-register-done">登録完了</h3>
+          <p>登録成功を伝え、そのままホームへ送り出す画面。アプリを閉じさせず、ホームで現在の配信状態を見せる流れにする。<strong>この画面で <code>POST_NOTIFICATIONS</code> (API 33+) と <code>REQUEST_INSTALL_PACKAGES</code> の許可をまとめて求める</strong>。OS のパーミッションダイアログが順に出る前提のステップ説明を画面に置く。拒否されても登録自体は完了扱いだが、ホームに権限不足の警告を残す。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>登録処理が成功した直後。</dd></div>
+            <div><dt>主な操作</dt><dd>「はじめる」を押すと <code>POST_NOTIFICATIONS</code> → <code>REQUEST_INSTALL_PACKAGES</code> の順で OS ダイアログを呼び出し、両方の結果を待ってからホームへ遷移する。<code>REQUEST_INSTALL_PACKAGES</code> は OS 設定への遷移が必要な OEM があるためフォールバック導線を用意する。</dd></div>
+            <div><dt>置かないもの</dt><dd>自動遷移 (許可ダイアログをスキップしないため明示ボタン必須)。短いカウントダウンや「スキップ」ボタン。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-already-registered">
+        <div class="phone-shell" aria-label="既に登録済みの案内画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>9:44</span><span>5G 100%</span></div>
+            <main class="app-body app-body--center">
+              <h3>この端末は既に登録済みです</h3>
+              <p class="screen-copy">アプリを開いて配信状況を確認できます。</p>
+              <md-filled-button>アプリを開く</md-filled-button>
+              <md-outlined-button>閉じる</md-outlined-button>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-already-registered">既に登録済みの案内</h3>
+          <p>同じ端末が再度有効な登録リンクを踏んだ場合の画面。「使えません」エラーと混同しないように分ける。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>登録済み端末で再度有効な登録リンクを踏んだ場合。</dd></div>
+            <div><dt>主な操作</dt><dd>「アプリを開く」でホーム / 「閉じる」でアプリ終了。</dd></div>
+            <div><dt>議論ポイント</dt><dd>「アプリを開く」を明示するか、通常起動へ自動誘導するか。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-register-blocked">
+        <div class="phone-shell" aria-label="登録リンク利用不可画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>9:44</span><span>5G 100%</span></div>
+            <main class="app-body app-body--center">
+              <div class="warning-mark">!</div>
+              <h3>このリンクは使えません</h3>
+              <p class="screen-copy">新しい登録リンクを管理者に依頼してください。</p>
+              <md-outlined-button>閉じる</md-outlined-button>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-register-blocked">登録リンク利用不可</h3>
+          <p>期限切れ・使用済み・secret不一致・別端末で利用済みなど、復旧導線を一本化した画面。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>登録リンクが何らかの理由で受け付けられない。</dd></div>
+            <div><dt>主な操作</dt><dd>「閉じる」。管理者に新しいリンクを依頼する。</dd></div>
+            <div><dt>置かないもの</dt><dd>失敗種別の詳細（「期限切れ」「使用済み」「secret不一致」を画面で出し分けない）。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-home-clean">
+        <div class="phone-shell" aria-label="ホーム — 最新です">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:12</span><span>5G 100%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-title">APK Remote Distribution</span>
+              <span class="app-bar-icon" aria-label="設定">⚙</span>
+            </header>
+            <main class="app-body">
+              <p class="screen-eyebrow">状態</p>
+              <h3>最新です</h3>
+              <md-list>
+                <md-list-item type="button">
+                  <div slot="headline">入れられるアプリを見る</div>
+                  <div slot="supporting-text">3件</div>
+                </md-list-item>
+              </md-list>
+              <p class="screen-copy screen-meta-line">最終確認 10:20</p>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-home-clean">ホーム — 最新です</h3>
+          <p>必須同期完了済み・エラー無し・オンラインの平常時。「何もしなくてよい」と1秒で分かることが目的。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>登録済み端末の通常起動時、操作不要の場合。</dd></div>
+            <div><dt>主な操作</dt><dd>任意アプリ一覧へ / 設定へ / 下に引っ張って手動更新。</dd></div>
+            <div><dt>置かないもの</dt><dd>端末名の大表示、内部状態（revision等）、件数サマリ、「配信設定を確認」ボタン。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-home-action">
+        <div class="phone-shell" aria-label="ホーム — やることがあります">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:13</span><span>5G 100%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-title">APK Remote Distribution</span>
+              <span class="app-bar-icon" aria-label="設定">⚙</span>
+            </header>
+            <main class="app-body">
+              <p class="screen-eyebrow">状態</p>
+              <h3>やることがあります</h3>
+              <div class="soft-panel soft-panel--warn">
+                <span class="check-dot check-dot--warn">!</span>
+                <div>
+                  <strong>勤怠アプリ</strong>
+                  <span>インストールを許可してください</span>
+                </div>
+              </div>
+              <md-filled-button>対応する</md-filled-button>
+              <md-list>
+                <md-list-item type="button">
+                  <div slot="headline">入れられるアプリを見る</div>
+                  <div slot="supporting-text">3件</div>
+                </md-list-item>
+              </md-list>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-home-action">ホーム — やることがあります</h3>
+          <p>利用者操作が必要なときの主役状態。アクションカードを行動の言葉で並べる。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>必須アプリのインストール許可待ち、リカバリ可能な失敗が残っている、など。</dd></div>
+            <div><dt>主な操作</dt><dd>「対応する」でOS確認画面（1件）または「必要な対応」画面（複数件）へ。</dd></div>
+            <div><dt>議論ポイント</dt><dd>件数によるOS直行と中継画面の使い分け。「あとで」を置くかどうか。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-home-syncing">
+        <div class="phone-shell phone-shell--sync" aria-label="ホーム — 更新中">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:14</span><span>5G 100%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-title">APK Remote Distribution</span>
+              <span class="app-bar-icon" aria-label="設定">⚙</span>
+            </header>
+            <main class="app-body">
+              <p class="screen-eyebrow">状態</p>
+              <h3>更新中</h3>
+              <md-linear-progress indeterminate></md-linear-progress>
+              <md-list>
+                <md-list-item>
+                  <div slot="headline">勤怠アプリ</div>
+                  <div slot="supporting-text">ダウンロード中</div>
+                </md-list-item>
+                <md-list-item>
+                  <div slot="headline">棚卸サポート</div>
+                  <div slot="supporting-text">最新版です</div>
+                </md-list-item>
+              </md-list>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-home-syncing">ホーム — 更新中</h3>
+          <p>配信設定の取得や必須アプリ同期が進行中の状態。独立画面ではなくホームの一状態として扱う。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>自動同期処理が進行中。</dd></div>
+            <div><dt>主な操作</dt><dd>基本は何もしない（バックグラウンドで継続）。</dd></div>
+            <div><dt>議論ポイント</dt><dd>更新完了の合図はスナックバーで吸収するか、画面遷移を伴うか。オフライン突入や端末スリープ時の表現。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-home-offline">
+        <div class="phone-shell" aria-label="ホーム — オフライン">
+          <div class="phone-screen">
+            <div class="phone-status"><span>9:14</span><span>圏外</span></div>
+            <header class="app-bar">
+              <span class="app-bar-title">APK Remote Distribution</span>
+              <span class="app-bar-icon" aria-label="設定">⚙</span>
+            </header>
+            <main class="app-body">
+              <p class="screen-eyebrow">状態</p>
+              <h3>オフラインで確認できません</h3>
+              <p class="screen-copy">通信できる場所で下に引っ張って更新してください。</p>
+              <p class="screen-copy screen-meta-line">最終確認 昨日 18:30</p>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-home-offline">ホーム — オフライン</h3>
+          <p>通信不可で最新かどうか分からない状態。利用者の不安を作らないために明示的に出す。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>通信不可、かつ最終確認から一定時間以上経過。</dd></div>
+            <div><dt>主な操作</dt><dd>通信できる場所への移動 / 引っ張って更新。</dd></div>
+            <div><dt>議論ポイント</dt><dd>「一定時間」をどの程度にするか。短時間のオフラインは「最新です」のままにする。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-required-action">
+        <div class="phone-shell" aria-label="必要な対応画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:15</span><span>5G 100%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-icon" aria-hidden="true">←</span>
+              <span class="app-bar-title">必要な対応</span>
+            </header>
+            <main class="app-body">
+              <h3>インストールを許可してください</h3>
+              <p class="screen-copy">続行するとAndroidの確認画面が開きます。</p>
+              <md-list>
+                <md-list-item type="button">
+                  <div slot="headline">勤怠アプリ</div>
+                  <div slot="supporting-text">確認画面を開く</div>
+                </md-list-item>
+                <md-list-item type="button">
+                  <div slot="headline">棚卸サポート</div>
+                  <div slot="supporting-text">確認画面を開く</div>
+                </md-list-item>
+              </md-list>
+              <md-text-button>あとで通知する</md-text-button>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-required-action">必要な対応</h3>
+          <p>利用者操作が必要なアプリが複数あるときに見せる中継画面。1件のときはこの画面を飛ばしてOSの確認画面へ直接遷移してよい。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>ホームの「対応する」から（2件以上）、または通知の本文タップ経由。</dd></div>
+            <div><dt>主な操作</dt><dd>各行で「確認画面を開く」/ 全体で「あとで通知する」。</dd></div>
+            <div><dt>議論ポイント</dt><dd>「あとで」の再通知タイミングを利用者にどう伝えるか。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-install-notification">
+        <div class="phone-shell" aria-label="必須アプリのインストール通知">
+          <div class="phone-screen">
+            <div class="phone-status phone-status--dark"><span>10:15</span><span>5G 100%</span></div>
+            <main class="notification-shade">
+              <div class="shade-header">
+                <span>通知</span>
+                <span>いま</span>
+              </div>
+              <div class="os-notification">
+                <div class="notification-app-line"><span class="tiny-app-icon"></span>APK Remote Distribution</div>
+                <strong>必須アプリのインストールが必要です</strong>
+                <p>勤怠アプリをインストールしてください。</p>
+                <div class="notification-action-row">
+                  <span>インストール</span>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-install-notification">通知 — 必須アプリのインストール</h3>
+          <p>サイレントインストール経路 (AMAPI_CUSTOM_APP) が使えず、ユーザー確認 (PACKAGE_INSTALLER) が必要で必須アプリが未達のときだけ出すsticky通知。<strong>「ユーザーが拒否したら静かに引き下がる」設計ではなく、「なるべくインストールしてもらう」設計</strong>。管理者が配信したアプリは業務上必要であり、利用者の拒否で長期間未インストールに留まる状態は管理者にとって想定外となる。次回の同期トリガで条件 (FORCE_INSTALLED 未達 + 経路が <code>PACKAGE_INSTALLER</code>) が変わっていなければ、通知は再度表示される。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>本文タップ</dt><dd>「ホーム — やることがあります」に着地（→ 必要に応じて「必要な対応」へ進める）。</dd></div>
+            <div><dt>アクション</dt><dd>「インストール」はアプリ画面を開かず処理を進める。</dd></div>
+            <div><dt>置かないもの</dt><dd>通知本文に内部状態や失敗コード。インストール確定後は通知を下げる。「次から表示しない」「ミュート」のような利用者側の永続抑止オプション。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-retry-notification">
+        <div class="phone-shell" aria-label="再試行通知">
+          <div class="phone-screen">
+            <div class="phone-status phone-status--dark"><span>10:28</span><span>5G 86%</span></div>
+            <main class="notification-shade">
+              <div class="shade-header">
+                <span>通知</span>
+                <span>10:28</span>
+              </div>
+              <div class="os-notification os-notification--warn">
+                <div class="notification-app-line"><span class="tiny-app-icon tiny-app-icon--warn"></span>APK Remote Distribution</div>
+                <strong>同期を再試行できます</strong>
+                <p>通信できる場所で、棚卸サポートの取得をやり直してください。</p>
+                <div class="notification-action-row">
+                  <span>再試行</span>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-retry-notification">通知 — ダウンロード再試行</h3>
+          <p>リカバリ可能なダウンロード失敗が残っていて、利用者操作で再試行させたい場合の通知。常時出すのではなく、ユーザー操作が必要な局面に限定する。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>本文タップ</dt><dd>「ホーム — エラー」に着地（→「エラーと再試行」へ進める）。</dd></div>
+            <div><dt>アクション</dt><dd>「再試行」はアプリ画面を開かず処理を再開する。</dd></div>
+            <div><dt>置かないもの</dt><dd>同じ条件で結果が変わらないリカバリ不能失敗には出さない。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-catalog">
+        <div class="phone-shell" aria-label="任意アプリ一覧画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:20</span><span>5G 100%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-icon" aria-hidden="true">←</span>
+              <span class="app-bar-title">入れられるアプリ</span>
+            </header>
+            <main class="app-body">
+              <md-list>
+                <md-list-item type="button">
+                  <div slot="headline">棚卸サポート</div>
+                  <div slot="supporting-text">v1.4.0 ・ 未インストール</div>
+                </md-list-item>
+                <md-list-item type="button">
+                  <div slot="headline">来客受付</div>
+                  <div slot="supporting-text">v2.1.3 ・ インストール済み</div>
+                </md-list-item>
+                <md-list-item type="button">
+                  <div slot="headline">配達ナビ</div>
+                  <div slot="supporting-text">v1.0.5 ・ 更新あり</div>
+                </md-list-item>
+              </md-list>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-catalog">任意アプリ一覧</h3>
+          <p>利用者が自分で選んで入れられるアプリの一覧。必要・任意のタブ分けはせず、任意のみを並べる。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>ホームの「入れられるアプリを見る」から。</dd></div>
+            <div><dt>主な操作</dt><dd>行タップで詳細へ。</dd></div>
+            <div><dt>議論ポイント</dt><dd>状態バッジ（未インストール / インストール済み / 更新あり / 取得失敗）の出し方。絞り込みフィルタの要否。新着アプリの気づかせ方。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-detail">
+        <div class="phone-shell" aria-label="アプリ詳細画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:21</span><span>5G 100%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-icon" aria-hidden="true">←</span>
+              <span class="app-bar-title"></span>
+            </header>
+            <main class="app-body">
+              <p class="screen-eyebrow">任意アプリ</p>
+              <div class="app-icon">棚</div>
+              <h3>棚卸サポート</h3>
+              <p class="screen-copy">棚卸作業を補助する社内アプリです。</p>
+              <div class="version-row"><span>配信バージョン</span><strong>v1.4.0</strong></div>
+              <md-filled-button>インストール</md-filled-button>
+              <md-text-button>一覧へ戻る</md-text-button>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-detail">任意アプリ詳細</h3>
+          <p>利用者が明示的にインストールする画面。状態によって主CTAを1つに絞る。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>任意アプリ一覧から行タップ。</dd></div>
+            <div><dt>主CTA（状態別）</dt><dd>未インストール → 「インストール」 / インストール済み → 「開く」 + 二次操作で「アンインストール」 / 更新あり → 「更新」 / 失敗中 → 「再試行」。</dd></div>
+            <div><dt>議論ポイント</dt><dd>変更点（リリースノート）を表示するか。アンインストールの確認ダイアログを置くか。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-error">
+        <div class="phone-shell" aria-label="エラーと再試行画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:28</span><span>5G 86%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-icon" aria-hidden="true">←</span>
+              <span class="app-bar-title">エラー</span>
+            </header>
+            <main class="app-body">
+              <h3>通信できる場所で再試行してください</h3>
+              <md-list>
+                <md-list-item type="button">
+                  <div slot="headline">棚卸サポート</div>
+                  <div slot="supporting-text">ダウンロードに失敗</div>
+                </md-list-item>
+              </md-list>
+              <md-filled-button>すべて再試行</md-filled-button>
+              <md-outlined-button>ホームへ戻る</md-outlined-button>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-error">エラーと再試行</h3>
+          <p>利用者操作で進む失敗のみを並べる画面。自動再試行で解決するものや、結果が変わらない失敗は出さない。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>ホームの「エラーで止まっています」から。</dd></div>
+            <div><dt>主な操作</dt><dd>「すべて再試行」/ 行ごとの再試行 / ホームへ戻る。</dd></div>
+            <div><dt>置かないもの</dt><dd>内部エラーコードやAPI名。同じ条件で結果が変わらない失敗。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-settings">
+        <div class="phone-shell" aria-label="設定画面">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:32</span><span>5G 92%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-icon" aria-hidden="true">←</span>
+              <span class="app-bar-title">設定</span>
+            </header>
+            <main class="app-body">
+              <md-list>
+                <md-list-item type="button">
+                  <div slot="headline">表示名</div>
+                  <div slot="supporting-text">Pixel 8 QA-01</div>
+                </md-list-item>
+                <md-list-item type="button">
+                  <div slot="headline">このアプリについて</div>
+                  <div slot="supporting-text">バージョン 1.0.0</div>
+                </md-list-item>
+              </md-list>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-settings">設定</h3>
+          <p>登録後の維持管理画面。手動更新ボタンは置かず、ホームのpull-to-refreshで代替する。端末利用者による登録解除は提供しない。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>出すタイミング</dt><dd>ホーム右上の設定アイコンから。</dd></div>
+            <div><dt>主な操作</dt><dd>表示名の確認 / このアプリについて。</dd></div>
+            <div><dt>議論ポイント</dt><dd>表示名変更APIの要否。端末利用者による登録解除は作らず、アプリ削除・データ初期化時のサーバー側 cleanup は別ページで扱う。</dd></div>
+          </dl>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="coverage">
+    <p class="section-kicker">Coverage</p>
+    <h2 id="coverage">作る画面 / 作らない画面</h2>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">対象</th>
+            <th scope="col">扱い</th>
+            <th scope="col">理由</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">登録リンク待ち、登録、登録完了、既に登録済みの案内、リンク利用不可</th>
+            <td>Androidアプリで作る</td>
+            <td>通常起動で未登録だった場合の案内と、登録リンクから端末登録を完了させるまでの端末側主導の画面。</td>
+          </tr>
+          <tr>
+            <th scope="row">ホーム（最新 / やること / 更新中 / オフライン / エラー）、必要な対応、通知、エラーと再試行、任意アプリ一覧・詳細、設定</th>
+            <td>Androidアプリで作る</td>
+            <td>配信状態と利用者の行動を結びつける中核。通知はOS面だが、本文タップやアクションボタンの遷移はAndroidアプリが設計する。</td>
+          </tr>
+          <tr>
+            <th scope="row">配信設定取得画面、必須アプリ同期中画面（単独）</th>
+            <td>独立画面としては作らない</td>
+            <td>ホームの「更新中」状態として畳む。完了はスナックバーで吸収する。</td>
+          </tr>
+          <tr>
+            <th scope="row">Android PackageInstaller確認画面</th>
+            <td>作らない</td>
+            <td>OS所有の画面。アプリ側はそこへ遷移する前後の説明と復帰後の状態更新を作る。</td>
+          </tr>
+          <tr>
+            <th scope="row">管理者向けPolicy編集、アプリ登録</th>
+            <td>Androidアプリでは作らない</td>
+            <td>管理画面の責務。Androidアプリは端末向け情報だけを表示する。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="failure-examples">
+    <p class="section-kicker">Failure examples</p>
+    <h2 id="failure-examples">リカバリ可能な失敗 / そうではない失敗の例</h2>
+    <p>
+      画面とノートで何度か出てくる「リカバリ可能な失敗」「同じ条件で結果が変わらない失敗」が具体的に何を指すかを、議論用に例示します。
+      実装上の分類はここでは確定させず、利用者体験を設計するときの目安として扱います。
+    </p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">分類</th>
+            <th scope="col">代表例</th>
+            <th scope="col">画面・通知での扱い</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">リカバリ可能な失敗</th>
+            <td>
+              <ul class="failure-list">
+                <li>通信が不安定でダウンロードが途中で切れた</li>
+                <li>配信設定の取得が一時的に失敗した（サーバー側の一時エラー / タイムアウト）</li>
+                <li>ダウンロードURLの有効期限切れ（取得し直せば成功する）</li>
+                <li>OSのインストール確認画面で利用者が一度キャンセルした（次に許可できる）</li>
+                <li>端末がオフライン / 機内モード / 通信制限 / 低電力モードで処理が止まった</li>
+                <li>通知許可が未付与でユーザー操作が必要</li>
+              </ul>
+            </td>
+            <td>「やることがあります」「エラーで止まっています」状態へ振り分ける。再試行通知や「再試行」ボタンで利用者が次に進める。</td>
+          </tr>
+          <tr>
+            <th scope="row">そうではない失敗（再試行で解決しない）</th>
+            <td>
+              <ul class="failure-list">
+                <li>APKの署名がすでにインストール済みのものと一致しない</li>
+                <li>端末がそのアプリの動作要件（minSdk等）を満たしていない</li>
+                <li>配信から外されたリリースのURLが404を返し続ける</li>
+                <li>端末登録が管理者側で解除されて認証が永続的に無効になっている</li>
+                <li>端末のストレージ不足が解消できない（クリア候補もない）</li>
+                <li>APK自体が壊れていてハッシュ検証が常に失敗する</li>
+              </ul>
+            </td>
+            <td>利用者に「再試行」ボタンや再試行通知を出さない。必要に応じて管理者への連絡を促す導線にする。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="discussion">
+    <p class="section-kicker">Discussion points</p>
+    <h2 id="discussion">判断指針</h2>
+    <ul class="usa-list">
+      <li><strong>登録は1画面で終える。</strong> 表示名入力と登録ボタンだけで構成し、通知トークン取得待ちはボタンのdisabledで吸収する。初回同期や配信説明を登録完了画面へ足さない。</li>
+      <li><strong>ホームは「状態 + アクション + 任意導線」に絞る。</strong> 「今、何かする必要があるか」を1秒で答える表示にし、端末名や件数サマリ、内部状態は出さない。</li>
+      <li><strong>同期中・取得中は独立画面にしない。</strong> ホームの「更新中」状態として扱い、完了はスナックバーで吸収する。</li>
+      <li><strong>必須と任意を混ぜない。</strong> 必須は自動同期の状態として、任意は利用者が選ぶカタログとして見せる。任意アプリ詳細は状態別に主CTAを1つに絞る。</li>
+      <li><strong>通知は入口を2つ持つ。</strong> 本文タップはホームに着地して状態を説明する画面へ、アクションボタンは画面を開かず処理再開へ進める。</li>
+      <li><strong>リカバリ可能な失敗は行動に変換する。</strong> 通信再試行、権限許可、あとで通知のような操作にし、内部エラーコードをそのまま見せない。</li>
+      <li><strong>Material Webモックは完成UIではなく議論用。</strong> Android実装ではMaterial 3の同等コンポーネントに置き換え、文言、余白、disabled/loading/error状態をこの一覧から詰める。</li>
+    </ul>
+  </section>
+</BaseLayout>
+
+<script>
+  import "@material/web/button/filled-button.js";
+  import "@material/web/button/outlined-button.js";
+  import "@material/web/button/text-button.js";
+  import "@material/web/list/list.js";
+  import "@material/web/list/list-item.js";
+  import "@material/web/progress/linear-progress.js";
+  import "@material/web/textfield/outlined-text-field.js";
+</script>
+
+<style>
+  :global(.docs-content--screens) {
+    --md-sys-color-primary: #2451a6;
+    --md-sys-color-on-primary: #fff;
+    --md-sys-color-secondary-container: #dbe7ff;
+    --md-sys-color-on-secondary-container: #17315f;
+    --md-sys-color-surface: #fff;
+    --md-sys-color-on-surface: #1b1b1b;
+    --md-sys-color-surface-container: #f5f7fb;
+    --md-sys-shape-corner-full: 999px;
+  }
+
+  .screen-catalog {
+    display: grid;
+    gap: 1.4rem;
+  }
+
+  .route-diagram-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .route-diagram-grid .diagram {
+    margin: 0;
+    min-width: 0;
+  }
+
+  .android-screen-card {
+    align-items: start;
+    animation: screen-card-in 520ms ease both;
+    background: #fff;
+    border-top: 1px solid var(--docs-border);
+    display: grid;
+    gap: 1.25rem;
+    grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr);
+    padding-top: 1.4rem;
+  }
+
+  .android-screen-card:nth-child(2n) {
+    animation-delay: 80ms;
+  }
+
+  .phone-shell {
+    background: #15171f;
+    border-radius: 32px;
+    box-shadow: 0 16px 34px rgba(27, 27, 27, 0.18);
+    margin: 0 auto;
+    max-width: 23rem;
+    padding: 0.7rem;
+    width: 100%;
+  }
+
+  .phone-shell--pulse {
+    animation: phone-pulse 2.8s ease-in-out infinite;
+  }
+
+  .phone-shell--sync {
+    background: linear-gradient(145deg, #15171f, #24324c);
+  }
+
+  .phone-screen {
+    background: #fff;
+    border-radius: 24px;
+    min-height: 42rem;
+    overflow: hidden;
+  }
+
+  .phone-status {
+    align-items: center;
+    background: #eef2f6;
+    display: flex;
+    font-size: 0.75rem;
+    font-weight: 700;
+    justify-content: space-between;
+    padding: 0.65rem 1.05rem 0.5rem;
+  }
+
+  .phone-status--dark {
+    background: #161b25;
+    color: #f7f9fa;
+  }
+
+  .app-bar {
+    align-items: center;
+    background: #f7f9fc;
+    border-bottom: 1px solid #dde3ee;
+    display: flex;
+    font-weight: 700;
+    gap: 0.6rem;
+    padding: 0.9rem 1rem;
+  }
+
+  .app-bar-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-bar-icon {
+    color: #565c65;
+    font-size: 1.1rem;
+    font-weight: 400;
+  }
+
+  .app-body {
+    display: grid;
+    gap: 0.9rem;
+    padding: 1.1rem;
+  }
+
+  .app-body--center {
+    align-content: center;
+    min-height: 35rem;
+    text-align: center;
+  }
+
+  .app-body h3 {
+    font-size: 1.38rem;
+    line-height: 1.25;
+    margin: 0;
+  }
+
+  .screen-eyebrow {
+    color: #2451a6;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    margin: 0;
+  }
+
+  .screen-copy {
+    color: #565c65;
+    margin: 0;
+  }
+
+  .screen-meta-line {
+    font-size: 0.78rem;
+    text-align: center;
+  }
+
+  .failure-list {
+    margin: 0;
+    padding-left: 1.2rem;
+  }
+
+  .failure-list li + li {
+    margin-top: 0.25rem;
+  }
+
+  .soft-panel,
+  .permission-card {
+    align-items: center;
+    background: #f5f7fb;
+    border: 1px solid #dde3ee;
+    border-radius: 8px;
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: 2rem minmax(0, 1fr);
+    padding: 0.75rem;
+  }
+
+  .permission-card {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .soft-panel span,
+  .permission-card span {
+    color: #565c65;
+    display: block;
+    font-size: 0.86rem;
+    line-height: 1.45;
+  }
+
+  .notification-shade {
+    background: #161b25;
+    color: #f7f9fa;
+    min-height: 39rem;
+    padding: 1rem;
+  }
+
+  .shade-header {
+    align-items: center;
+    color: #c9cdd1;
+    display: flex;
+    font-size: 0.78rem;
+    justify-content: space-between;
+    margin-bottom: 0.9rem;
+  }
+
+  .os-notification {
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.26);
+    color: #1b1b1b;
+    padding: 0.9rem;
+  }
+
+  .os-notification--warn {
+    border-left: 0.35rem solid #b45309;
+  }
+
+  .notification-app-line {
+    align-items: center;
+    color: #565c65;
+    display: flex;
+    font-size: 0.72rem;
+    font-weight: 700;
+    gap: 0.45rem;
+    margin-bottom: 0.45rem;
+  }
+
+  .tiny-app-icon {
+    background: #2451a6;
+    border-radius: 4px;
+    display: inline-block;
+    height: 1rem;
+    width: 1rem;
+  }
+
+  .tiny-app-icon--warn {
+    background: #b45309;
+  }
+
+  .os-notification p {
+    color: #565c65;
+    font-size: 0.9rem;
+    line-height: 1.45;
+    margin: 0.35rem 0 0;
+  }
+
+  .notification-action-row {
+    border-top: 1px solid #dde3ee;
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.75rem;
+    padding-top: 0.65rem;
+  }
+
+  .notification-action-row span {
+    color: #2451a6;
+    font-size: 0.88rem;
+    font-weight: 800;
+  }
+
+  .soft-panel--ready {
+    background: #eef8f1;
+    border-color: #b7d8c0;
+  }
+
+  .soft-panel--warn {
+    background: #fff7e0;
+    border-color: #f2c84b;
+  }
+
+  .check-dot,
+  .success-mark,
+  .warning-mark {
+    align-items: center;
+    background: #2e7044;
+    border-radius: 50%;
+    color: #fff;
+    display: inline-flex;
+    font-weight: 800;
+    justify-content: center;
+  }
+
+  .check-dot {
+    height: 2rem;
+    width: 2rem;
+  }
+
+  .check-dot--active {
+    animation: dot-breathe 1.4s ease-in-out infinite;
+    background: #2451a6;
+  }
+
+  .check-dot--warn,
+  .warning-mark {
+    background: #b45309;
+  }
+
+  .success-mark,
+  .warning-mark {
+    font-size: 2rem;
+    height: 4.5rem;
+    justify-self: center;
+    width: 4.5rem;
+  }
+
+  .status-ring {
+    align-items: center;
+    animation: ring-sweep 3.4s linear infinite;
+    background: conic-gradient(#2e7044 0 82%, #dfe1e2 82% 100%);
+    border-radius: 50%;
+    display: flex;
+    height: 8.5rem;
+    justify-content: center;
+    justify-self: center;
+    width: 8.5rem;
+  }
+
+  .status-ring span {
+    align-items: center;
+    background: #fff;
+    border-radius: 50%;
+    color: #2e7044;
+    display: flex;
+    font-size: 1.4rem;
+    font-weight: 800;
+    height: 6.4rem;
+    justify-content: center;
+    width: 6.4rem;
+  }
+
+  .sync-orbit {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+    height: 5rem;
+    justify-content: center;
+  }
+
+  .sync-orbit span {
+    animation: orbit-dot 1.2s ease-in-out infinite;
+    background: #2451a6;
+    border-radius: 50%;
+    height: 0.9rem;
+    width: 0.9rem;
+  }
+
+  .sync-orbit span:nth-child(2) {
+    animation-delay: 150ms;
+  }
+
+  .sync-orbit span:nth-child(3) {
+    animation-delay: 300ms;
+  }
+
+  .app-icon {
+    align-items: center;
+    background: #dbe7ff;
+    border-radius: 14px;
+    color: #17315f;
+    display: flex;
+    font-size: 1.45rem;
+    font-weight: 800;
+    height: 4.75rem;
+    justify-content: center;
+    width: 4.75rem;
+  }
+
+  .version-row {
+    align-items: center;
+    border-top: 1px solid #dde3ee;
+    display: flex;
+    justify-content: space-between;
+    padding-top: 0.75rem;
+  }
+
+  .version-row span {
+    color: #565c65;
+  }
+
+  .screen-notes {
+    min-width: 0;
+  }
+
+  .screen-notes h3 {
+    margin-top: 0;
+  }
+
+  .screen-meta div {
+    grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
+  }
+
+  md-filled-button,
+  md-outlined-button,
+  md-text-button,
+  md-outlined-text-field {
+    width: 100%;
+  }
+
+  md-list {
+    background: #fff;
+    border: 1px solid #dde3ee;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  md-tabs {
+    --md-primary-tab-container-color: #fff;
+  }
+
+  @keyframes screen-card-in {
+    from {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes phone-pulse {
+    0%,
+    100% {
+      box-shadow: 0 16px 34px rgba(27, 27, 27, 0.18);
+    }
+    50% {
+      box-shadow: 0 18px 40px rgba(36, 81, 166, 0.3);
+    }
+  }
+
+  @keyframes dot-breathe {
+    0%,
+    100% {
+      opacity: 0.55;
+      transform: scale(0.86);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes orbit-dot {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-0.7rem);
+    }
+  }
+
+  @keyframes ring-sweep {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .android-screen-card,
+    .phone-shell--pulse,
+    .check-dot--active,
+    .status-ring,
+    .sync-orbit span {
+      animation: none;
+    }
+  }
+
+  @media (max-width: 74em) {
+    .android-screen-card {
+      grid-template-columns: 1fr;
+    }
+
+    .route-diagram-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 39.99em) {
+    .phone-screen {
+      min-height: 38rem;
+    }
+
+    .screen-meta div {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

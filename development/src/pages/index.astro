@@ -21,6 +21,30 @@ const pages = [
     audience: "サーバー / Androidアプリ"
   },
   {
+    label: "Androidアプリ導入の前提",
+    href: "/android-app-prereq/",
+    summary: "コンパニオンアプリ自体を端末へ入れる前提を、AMAPI管理端末のforce installと手動インストールの2経路で整理します。",
+    audience: "Androidアプリ / 端末管理"
+  },
+  {
+    label: "Androidアプリ削除時の挙動",
+    href: "/android-app-removal/",
+    summary: "アプリ削除・データ初期化・再インストールで端末側の実体が消えたとき、FCM恒久失敗と無接触期間からサーバー側データをcleanupする設計。",
+    audience: "サーバー / Androidアプリ"
+  },
+  {
+    label: "Android画面一覧",
+    href: "/openapi/android-screens/",
+    summary: "Androidコンパニオンアプリで必要になる画面を、Material WebベースのモックとAPI・データ制約で横並びに確認するためのページ。",
+    audience: "Androidアプリ / サーバー"
+  },
+  {
+    label: "同期/リトライ機構",
+    href: "/sync-retry/",
+    summary: "Policy fetch・ダウンロード・インストール・結果報告を端末側で進める同期エンジンの状態モデル、トリガ、判定基準、リトライ計画を1枚で読むためのページ。",
+    audience: "Androidアプリ / サーバー"
+  },
+  {
     label: "OpenAPI",
     href: "/openapi/",
     summary: "上記3ユースケースで使う具体的なエンドポイント・スキーマの一覧。実装時のリファレンス。",

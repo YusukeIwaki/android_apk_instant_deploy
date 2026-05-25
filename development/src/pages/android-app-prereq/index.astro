@@ -1,0 +1,279 @@
+---
+import Mermaid from "../../components/Mermaid.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const routeDiagram = `flowchart TD
+  Start["端末へコンパニオンアプリを導入する"] --> Managed{"既にAMAPI管理端末?"}
+  Managed -->|はい| Amapi["AMAPI policyで FORCE_INSTALLED<br/>+ managedConfiguration を配布"]
+  Managed -->|いいえ| Manual["Google Play / adb install / 社内配布で<br/>手動インストール"]
+  Amapi --> AutoReg["初回起動でmanagedConfigurationから<br/>identifier / secret / display_name を読み<br/>FCM tokenと合わせて自動登録"]
+  Manual --> ManualReg["apkdist://register-device を開き<br/>表示名を入力して登録"]
+  AutoReg --> AppReady["device_auth_token / FCM token を保持<br/>以後はDevicePolicy同期へ"]
+  ManualReg --> AppReady
+  AppReady --> InstallAxis{"AMAPI SDK custom app install の<br/>前提条件をすべて満たすか?"}
+  InstallAxis -->|はい| Silent["AMAPI SDK サイレントインストール経路<br/>route = AMAPI_CUSTOM_APP"]
+  InstallAxis -->|いいえ| Ui["PackageInstaller UI 経路<br/>route = PACKAGE_INSTALLER"]`;
+
+const axisMatrix = `flowchart LR
+  subgraph RegAxis["軸A: 登録経路 (= managedConfigurationを受け取れるか)"]
+    RegMc["AMAPI管理 + managedConfiguration<br/>→ 自動登録"]
+    RegLink["AMAPI管理外 / managedConfiguration無し<br/>→ deep link + 表示名入力"]
+  end
+  subgraph InstallAxis["軸B: 配布APKのインストール経路 (= AMAPI custom app install の前提を満たすか)"]
+    InstSilent["Fully managed + COMPANION_APP role +<br/>対象APKが installType=CUSTOM で<br/>signingKeyCerts一致<br/>→ AMAPI SDK サイレント (AMAPI_CUSTOM_APP)"]
+    InstUi["上記前提を満たさない<br/>→ PackageInstaller UI + Sticky通知 (PACKAGE_INSTALLER)"]
+  end
+  RegAxis -. "独立" .- InstallAxis`;
+
+const amapiPolicy = `{
+  "applications": [
+    {
+      "packageName": "com.example.apkdist.companion",
+      "installType": "FORCE_INSTALLED",
+      "defaultPermissionPolicy": "GRANT",
+      "permissionGrants": [
+        {
+          "permission": "android.permission.POST_NOTIFICATIONS",
+          "policy": "GRANT"
+        }
+      ],
+      "managedConfiguration": {
+        "server_base_url": "https://distribution.example.test",
+        "device_registration_identifier": "drt_01HX9A2W...",
+        "device_registration_secret": "drs_4Gk...",
+        "display_name": "Pixel 8 QA-01"
+      }
+    }
+  ]
+}`;
+
+const managedConfigKeys = `<?xml version="1.0" encoding="utf-8"?>
+<restrictions xmlns:android="http://schemas.android.com/apk/res/android">
+  <restriction
+    android:key="server_base_url"
+    android:title="@string/mc_server_base_url_title"
+    android:restrictionType="string" />
+  <restriction
+    android:key="device_registration_identifier"
+    android:title="@string/mc_identifier_title"
+    android:restrictionType="string" />
+  <restriction
+    android:key="device_registration_secret"
+    android:title="@string/mc_secret_title"
+    android:restrictionType="string" />
+  <restriction
+    android:key="display_name"
+    android:title="@string/mc_display_name_title"
+    android:restrictionType="string" />
+</restrictions>`;
+
+const manualInstall = `# APKを直接入れる場合
+adb install -r companion-release.apk
+
+# インストール後、管理者が発行した登録リンクを開く
+adb shell am start \\
+  -a android.intent.action.VIEW \\
+  -d "apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk..."`;
+
+const sequence = `sequenceDiagram
+  autonumber
+  actor Admin as 管理者
+  participant Api as APK配信API
+  participant Amapi as Android Management API
+  participant Device as 管理対象端末
+  participant App as コンパニオンアプリ
+
+  alt AMAPI管理端末 (managedConfiguration経由で自動登録)
+    Admin->>Api: DeviceRegistrationToken を発行
+    Admin->>Amapi: policyに FORCE_INSTALLED + managedConfiguration を設定
+    Note over Amapi,Device: managedConfigurationに identifier / secret / display_name を含める
+    Amapi->>Device: Android Device Policyがアプリ導入と設定配布
+    Device->>App: 初回起動
+    App->>App: RestrictionsManagerから登録情報を読む
+    App->>Api: FCM token + managedConfigの値で登録
+  else 手動導入 (deep link経由で登録)
+    Admin->>Api: DeviceRegistrationToken を発行
+    Admin->>Device: Google Play / adb / 社内配布でアプリを入れる
+    Admin->>Device: apkdist://register-device... を配布
+    Device->>App: deep linkで起動
+    App->>Api: FCM token + 表示名 + secret で登録
+  end`;
+---
+
+<BaseLayout
+  title="Androidアプリ導入の前提"
+  description="コンパニオンアプリを端末へ導入し、DeviceRegistrationTokenで登録するまでの2経路を整理します。AMAPI管理端末はmanagedConfigurationで自動登録、AMAPI管理外端末はQR/deep linkを使います。"
+  currentPath="/android-app-prereq/"
+>
+  <p class="lede">
+    このページは <strong>DeviceRegistrationToken による端末登録の前</strong> に、コンパニオンアプリ自体がどう端末へ入り、どう登録まで進むかを整理します。
+    AMAPI管理端末では <code>FORCE_INSTALLED</code> と <code>managedConfiguration</code> を組み合わせた自動登録、AMAPI管理外端末では手動インストール + custom scheme deep link による登録、の2経路を扱います。
+    どちらも同じ <code>POST /api/devices</code> に集約され、データモデルとtoken検証は共通です。
+  </p>
+  <p class="lede">
+    あわせて、本システムでは <strong>登録経路 (= <code>managedConfiguration</code> を受け取れるか)</strong> と <strong>配布APKのインストール経路 (= AMAPI SDK の custom app install 前提条件を満たすか)</strong> を <strong>独立した2軸</strong> として扱います。
+    AMAPI管理対象であるかどうかは <em>登録</em> の自動化と直結しますが、それだけでは <em>配布APKのサイレントインストール</em> ができることを意味しません。
+    AMAPI SDK でサイレントインストールするには、Android Management API の <a href="https://developers.google.com/android/management/manage-custom-apps">Manage custom apps with AMAPI</a> が示す前提 (fully managed device、コンパニオンアプリへの <code>COMPANION_APP</code> role 付与、対象APKを policy に <code>installType: CUSTOM</code> + 一致する <code>signingKeyCerts</code> で宣言、AMAPI SDK v1.6.0-rc01+、minSdk 21+) をすべて満たす必要があります。
+    詳しくは下の <a href="#install-axis">インストール経路という独立した軸</a> を参照してください。
+  </p>
+
+  <section aria-labelledby="routes">
+    <p class="section-kicker">Routes</p>
+    <h2 id="routes">導入経路</h2>
+    <Mermaid chart={routeDiagram} title="コンパニオンアプリ導入からDeviceRegistrationToken登録、その後のインストール経路選択まで" />
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr><th scope="col">経路</th><th scope="col">前提</th><th scope="col">登録手順</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">AMAPI管理端末</th>
+            <td>端末は既に Android Management API で enrollment 済み。Android Device Policy が Device Owner / Profile Owner として管理している。</td>
+            <td>AMAPI policy で <code>FORCE_INSTALLED</code> 配布と同時に、<code>managedConfiguration</code> で <code>identifier</code> / <code>secret</code> / <code>display_name</code> を端末別に配る。アプリは初回起動でこれを読み、FCM token取得後に自動登録する。</td>
+          </tr>
+          <tr>
+            <th scope="row">手動インストール</th>
+            <td>AMAPI管理を使わない、または検証端末。Google Play、社内配布、<code>adb install</code> などでアプリを入れる。</td>
+            <td>管理者が発行した custom scheme deep link を端末で開き、アプリ起動後に表示名を入力してから登録する。必要な特別権限はアプリ画面やOS設定で案内する。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>この表は <strong>軸A: 登録経路</strong> の整理です。登録後に配布APKをどう入れるか (<strong>軸B: インストール経路</strong>) は、AMAPI管理かどうかとは別の条件で決まります。次節を参照してください。</p>
+  </section>
+
+  <section aria-labelledby="install-axis">
+    <p class="section-kicker">Install path axis</p>
+    <h2 id="install-axis">インストール経路という独立した軸</h2>
+    <p>
+      コンパニオンアプリが配布APKを <strong>サイレントインストールできるかどうか</strong> は、AMAPI 管理対象であるかどうかとは別の条件で決まります。
+      決め手は、Android Management API の <a href="https://developers.google.com/android/management/manage-custom-apps">Manage custom apps with AMAPI</a> が示す <strong>AMAPI SDK custom app install の前提条件</strong> をすべて満たしているかです。条件のいずれかが欠けると、AMAPI管理端末であっても配布APKのサイレントインストールは行えず、PackageInstaller UI 経由でユーザー確認を得てインストールします。
+    </p>
+    <h3>AMAPI SDK custom app install を使うための前提条件</h3>
+    <ol class="usa-list">
+      <li><strong>端末が fully managed device。</strong> 端末プロビジョニング時の enrollment token が <code>allowPersonalUsage: PERSONAL_USAGE_DISALLOWED</code> であること。Work profile やパーソナル併用は対象外。</li>
+      <li><strong>コンパニオンアプリに <code>COMPANION_APP</code> role が付与されている。</strong> AMAPI policy の <code>applications[]</code> 該当要素に <code>{`roles: [{ roleType: "COMPANION_APP" }]`}</code> を設定する (旧 <code>extensionConfig</code> + <code>notificationReceiver</code> は deprecated)。コンパニオンアプリ自身も <code>installType: FORCE_INSTALLED</code> 等で導入されている前提。</li>
+      <li><strong>配布対象APKが policy に custom app として宣言されている。</strong> 同じ policy の <code>applications[]</code> に対象パッケージを <code>installType: "CUSTOM"</code> として追加し、<code>signingKeyCerts.signingKeyCertFingerprintSha256</code> に配布対象APKの署名証明書 fingerprint を登録する。fingerprint が一致しないAPKは install を拒否される。</li>
+      <li><strong>AMAPI SDK のバージョンとAPI level。</strong> コンパニオンアプリは AMAPI SDK <code>v1.6.0-rc01</code> 以上を組み込み、<code>minSdkVersion</code> は 21 以上。</li>
+      <li><strong>コンパニオンアプリのマニフェスト設定。</strong> <code>FileProvider</code> の authority を <code>{'"${applicationId}.AmapiCustomAppProvider"'}</code> として宣言し、<code>&lt;queries&gt;</code> 要素で <code>com.google.android.apps.work.clouddpc</code> (Android Device Policy) を可視化する。</li>
+      <li><strong>APKを所定ディレクトリへ配置してから command を発行する。</strong> <code>LocalCommandClientFactory.create(context)</code> から <code>InstallCustomAppCommandHelper.customApksStorageDirectory</code> を取得し、そこへAPKを置いてから <code>IssueCommandRequest</code> を <code>InstallCustomApp.builder().setPackageName(...).setPackageUri(...)</code> で構成して <code>issueCommand()</code> を呼ぶ。</li>
+    </ol>
+    <p>条件1〜6の<strong>すべて</strong>を満たしたときに限り、コンパニオンアプリは AMAPI SDK 経由で配布APKを silent install できます。1つでも欠けたら経路Bに落とします。</p>
+    <Mermaid chart={axisMatrix} title="登録経路 (managedConfiguration) と インストール経路 (AMAPI custom app install 前提) は独立した2軸" />
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">AMAPI管理</th>
+            <th scope="col">AMAPI SDK custom app install の前提</th>
+            <th scope="col">軸A: 登録経路</th>
+            <th scope="col">軸B: 配布APKのインストール経路</th>
+            <th scope="col">policy_sync_results の <code>route</code></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">はい (fully managed)</th>
+            <td>すべて満たす (COMPANION_APP role + 対象APKが installType=CUSTOM + signingKeyCerts一致 + SDK/Manifest要件)</td>
+            <td>managedConfiguration による自動登録</td>
+            <td>AMAPI SDK 経由のサイレントインストール</td>
+            <td><code>AMAPI_CUSTOM_APP</code></td>
+          </tr>
+          <tr>
+            <th scope="row">はい (fully managed)</th>
+            <td>いずれかを満たさない (COMPANION_APP role 未付与、対象APKが CUSTOM 未宣言、fingerprint不一致 等)</td>
+            <td>managedConfiguration による自動登録 (登録APIは経路Bと共通)</td>
+            <td>PackageInstaller UI + Sticky通知</td>
+            <td><code>PACKAGE_INSTALLER</code></td>
+          </tr>
+          <tr>
+            <th scope="row">いいえ (work profile / 非管理 / personal併用)</th>
+            <td>満たせない (fully managed が前提)</td>
+            <td>deep link + 表示名入力</td>
+            <td>PackageInstaller UI + Sticky通知</td>
+            <td><code>PACKAGE_INSTALLER</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="usa-list">
+      <li><strong>「AMAPI管理 = サイレントインストール可」ではない。</strong> AMAPI policy が <code>FORCE_INSTALLED</code> でコンパニオンアプリ自身を導入することと、そのコンパニオンアプリが <em>配布APK</em> を silent に install できることは別概念。前者は端末への導入 (軸A)、後者は AMAPI custom app install の前提充足 (軸B) で決まる。</li>
+      <li><strong>AMAPI custom app install の policy設計はAMAPI管理側のスコープ。</strong> どの端末で COMPANION_APP role を付与するか、対象APKの fingerprint をどう policy に流し込むかは AMAPI policy 側の運用責務であり、本配信システムのサーバーは policy を直接書かない。policy 同期 API は将来拡張として扱う。</li>
+      <li><strong>route はサーバーへ報告される。</strong> 端末は実際に使ったインストール経路を <code>policy_sync_results.actions[].route</code> に <code>AMAPI_CUSTOM_APP</code> / <code>PACKAGE_INSTALLER</code> として乗せる。サーバー側のあるべき状態 (DevicePolicy) は経路を区別しない。</li>
+      <li><strong>UNINSTALL 経路も同じ2分法で扱う。</strong> AMAPI custom app install で入れたAPKは AMAPI 側の uninstall command を、PackageInstaller UI で入れたAPKは標準の uninstall intent / PackageInstaller を使う。route 値は INSTALL と同じ enum (<code>AMAPI_CUSTOM_APP</code> / <code>PACKAGE_INSTALLER</code>)。</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="amapi">
+    <p class="section-kicker">AMAPI policy</p>
+    <h2 id="amapi">AMAPI管理端末での導入と自動登録</h2>
+    <p>
+      AMAPI経路では、コンパニオンアプリ自身が Device Owner になるわけではありません。
+      Device Owner は Android Device Policy であり、コンパニオンアプリは管理ポリシーでインストール・維持される通常アプリです。
+      したがって <strong>「AMAPI管理対象端末である」ことだけでは、コンパニオンアプリが配布APKを silent install できることを意味しません</strong>。
+      配布APKをサイレントインストールするには、AMAPI policy 側でコンパニオンアプリに <code>COMPANION_APP</code> role を付与し、対象APKを <code>installType: "CUSTOM"</code> + 一致する <code>signingKeyCerts</code> として policy に宣言する必要があります (詳細条件は <a href="#install-axis">インストール経路という独立した軸</a> を参照)。これを満たさない場合は、AMAPI管理端末であっても配布APKは PackageInstaller UI 経由で入れます。
+      本ページは <em>登録経路</em> までを扱い、<em>インストール経路</em> の選択は <a href="#install-axis">インストール経路という独立した軸</a> と <a href="/use-cases/app-distribution/">アプリの配信</a> で扱います。
+    </p>
+    <p>
+      端末への導入と初回登録は、同じpolicy内の <code>applications[]</code> に <code>installType</code> と <code>managedConfiguration</code> を並べることでひと括りにします。
+      管理者は事前に <code>POST /admin/device_registration_tokens</code> で DeviceRegistrationToken を発行し、その <code>identifier</code> と <code>secret</code> を <code>managedConfiguration</code> に詰めます。
+    </p>
+    <pre class="curl-block"><code>{amapiPolicy}</code></pre>
+    <ul class="usa-list">
+      <li><code>installType: FORCE_INSTALLED</code> により、管理対象端末へ自動導入し、利用者による削除を抑止する。</li>
+      <li><code>managedConfiguration</code> は policy 単位で配るため、端末ごとに異なる <code>identifier</code> / <code>secret</code> を渡したい場合は policy を端末別に発行する。同じ policy を複数端末に当てると、同じ DeviceRegistrationToken を取り合うので不可。</li>
+      <li><code>POST_NOTIFICATIONS</code> は Android 13+ の通知許可に関わる。AMAPIで許可できない端末やOS差分は、アプリ側のホーム状態表示でフォールバックする。</li>
+      <li><code>REQUEST_INSTALL_PACKAGES</code> や提供元不明アプリの許可は通常の runtime permission ではないため、AMAPI policy 例では解決済みとしない。<code>PACKAGE_INSTALLER</code> 経路ではOS設定・PackageInstaller UIへ誘導する。</li>
+      <li>上の例は <strong>登録 (軸A) を成立させるための最小構成</strong>。配布APKのサイレントインストール (軸B = <code>AMAPI_CUSTOM_APP</code>) も使うなら、同じ <code>applications[]</code> にコンパニオンアプリ側として <code>{`roles: [{ roleType: "COMPANION_APP" }]`}</code> を追加し、配布対象APKを別エントリとして <code>installType: "CUSTOM"</code> + <code>signingKeyCerts</code> で宣言する。条件は <a href="#install-axis">インストール経路という独立した軸</a> を参照。</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="managed-configuration">
+    <p class="section-kicker">Managed configuration</p>
+    <h2 id="managed-configuration">managedConfiguration経由の自動登録</h2>
+    <p>
+      コンパニオンアプリは <code>app_restrictions.xml</code> で受け取るキーを宣言し、起動時に <code>RestrictionsManager.getApplicationRestrictions()</code> で読みます。
+      <code>device_registration_identifier</code> と <code>device_registration_secret</code> が揃っていれば、FCM token を取得して既存の <code>POST /api/devices</code> を呼びます。揃っていなければ deep link 経由の手動登録待ちに落とします。
+    </p>
+    <pre class="curl-block"><code>{managedConfigKeys}</code></pre>
+    <ul class="usa-list">
+      <li><strong>登録APIは共通。</strong> AMAPI経路でも手動経路でも、サーバー側は同じ <code>POST /api/devices</code> で token 検証 → devices / profile / credential / fcm_push_token 作成 → device_registration_tokens 削除を行う。</li>
+      <li><strong>表示名は managedConfiguration からも受け取れる。</strong> 端末別の表示名を policy に含めれば利用者入力をスキップできる。含まれない場合はアプリ画面で入力させる経路にフォールバックする。</li>
+      <li><strong>secret は短命の一回限り。</strong> managedConfiguration の <code>hidden</code> は管理 UI の表示制御であり、端末側の強固な秘密保管ではない。DeviceRegistrationToken と同じく短い有効期限を設定し、登録成功後はサーバー側で行を削除する。</li>
+      <li><strong>登録成功後は managedConfiguration を無視する。</strong> 端末は <code>devices.identifier</code> と <code>device_auth_token</code> を private storage に持ち、以後の policy 配布や <code>ACTION_APPLICATION_RESTRICTIONS_CHANGED</code> では再登録しない。</li>
+      <li><strong>policy 配布の遅延を見込む。</strong> Device Policy が policy を pull するまで configuration は届かない。DeviceRegistrationToken の有効期限は QR/deep link 経路より少し長めに設定する。</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="manual">
+    <p class="section-kicker">Manual install</p>
+    <h2 id="manual">手動インストール経路</h2>
+    <p>
+      手動経路は、検証端末・AMAPI管理外端末・初期導入前の一時運用で使います。
+      この経路ではアプリの削除抑止や silent install は期待しません。必須アプリのインストールは Sticky 通知から PackageInstaller UI に進むフォールバックを正規ルートにします。
+      登録は <code>apkdist://register-device</code> custom scheme deep link 経由で、利用者が表示名を入力してから完了します。
+    </p>
+    <pre class="curl-block"><code>{manualInstall}</code></pre>
+  </section>
+
+  <section aria-labelledby="sequence">
+    <p class="section-kicker">Sequence</p>
+    <h2 id="sequence">導入から登録まで</h2>
+    <Mermaid chart={sequence} title="AMAPI経路(managedConfiguration)と手動経路(deep link)で同じ登録APIに集約する" />
+  </section>
+
+  <section aria-labelledby="guidance">
+    <p class="section-kicker">Out-of-spec guidance</p>
+    <h2 id="guidance">判断指針</h2>
+    <ol>
+      <li><strong>AMAPI enrollment と DeviceRegistrationToken 登録は別物。</strong> AMAPI enrollment はアプリ導入と policy 配布の前提であり、DeviceRegistrationToken による登録APIとは独立に成立する。</li>
+      <li><strong>AMAPI経路でもコンパニオンアプリをDevice Ownerとは呼ばない。</strong> Device Owner は Android Device Policy。アプリは force-installed された通常アプリとして扱う。</li>
+      <li><strong>managedConfiguration は端末別に発行する。</strong> identifier / secret は一回限り・端末ごとに固有なので、同じ policy を複数端末に当てない。AMAPI policy を端末別に分けるか、enrollment token 単位で分割する。</li>
+      <li><strong>secret を長期秘密にしない。</strong> 登録APIと同じく一回限り・短期有効として扱い、登録成功で <code>device_registration_tokens</code> 行は削除する。AMAPI経路でも secret の性質は変えない。</li>
+      <li><strong>登録経路 (軸A) と インストール経路 (軸B) を独立に扱う。</strong> AMAPI管理かどうかは軸Aだけを決める。軸Bが <code>AMAPI_CUSTOM_APP</code> になるのは <a href="https://developers.google.com/android/management/manage-custom-apps">Manage custom apps with AMAPI</a> の前提 (fully managed、COMPANION_APP role、対象APKの installType=CUSTOM + signingKeyCerts一致、AMAPI SDK v1.6.0-rc01+、minSdk 21+、所定のFileProvider/queries宣言) をすべて満たすときだけ。1つでも欠けたら軸Bは <code>PACKAGE_INSTALLER</code> に落ちる。</li>
+      <li><strong>サイレントインストールは「条件全部入り」で初めて使える。</strong> 条件のうち1つだけ妥協してサイレントを通そうとしない。前提が崩れたら経路Bへフォールバック。</li>
+      <li><strong>手動経路 (軸B = PACKAGE_INSTALLER) はフォールバックUIが正。</strong> 権限不足やユーザー確認が必要な場合は PackageInstaller UI と Sticky 通知で扱う。</li>
+    </ol>
+  </section>
+</BaseLayout>

@@ -5,12 +5,26 @@ info:
   description: |
     API definition for the APK instant deploy server.
 
-    Admin APIs are intended for the operator/admin web UI and use an admin token.
-    Android App APIs are intended for the companion Android app. Device registration
-    uses a registration token and secret in the request body, and registered-device
-    APIs use a device bearer token.
+    The API is split by audience into two path prefixes:
 
-    APK upload is a single multipart/form-data request to POST /api/artifacts.
+    - `/admin/...` : Admin API. Intended for the operator/admin web UI and CI.
+      Authenticated with an admin bearer token.
+    - `/api/...`   : Android App API. Intended for the companion Android app.
+      Device registration uses a registration token and secret in the request
+      body; registered-device endpoints use a device bearer token.
+
+    URL identifier rule:
+
+    - `devices` paths use `{identifier}` (= `devices.identifier`, which is taken
+      from the issued `DeviceRegistrationToken.identifier`). Internal references
+      still use the AR primary key `devices.id`, but it is not exposed in URLs.
+    - `releases`, `artifacts`, `apps` paths use `{id}` (their AR primary key).
+      Apps additionally carry `package_name` as a business identifier, but the
+      stable external reference is `apps.id`. Apps are hard-deleted when their
+      last release is removed; re-uploading the same `package_name` later
+      creates a NEW `apps.id` rather than reviving an old row.
+
+    APK upload is a single multipart/form-data request to POST /admin/artifacts.
     There is no separate pre-upload URL endpoint, no multipart cache, and no
     intermediate cache storage; the server parses, validates, and stores the APK
     in one shot. Releases are append-only: re-uploading the same (app,
@@ -33,25 +47,12 @@ servers:
   - url: http://localhost:4567
     description: Local Docker Compose server
 tags:
-  - name: System
-    description: Health endpoints.
   - name: Admin API
     description: APIs used by the administrator web UI.
   - name: Android App API
     description: APIs used by the Android companion app.
 paths:
-  /health:
-    get:
-      tags:
-        - System
-      operationId: getHealth
-      summary: Get server health
-      security: []
-      responses:
-        "200":
-          $ref: "#/components/responses/HealthResponse"
-
-  /api/artifacts:
+  /admin/artifacts:
     post:
       tags:
         - Admin API
@@ -60,10 +61,11 @@ paths:
       description: |
         Accepts an APK file as a single multipart/form-data upload. The server parses
         APK metadata (package_name, version_code, version_name, sha256, signing
-        certificate), validates it (including signing certificate compatibility with
-        any existing release for the same package), then stores the file to the
-        configured object store and creates or updates the artifact / app / release
-        records in one transaction.
+        certificate, application label, launcher icon), validates it (including
+        signing certificate compatibility with any existing release for the same
+        package), then stores the file to the configured object store and creates
+        or updates the artifact / app / app profile / app icon / release records
+        in one transaction.
 
         Pre-upload URL issuance, multipart cache uploads, intermediate cache storage,
         changelogs, and build-source metadata (branch / commit / build number) are
@@ -129,7 +131,7 @@ paths:
                       code: ARTIFACT_UPLOAD_FAILED
                       message: Failed to store the uploaded APK. Retry the upload.
 
-  /api/apps:
+  /admin/apps:
     get:
       tags:
         - Admin API
@@ -137,7 +139,7 @@ paths:
       summary: List registered apps with their releases
       description: |
         Returns the catalog of apps currently registered, with each app's releases
-        listed inline (most recent first). After POST /api/artifacts succeeds, the
+        listed inline (most recent first). After POST /admin/artifacts succeeds, the
         admin polls this endpoint to confirm that the upload reached the catalog
         (a new app appears for a new package_name, or a new release entry appears
         under an existing app).
@@ -149,7 +151,7 @@ paths:
         "401":
           $ref: "#/components/responses/AdminUnauthorizedError"
 
-  /api/releases/{release_id}:
+  /admin/releases/{release_id}:
     delete:
       tags:
         - Admin API
@@ -205,7 +207,9 @@ paths:
       summary: Get a short-lived artifact download URL
       description: |
         Returns a short-lived URL for downloading the APK artifact for a release.
-        Devices call this only for releases they need to install.
+        Devices call this only for releases they need to install. The initial TTL
+        target is 15 minutes; if the URL expires during download, the device
+        discards the partial file and requests a new URL for the same release.
       security:
         - DeviceBearerAuth: []
       parameters:
@@ -228,7 +232,7 @@ paths:
                       code: RELEASE_NOT_FOUND
                       message: Release was not found.
 
-  /api/device_registration_tokens:
+  /admin/device_registration_tokens:
     post:
       tags:
         - Admin API
@@ -354,7 +358,52 @@ paths:
                       code: REGISTRATION_TOKEN_NOT_FOUND
                       message: Registration link is expired, already used, or the secret is incorrect.
 
-  /api/devices/{identifier}/policy:
+  /admin/devices/{identifier}:
+    delete:
+      tags:
+        - Admin API
+      operationId: deleteDevice
+      summary: Delete a registered device
+      description: |
+        Removes the device and its registration-side records in one transaction:
+        device_credentials (which immediately invalidates the device's
+        device_auth_token), fcm_push_tokens, device_profiles, device_policies,
+        device_policy_revisions, device_policy_sync_reports, and finally
+        devices itself.
+
+        Observation tables (fcm_delivery_failures, device_contact_observations)
+        are intentionally kept for audit; deletion is recorded in the admin
+        operation log. After deletion, requests that present the old
+        device_auth_token receive 401 DEVICE_AUTH_REQUIRED, and the admin must
+        issue a new DeviceRegistrationToken to re-register the device.
+
+        There is no end-user "unregister" API. Deletion is always an explicit
+        admin action driven by the admin UI's observation signals (last
+        contact time, FCM delivery failures, sync state). The server does not
+        delete devices automatically.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdentifier"
+      responses:
+        "204":
+          description: Device was deleted.
+        "401":
+          $ref: "#/components/responses/AdminUnauthorizedError"
+        "404":
+          description: Device was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                device_not_found:
+                  value:
+                    error:
+                      code: DEVICE_NOT_FOUND
+                      message: Device was not found.
+
+  /admin/devices/{identifier}/policy:
     get:
       tags:
         - Admin API
@@ -362,9 +411,10 @@ paths:
       summary: Get a device's current policy (admin)
       description: |
         Returns the current DevicePolicy for the specified device. Used by the
-        admin UI to load the policy before editing. Entries that reference an
-        app whose `apps.deleted_at` is set are included with `install: null` so
-        the admin UI can show them as "deleted app".
+        admin UI to load the policy before editing. Apps are hard-deleted when
+        their last release is removed, and the related device_policy_app_entries
+        rows are cascade-deleted at the same time, so every entry returned here
+        references a currently-existing app (no "deleted app" state).
       security:
         - AdminBearerAuth: []
       parameters:
@@ -404,6 +454,18 @@ paths:
         entry is resolved per-request by the server when the device fetches the
         policy (latest release for that app). version_code / release.id are not
         accepted in the request.
+
+        The endpoint is designed for idempotent updates by an admin and does NOT
+        use optimistic concurrency control (no `If-Match` header, no
+        `current_revision_id` echo). Sending the same body twice results in two
+        revisions whose entries are identical; the second revision becomes the
+        current one. Concurrent edits by multiple admins are not protected at
+        the server level — admins reconcile via reload-then-PUT.
+
+        Validation rejects any `app.id` that does not currently exist in the
+        `apps` table (e.g. the app was hard-deleted between admin's GET and PUT
+        because its last release was removed). There is no separate
+        `APP_DELETED` state since `apps.deleted_at` does not exist.
       security:
         - AdminBearerAuth: []
       parameters:
@@ -447,17 +509,11 @@ paths:
                       code: INSTALL_MODE_INVALID
                       message: install_mode must be one of FORCE_INSTALLED, AVAILABLE.
                 app_not_found_for_entry:
-                  summary: Referenced app.id does not exist
+                  summary: Referenced app.id does not exist (never existed or has been hard-deleted)
                   value:
                     error:
                       code: APP_NOT_FOUND_FOR_ENTRY
                       message: One or more entries reference an app that does not exist.
-                app_deleted:
-                  summary: An entry references an app whose deleted_at is set
-                  value:
-                    error:
-                      code: APP_DELETED
-                      message: One or more entries reference a soft-deleted app. New entries cannot target deleted apps.
         "401":
           $ref: "#/components/responses/AdminUnauthorizedError"
         "404":
@@ -516,6 +572,17 @@ paths:
         Records the actions the companion app performed while applying a fetched
         DevicePolicy. Reporting a result does not rewrite the policy, releases, or
         push token records.
+
+        Idempotency: the underlying `device_policy_sync_reports` table has a
+        UNIQUE constraint on `(device_id, device_policy_revision_id)`. The
+        client may safely re-POST the same payload on transient failures;
+        duplicate submissions for the same `(device, revision)` are absorbed by
+        the constraint and the server responds with 200 instead of 201. No
+        separate `Idempotency-Key` header is required.
+
+        `route` records the install path the companion app actually used
+        (`AMAPI_CUSTOM_APP` for AMAPI SDK custom app install, `PACKAGE_INSTALLER`
+        for PackageInstaller UI). See `/android-app-prereq/#install-axis`.
       security:
         - DeviceBearerAuth: []
       requestBody:
@@ -534,25 +601,35 @@ paths:
                   actions:
                     - package_name: com.example.appa
                       action: INSTALL
-                      route: DEVICE_OWNER
+                      route: AMAPI_CUSTOM_APP
                       result: INSTALLED
                     - package_name: com.example.appc
                       action: INSTALL
-                      route: DEVICE_OWNER
+                      route: AMAPI_CUSTOM_APP
                       result: FAILED
                       phase: INSTALL
                       code: SIGNATURE_MISMATCH
                     - package_name: com.example.appb
                       action: INSTALL
-                      route: DEVICE_OWNER
+                      route: AMAPI_CUSTOM_APP
                       result: FAILED
                       phase: DOWNLOAD
                       code: ARTIFACT_GONE
                     - package_name: com.example.legacy
                       action: UNINSTALL
-                      route: PACKAGE_MANAGER
+                      route: PACKAGE_INSTALLER
                       result: UNINSTALLED
       responses:
+        "200":
+          description: |
+            The same policy sync result has already been recorded for this
+            device_policy_revision. The server returns the previously recorded
+            payload idempotently without creating a new row. Clients treat this
+            the same as 201 (受理) and advance applied_policy_snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicySyncResultDetailResponse"
         "201":
           $ref: "#/components/responses/PolicySyncResultDetailResponse"
         "400":
@@ -626,14 +703,13 @@ components:
         minimum: 1
       description: ActiveRecord ID of the release.
       example: 301
-
   responses:
     ArtifactCreateResponse:
       description: |
         APK artifact was stored and a new release was appended. The response carries
         only the artifact's metadata. The same transaction also creates an app row
         (if new package_name) and a new release row, but those changes are not
-        reflected in this response; clients confirm them through GET /api/apps.
+        reflected in this response; clients confirm them through GET /admin/apps.
         Releases are append-only: re-uploading an APK with the same (app,
         version_code) is rejected (400 VERSION_ALREADY_EXISTS), and existing
         releases are only removed by an explicit DELETE.
@@ -704,8 +780,9 @@ components:
       description: |
         Current device policy for the authenticated device. Each entry has the
         resolved latest release attached as `install` (release.id, version_code,
-        version_name). Entries whose app is soft-deleted are filtered out for
-        device-facing fetches.
+        version_name). All entries reference apps that currently exist; deleted
+        apps cannot remain as entries because they are FK-cascaded out at delete
+        time.
       content:
         application/json:
           schema:
@@ -738,9 +815,9 @@ components:
                       version_name: 0.3.1
     AdminDevicePolicyResponse:
       description: |
-        Current device policy for the admin UI. Includes entries whose app is
-        soft-deleted (with `install: null` and `app.deleted_at` populated) so the
-        admin UI can show them as "deleted app".
+        Current device policy for the admin UI. All entries reference apps that
+        currently exist; deleted apps are not present because they are removed
+        by FK cascade when the last release is deleted.
       content:
         application/json:
           schema:
@@ -757,31 +834,18 @@ components:
                     - app:
                         id: 12
                         package_name: com.example.appa
-                        deleted_at: null
                       install_mode: FORCE_INSTALLED
                       install:
                         release:
                           id: 301
                         version_code: 42
                         version_name: 2.4.0-qa
-                    - app:
-                        id: 8
-                        package_name: com.example.removed
-                        deleted_at: "2026-05-21T03:11:00+09:00"
-                      install_mode: FORCE_INSTALLED
-                      install: null
     DeviceRegistrationTokenDetailResponse:
       description: Device registration link was created.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/DeviceRegistrationTokenDetailResponse"
-    HealthResponse:
-      description: Server is healthy.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/HealthResponse"
     PolicySyncResultDetailResponse:
       description: Policy sync result was recorded.
       content:
@@ -814,24 +878,21 @@ components:
                   code: ADMIN_AUTH_INVALID
                   message: Admin bearer token is invalid or has been revoked.
     DeviceUnauthorizedError:
-      description: Device bearer token is missing or invalid.
+      description: |
+        Device bearer token is missing, invalid, or has been revoked. The three
+        cases are intentionally folded into a single error code so the client
+        only has to drive one re-registration flow.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           examples:
             device_auth_required:
-              summary: No Authorization header
+              summary: Token is missing, invalid, or revoked
               value:
                 error:
                   code: DEVICE_AUTH_REQUIRED
-                  message: Device bearer token is required.
-            device_auth_invalid:
-              summary: Token is present but does not authenticate
-              value:
-                error:
-                  code: DEVICE_AUTH_INVALID
-                  message: Device bearer token is invalid or has been revoked. Re-register the device.
+                  message: Device bearer token is required. Re-register the device if it was previously valid.
 
   schemas:
     AppListItem:
@@ -922,8 +983,10 @@ components:
           format: binary
           description: |
             APK file. Sent as a single multipart/form-data part named "file".
-            The server parses package_name, version_code, version_name, sha256, and
-            signing certificate from this file.
+            The server parses package_name, version_code, version_name, sha256,
+            signing certificate, application label, and launcher icon from this
+            file. The app-facing display name and icon are stored separately from
+            the app identity; this request shape does not expose those models.
 
     ArtifactCreateResponse:
       type: object
@@ -1027,9 +1090,10 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Admin-facing view of a policy entry. Includes app metadata (with deleted_at
-        for soft-deleted apps) and `install` (the latest resolved release at the
-        time of the response). For deleted apps, `install` is null.
+        Admin-facing view of a policy entry. Always includes a currently-existing
+        app and a resolved `install` (the latest release for that app at the
+        time of the response). Deleted apps cannot appear here because their
+        entries are FK-cascaded out at delete time.
       required:
         - app
         - install_mode
@@ -1040,9 +1104,7 @@ components:
         install_mode:
           $ref: "#/components/schemas/InstallMode"
         install:
-          oneOf:
-            - $ref: "#/components/schemas/PolicyInstallTarget"
-            - type: "null"
+          $ref: "#/components/schemas/PolicyInstallTarget"
 
     PolicyAppView:
       type: object
@@ -1050,7 +1112,6 @@ components:
       required:
         - id
         - package_name
-        - deleted_at
       properties:
         id:
           type: integer
@@ -1058,14 +1119,6 @@ components:
         package_name:
           type: string
           example: com.example.appa
-        deleted_at:
-          description: |
-            Timestamp when the app was soft-deleted (i.e. when its last release
-            was removed). Null while the app has at least one release.
-          oneOf:
-            - type: string
-              format: date-time
-            - type: "null"
 
     PolicyInstallTarget:
       type: object
@@ -1091,8 +1144,9 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Device-facing policy entry. Always includes a non-null `install`; entries
-        for soft-deleted apps are filtered out before the device sees them.
+        Device-facing policy entry. Always includes a non-null `install`; deleted
+        apps cannot appear here because their entries are FK-cascaded out at
+        delete time.
       required:
         - app
         - install_mode
@@ -1273,20 +1327,6 @@ components:
           description: Human-readable error message in English.
           example: file must be a parseable APK.
 
-    HealthResponse:
-      type: object
-      additionalProperties: false
-      required:
-        - status
-        - service
-      properties:
-        status:
-          type: string
-          enum:
-            - ok
-        service:
-          type: string
-
     InstallAction:
       type: string
       enum:
@@ -1309,9 +1349,15 @@ components:
 
     InstallRoute:
       type: string
+      description: |
+        Install path actually used by the companion app. `AMAPI_CUSTOM_APP`
+        means the AMAPI SDK custom app install path (requires fully managed
+        device + COMPANION_APP role + target APK declared with installType=CUSTOM
+        and matching signingKeyCerts). `PACKAGE_INSTALLER` means the standard
+        Android PackageInstaller path with user confirmation.
       enum:
-        - DEVICE_OWNER
-        - PACKAGE_MANAGER
+        - AMAPI_CUSTOM_APP
+        - PACKAGE_INSTALLER
 
     PolicySyncAction:
       type: object
@@ -1431,7 +1477,7 @@ components:
         artifact_url:
           type: string
           format: uri
-          description: Short-lived (presigned) download URL for the APK artifact.
+          description: Short-lived (presigned) download URL for the APK artifact. Initial TTL target is 15 minutes.
         expires_at:
           type: string
           format: date-time

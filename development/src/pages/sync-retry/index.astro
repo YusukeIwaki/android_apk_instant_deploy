@@ -1,0 +1,735 @@
+---
+import Mermaid from "../../components/Mermaid.astro";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const triggerFlow = `flowchart TB
+  FCM["FCM data message<br/>POLICY_UPDATED"] --> SetFlag["pending_policy_fetch = true"]
+  Manual["ホーム pull-to-refresh"] --> SetFlag
+  Reauth["再登録 / device_auth_token 再発行"] --> SetFlag
+  Boot["端末再起動 / アプリ起動"] --> ReadFlag{"pending_policy_fetch?"}
+  Explicit["アプリ明示起動 / 手動更新"] --> ReadFlag
+  NetUp["ネットワーク復帰 broadcast"] --> ReadFlag
+  SetFlag --> ImmediateTry{"今すぐ実行可能?<br/>(オンライン / 認証あり)"}
+  ImmediateTry -->|はい| TryFetch["GET /api/devices/me/policy"]
+  ImmediateTry -->|いいえ| Wait["次のトリガまで待機<br/>(フラグは立ったまま)"]
+  ReadFlag -->|false| MaybeSync{"fetched > applied?"}
+  ReadFlag -->|true| TryFetch
+  TryFetch -->|200| Success["fetched_policy_snapshot 上書き<br/>pending_policy_fetch = false"]
+  TryFetch -->|5xx / IO 失敗| Keep["pending_policy_fetch のまま<br/>次のトリガに委ねる"]
+  TryFetch -->|401| Reauth2["device_auth_token 失効<br/>再登録導線へ (フラグは維持)"]
+  TryFetch -->|400 / 404| Drop["pending_policy_fetch = false<br/>(同条件で結果は変わらない)"]
+  Success --> MaybeSync
+  MaybeSync -->|はい| StartLoop["差分処理サイクルを開始<br/>= 毎反復で work list を再計算"]
+  MaybeSync -->|いいえ| Idle["最新です"]`;
+
+const workItemLifecycle = `stateDiagram-v2
+  [*] --> pending: 差分計算で work item を生成
+  pending --> already_satisfied: 既に target version で installed<br/>または AVAILABLE で同期 attempt 対象外
+  pending --> blacklisted_skip: 同 release.id + version_code が<br/>failed_artifacts_blacklist にある
+  pending --> downloading: FORCE_INSTALLED 未到達 + artifact 未取得
+  pending --> uninstalling: Policy 不在 + installed_by_companion=true
+  downloading --> downloaded: sha256 検証 OK
+  downloading --> deferred: リカバリ可能失敗<br/>(TLS / 5xx / URL期限切れ / 容量一時不足)
+  downloading --> blacklisted: リカバリ不能<br/>(404 ARTIFACT_GONE / sha256 不一致)
+  downloaded --> installing: PackageInstaller (PACKAGE_INSTALLER) /<br/>AMAPI SDK custom app install (AMAPI_CUSTOM_APP)
+  installing --> applied: PACKAGE_ADDED + version_code 一致<br/>(route=AMAPI_CUSTOM_APP または PACKAGE_INSTALLER)
+  installing --> deferred: ユーザー確認待ち (PACKAGE_INSTALLER) /<br/>1回キャンセル / Session 一時失敗
+  installing --> blacklisted: 署名不一致 / OS非互換 / VERSION_DOWNGRADE
+  uninstalling --> applied: PACKAGE_REMOVED
+  uninstalling --> blacklisted: 削除拒否
+  applied --> [*]
+  already_satisfied --> [*]
+  blacklisted --> [*]
+  blacklisted_skip --> [*]
+  deferred --> [*]: 次のトリガで work item は再生成`;
+
+const componentSequence = `sequenceDiagram
+  autonumber
+  participant FCM as FCM Receiver
+  participant Trigger as Fetch Trigger
+  participant Fetcher as Policy Fetcher
+  participant Engine as Sync Engine
+  participant Dl as Download Worker
+  participant Inst as Install Worker
+  participant OS as PackageInstaller / OS broadcast
+  participant Notif as Notification Controller
+  participant Reporter as Result Reporter
+  participant Store as Local Store
+
+  FCM->>Store: pending_policy_fetch = true
+  FCM->>Trigger: 起動条件を評価
+  Trigger->>Fetcher: GET /api/devices/me/policy
+  Fetcher->>Store: fetched_policy_snapshot 上書き
+  Fetcher->>Store: pending_policy_fetch = false
+  Fetcher->>Engine: 同期開始 (fetched > applied のため)
+
+  Engine->>Engine: work list を再計算<br/>(fetched - installed - blacklist)
+  loop work list の各 work item をワンパス試行
+    alt 既に target version / AVAILABLE / blacklist にヒット
+      Engine->>Engine: terminal として扱う (action なし)
+    else DOWNLOAD が必要
+      Engine->>Dl: install.release.id で artifact_url 取得 → 保存
+      alt sha256 OK
+        Dl->>Store: downloaded_artifact_index に登録
+      else リカバリ不能 (404 / sha256 不一致)
+        Dl->>Store: failed_artifacts_blacklist に追記
+      else リカバリ可能 (TLS / 5xx / URL期限切れ)
+        Note over Dl: この work item は deferred<br/>(状態は永続化しない)
+      end
+    end
+    opt INSTALL / UNINSTALL が必要
+      alt AMAPI custom app install の前提を満たす (route=AMAPI_CUSTOM_APP)
+        Inst->>OS: AMAPI SDK で silent install / uninstall<br/>(LocalCommandClient + InstallCustomApp)
+        OS-->>Inst: 結果 (IssueCommandResponse + PACKAGE_ADDED/REMOVED)
+      else 前提を満たさない (route=PACKAGE_INSTALLER)
+        Inst->>Notif: Sticky 通知 (package_name + 期待 version_code)
+        Note over Inst,Notif: この work item は deferred (ユーザー操作待ち)
+      end
+      alt 成功
+        Inst->>Store: installed_package_index 更新
+        Inst->>Notif: 該当通知を解除
+      else リカバリ不能
+        Inst->>Store: failed_artifacts_blacklist に追記
+        Inst->>Notif: 該当通知を解除
+      else リカバリ可能 (ユーザー確認待ち / 1回キャンセル / Session 一時失敗)
+        Note over Inst: この work item は deferred
+      end
+    end
+  end
+
+  alt 全 work item が terminal (deferred なし)
+    Engine->>Reporter: 報告フェーズへ
+    Reporter->>Store: pending_report_payload を組み立てる<br/>(installed → INSTALLED, blacklist → FAILED)
+    Reporter->>Reporter: POST /api/devices/me/policy_sync_results
+    alt 201 受理
+      Reporter->>Store: applied_policy_snapshot = fetched
+      Reporter->>Store: pending_report_payload を破棄
+    else 一時失敗
+      Reporter->>Store: pending_report_payload を保持 (次のトリガで再送)
+    end
+  else 1つでも deferred が残る
+    Note over Engine,Reporter: 報告しない / applied 更新しない<br/>次のトリガで再計算
+  end`;
+
+const lifecycle = `stateDiagram-v2
+  [*] --> Synced
+  Synced --> NeedFetch: FCM 受信 / 手動更新 / 再認証
+  NeedFetch --> NeedFetch: fetch リカバリ可能失敗
+  NeedFetch --> Fetched: fetch 成功
+  Fetched --> Synced: 差分なし (work list が空 + blacklist 該当なし)
+  Fetched --> Syncing: 差分あり
+  Syncing --> Syncing: work item ごとの処理<br/>deferred は次のトリガで再計算
+  Syncing --> AwaitingUser: route=PACKAGE_INSTALLER でユーザー操作待ち
+  AwaitingUser --> Syncing: ユーザー操作 / 次の判定機会
+  Syncing --> Reporting: 全 work item が terminal (deferred ゼロ)
+  Reporting --> Synced: POST policy_sync_results 受理
+  Reporting --> Reporting: 報告がリカバリ可能失敗
+  NeedFetch --> Unauthenticated: 401
+  Unauthenticated --> NeedFetch: 再登録完了
+  Synced --> [*]`;
+
+const componentBlocks = `flowchart LR
+  subgraph Inbound["入口"]
+    direction TB
+    FCMRecv["FCM Receiver"]
+    UiManual["UI 手動更新"]
+    Bootstrap["起動 / 再起動 / ネット復帰"]
+    ManualRecover["明示起動 / 手動更新"]
+  end
+  subgraph Engine["同期エンジン (ステートレス)"]
+    direction TB
+    Fetch["Policy Fetcher"]
+    Plan["Sync Engine<br/>毎反復で work list を計算"]
+    Dl["Download Worker"]
+    Inst["Install Worker"]
+    Rep["Result Reporter"]
+  end
+  subgraph Side["副作用ハンドラ"]
+    direction TB
+    Notif["Notification Controller<br/>(package_name, version_code) で重複排除"]
+    Auth["Auth Controller<br/>401 → 再登録導線"]
+  end
+  subgraph Store["端末ローカルストア (永続)"]
+    direction TB
+    Flag["pending_policy_fetch"]
+    Fetched["fetched_policy_snapshot"]
+    Applied["applied_policy_snapshot"]
+    Index["installed_package_index"]
+    Dlx["downloaded_artifact_index"]
+    Black["failed_artifacts_blacklist"]
+    Payload["pending_report_payload"]
+  end
+  Inbound --> Flag
+  Flag --> Fetch
+  Fetch --> Fetched
+  Fetch --> Plan
+  Plan --> Dl
+  Plan --> Inst
+  Dl --> Dlx
+  Dl --> Black
+  Inst --> Index
+  Inst --> Black
+  Inst --> Notif
+  Plan --> Rep
+  Rep --> Applied
+  Rep --> Payload
+  Fetch -. "401" .-> Auth`;
+---
+
+<BaseLayout
+  title="同期/リトライ機構"
+  description="Policy fetch、DOWNLOAD、INSTALL、結果報告を端末側で進める同期エンジンの状態モデル、トリガ、判定基準、リトライ計画を、差分処理サイクルの観点で1枚にまとめます。"
+  currentPath="/sync-retry/"
+>
+  <p class="lede">
+    端末側で「あるべき状態 (Policy) と実際の状態 (端末) の差分を埋める」内部メカニズムをまとめたページです。
+    「アプリの配信」が <em>ユースケースとしての全体像</em> を扱うのに対し、ここでは <strong>差分処理サイクルの構造、状態モデル、フェーズ別のリカバリ判定、再試行スケジューラの境界</strong> を1枚で読めるようにします。
+    各 work item の進捗は <strong>永続化しません</strong>。同期サイクルは毎反復で「fetched_policy_snapshot − installed_package_index − failed_artifacts_blacklist」から work list を再計算し、各 work item を進められる所まで進めます。同条件で結果が変わらないことが確定した artifact だけ <code>failed_artifacts_blacklist</code> に追記します。
+    Android アプリの個別実装ライブラリ (DataStore / Room / WorkManager 等) は選定せず、要件のみ記述します。
+  </p>
+
+  <section aria-labelledby="scope">
+    <p class="section-kicker">Scope</p>
+    <h2 id="scope">このページの守備範囲</h2>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">扱う</th>
+            <th scope="col">扱わない (参照先)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <ul class="usa-list">
+                <li>端末ローカルストアの状態モデルと寿命</li>
+                <li>fetch トリガと判定順序</li>
+                <li>差分処理サイクル (work list の生成と work item の遷移)</li>
+                <li>フェーズ別のリカバリ可能/不能の判定基準</li>
+                <li>再試行スケジューラ・Foreground service・Sticky 通知の責務境界</li>
+                <li><code>policy_sync_results</code> の冪等性と再送ルール</li>
+                <li>device_auth_token 失効時の合流ポイント</li>
+              </ul>
+            </td>
+            <td>
+              <ul class="usa-list">
+                <li>画面の見た目・遷移 → <a href="/openapi/android-screens/">Android画面一覧</a></li>
+                <li>Policy の更新責務・サーバー側DB → <a href="/use-cases/app-distribution/">アプリの配信</a></li>
+                <li>登録・FCM token 初期取得 → <a href="/use-cases/device-registration/">デバイスの登録</a></li>
+                <li>artifact / release の append-only 設計 → <a href="/use-cases/app-registration/">アプリの登録</a></li>
+                <li>具体的なエンドポイント・スキーマ → <a href="/openapi/">OpenAPI</a></li>
+              </ul>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="components">
+    <p class="section-kicker">Components</p>
+    <h2 id="components">端末内コンポーネントと責務</h2>
+    <Mermaid chart={componentBlocks} title="入口 / 同期エンジン (ステートレス) / 副作用ハンドラ / 永続ストアの責務分割" />
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">コンポーネント</th>
+            <th scope="col">きっかけ</th>
+            <th scope="col">責務</th>
+            <th scope="col">書き込む永続ストア</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">FCM Receiver</th>
+            <td>data-only message 受信 (サーバーは high priority で送る)</td>
+            <td><code>POLICY_UPDATED</code> を受けたら <code>pending_policy_fetch</code> を立てる。data 以外のメッセージは無視。通知は表示しない。high priority であってもアプリ独自のwake-lockやforeground化はせず、後段の WorkManager / Foreground service に委ねる。</td>
+            <td>pending_policy_fetch</td>
+          </tr>
+          <tr>
+            <th scope="row">Fetch Trigger</th>
+            <td>FCM / 手動更新 / 再認証完了 / 起動 / ネット復帰</td>
+            <td>「フラグが立っているか」と「今すぐ実行可能か」を判定し、Policy Fetcher を起動する。フラグが下りていれば何もしない。</td>
+            <td>(読み取り専用)</td>
+          </tr>
+          <tr>
+            <th scope="row">Policy Fetcher</th>
+            <td>Fetch Trigger からの要求</td>
+            <td>GET /api/devices/me/policy を1回だけ呼ぶ。成功で <code>fetched_policy_snapshot</code> を上書き、<code>pending_policy_fetch</code> を下げる。401 は Auth Controller へ。</td>
+            <td>fetched_policy_snapshot, pending_policy_fetch</td>
+          </tr>
+          <tr>
+            <th scope="row">Sync Engine</th>
+            <td>fetched_policy_snapshot 更新 / 起動時に fetched &gt; applied / OS broadcast</td>
+            <td>毎反復で work list を <strong>その場で計算</strong> し (fetched.entries − installed_package_index − failed_artifacts_blacklist)、各 work item を Download Worker / Install Worker に渡す。全 work item が terminal (deferred なし) になったら Result Reporter を呼ぶ。<strong>work item の中間状態は永続化しない。</strong></td>
+            <td>(直接は書かない。下位 worker に委譲)</td>
+          </tr>
+          <tr>
+            <th scope="row">Download Worker</th>
+            <td>Sync Engine からの要求 (work item 単位)</td>
+            <td>artifact_url を取得 → ダウンロード → sha256 検証。成功で downloaded_artifact_index に登録。リカバリ不能失敗で failed_artifacts_blacklist に追記。リカバリ可能失敗は <em>何も永続化しない</em> (= 次回 work list 再計算で同じ work item として現れる)。</td>
+            <td>downloaded_artifact_index, failed_artifacts_blacklist</td>
+          </tr>
+          <tr>
+            <th scope="row">Install Worker</th>
+            <td>Sync Engine からの要求 (work item 単位)</td>
+            <td>軸B が <code>AMAPI_CUSTOM_APP</code> (= <a href="/android-app-prereq/#install-axis">前提条件</a>を満たす) なら AMAPI SDK <code>LocalCommandClient</code> + <code>InstallCustomApp</code> で silent install / uninstall を発行。<code>PACKAGE_INSTALLER</code> なら Notification Controller に Sticky 表示を依頼し、ユーザー操作後の broadcast で結果を受け取る。成功で installed_package_index 更新。リカバリ不能失敗で failed_artifacts_blacklist に追記。リカバリ可能失敗は永続化しない。</td>
+            <td>installed_package_index, failed_artifacts_blacklist</td>
+          </tr>
+          <tr>
+            <th scope="row">Notification Controller</th>
+            <td>Install Worker からの依頼 / OS broadcast</td>
+            <td>Sticky 通知の出し下げを <code>(package_name, 期待 version_code)</code> をキーに重複排除して管理する。同じキーで重ねて依頼されても1個の通知に集約。<code>PACKAGE_ADDED</code> / blacklist 追記で必ず下げる。</td>
+            <td>(通知状態のみ)</td>
+          </tr>
+          <tr>
+            <th scope="row">Result Reporter</th>
+            <td>Sync Engine からの「全 work item が terminal」通知 / 起動時に pending_report_payload あり</td>
+            <td>fetched_policy_snapshot.entries を installed_package_index と failed_artifacts_blacklist で評価して payload を組み立てる (INSTALLED / UNINSTALLED / FAILED + phase + code)。POST 後、201 受理で applied_policy_snapshot を更新。</td>
+            <td>applied_policy_snapshot, pending_report_payload</td>
+          </tr>
+          <tr>
+            <th scope="row">Auth Controller</th>
+            <td>Policy Fetcher / Download / Reporter からの 401</td>
+            <td>device_auth_token を失効扱いにし、UI を再登録導線へ誘導する。<code>pending_policy_fetch</code> は維持。同期エンジンは停止状態で待機。</td>
+            <td>(認証状態フラグ)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="state-model">
+    <p class="section-kicker">State model</p>
+    <h2 id="state-model">端末ローカルストアの状態モデル</h2>
+    <p>このページの整理の中心は「永続するもの」と「毎回計算で再現するもの」の分離です。<strong>work item の進捗状態は永続化しません。</strong> 永続するのは「target 状態」「観測された現在状態」「不変の失敗事実」「未送信の報告」の4種だけです。差分から導けるものは毎反復で計算します。</p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">名前</th>
+            <th scope="col">役割</th>
+            <th scope="col">作る / 立てる</th>
+            <th scope="col">下げる / 消す</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">pending_policy_fetch</th>
+            <td>fetch が必要かどうかのフラグ</td>
+            <td>FCM 受信 / 手動更新 / 再認証完了</td>
+            <td>fetch が 200 で完了した瞬間 / 400 や 404 で「同条件では成功しない」と確定した時</td>
+          </tr>
+          <tr>
+            <th scope="row">fetched_policy_snapshot</th>
+            <td>サーバーが解決したあるべき状態 (各 entry に install 付き)</td>
+            <td>fetch 成功時に置き換え</td>
+            <td>アプリデータ初期化 / 再インストールでクリア</td>
+          </tr>
+          <tr>
+            <th scope="row">applied_policy_snapshot</th>
+            <td>報告まで完了した時点の Policy。<code>fetched.updated_at == applied.updated_at</code> で「最新です」を判定する</td>
+            <td>policy_sync_results が 201 で受理された直後に fetched_policy_snapshot のコピーで上書き</td>
+            <td>アプリデータ初期化 / 再インストールでクリア</td>
+          </tr>
+          <tr>
+            <th scope="row">installed_package_index</th>
+            <td>「自分が入れたパッケージ」だけを保持する (=管理者から見て本アプリが触った範囲のみ)。DataStore (Proto) に永続化する。一般的な「端末に入っている全アプリ」を保持するためのものではない。</td>
+            <td>Install Worker で install / uninstall を完了した時に追加・更新 (常に <code>installed_by_companion=true</code> の前提)。fetch_policy_snapshot に該当 package がある間は PACKAGE_REPLACED の broadcast でも version_code を上書きする。</td>
+            <td>PACKAGE_REMOVED broadcast (自分が入れた package のみ受信) / アプリデータ初期化 / 再インストール</td>
+          </tr>
+          <tr>
+            <th scope="row">downloaded_artifact_index</th>
+            <td>{`{ release_id, version_code, local_path, sha256 }[]`}。同じ artifact を再 DL しないためのキャッシュ</td>
+            <td>Download Worker で sha256 検証 OK のとき登録</td>
+            <td>該当 release.id が fetched_policy_snapshot から消えた / アプリデータ初期化 / 再インストール / 容量逼迫時に applied 済みのものから cleanup</td>
+          </tr>
+          <tr>
+            <th scope="row">failed_artifacts_blacklist</th>
+            <td>{`{ release_id, version_code, failure_phase, failure_code, recorded_at }[]`}。<strong>「同条件で結果が変わらない」と確定した artifact の事実だけを永続する。</strong>進捗状態ではない</td>
+            <td>Download / Install のリカバリ不能失敗 (404 / sha256 不一致 / 署名不一致 / 非互換 / VERSION_DOWNGRADE / 削除拒否) で追記</td>
+            <td>該当 release.id が fetched_policy_snapshot から消えた時点で cleanup してよい (新 release.id で fetch されれば自動的にヒットしなくなる)。アプリデータ初期化 / 再インストールでクリア</td>
+          </tr>
+          <tr>
+            <th scope="row">pending_report_payload</th>
+            <td>未送信の policy_sync_results 本文 (冪等再送用)</td>
+            <td>Sync Engine が「全 work item terminal」を通知した瞬間に作成</td>
+            <td>POST policy_sync_results が 201 で受理された瞬間に破棄 / アプリデータ初期化 / 再インストールでクリア</td>
+          </tr>
+          <tr>
+            <th scope="row">device_auth_token</th>
+            <td>後続 API 呼び出しの本人性</td>
+            <td>登録完了時に応答から受け取り、private storage に保存</td>
+            <td>アプリデータ初期化 / 再インストールで消える。401 確定時は「失効」扱いに切替。詳細は <a href="/use-cases/device-registration/">デバイスの登録</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>不変条件</h3>
+    <ul class="usa-list">
+      <li><code>fetched.updated_at == applied.updated_at</code> ⇒ ホーム表示は「最新です」。それ以外は「更新中 / やることがある / エラー」のいずれか (定義は <a href="#work-loop">差分処理サイクル</a> 参照)。</li>
+      <li><code>pending_report_payload != null</code> ⇒ Sync Engine は新しい work list 計算による DOWNLOAD/INSTALL を再開しない。まず再送を試みる。</li>
+      <li>同じ <code>(package_name, 期待 version_code)</code> に対する Sticky 通知は同時に1個だけ。重複出現は Notification Controller が抑止する。</li>
+      <li>failed_artifacts_blacklist にあるエントリと同じ <code>(release.id, version_code)</code> は、DOWNLOAD/INSTALL を試みず、報告 payload では <strong>FAILED</strong> として組み立てる。</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="triggers">
+    <p class="section-kicker">Triggers</p>
+    <h2 id="triggers">同期トリガと判定順序</h2>
+    <Mermaid chart={triggerFlow} title="フラグを立てる契機と、fetch / 差分処理を試みる契機の分離" />
+    <p>「フラグを立てる契機」と「fetch を実行する契機」「差分処理サイクルを起動する契機」を明確に分けます。差分処理は <code>fetched &gt; applied</code> の判定でだけ起動し、fetch とは独立して走ります。</p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">トリガ</th>
+            <th scope="col">フラグを立てる?</th>
+            <th scope="col">即時 fetch を試みる?</th>
+            <th scope="col">差分処理を起動する?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">FCM POLICY_UPDATED 受信</th>
+            <td>立てる</td>
+            <td>試みる (オンラインなら)</td>
+            <td>fetch 成功後に起動</td>
+          </tr>
+          <tr>
+            <th scope="row">ホーム pull-to-refresh</th>
+            <td>立てる</td>
+            <td>必ず試みる</td>
+            <td>fetch 成功後に起動。失敗時は <code>fetched &gt; applied</code> 判定で起動の可否を決める</td>
+          </tr>
+          <tr>
+            <th scope="row">アプリ起動 / 再起動</th>
+            <td>立てない</td>
+            <td>フラグが立っていれば試みる</td>
+            <td>fetched &gt; applied なら起動 (fetch しなくても、前回の deferred を再計算するため)</td>
+          </tr>
+          <tr>
+            <th scope="row">ネットワーク復帰 broadcast</th>
+            <td>立てない</td>
+            <td>フラグが立っていれば試みる</td>
+            <td>fetched &gt; applied なら起動。pending_report_payload あれば再送も。</td>
+          </tr>
+          <tr>
+            <th scope="row">FCM 取りこぼし後のアプリ明示起動 / 手動更新</th>
+            <td>手動更新なら立てる。通常起動だけでは立てない</td>
+            <td>手動更新なら必ず試みる。通常起動はフラグが立っていれば試みる</td>
+            <td>fetch 成功後、または fetched &gt; applied なら起動</td>
+          </tr>
+          <tr>
+            <th scope="row">再登録 / device_auth_token 再発行完了</th>
+            <td>立てる</td>
+            <td>試みる</td>
+            <td>fetch 成功後に起動</td>
+          </tr>
+          <tr>
+            <th scope="row">PACKAGE_ADDED / PACKAGE_REMOVED broadcast</th>
+            <td>立てない</td>
+            <td>fetch しない</td>
+            <td>installed_package_index を更新してから差分処理を再起動 (work list が変わる可能性があるため)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>判定順序 (起動時)</h3>
+    <ol class="usa-list">
+      <li><strong>device_auth_token があるか</strong> → なければ「登録リンク待ち」画面。</li>
+      <li><strong>device_auth_token が失効扱いになっていないか</strong> → 失効なら再登録導線へ。</li>
+      <li><strong>pending_report_payload があるか</strong> → あれば最初に再送を試みる (新しい fetch・新しい差分処理より優先)。</li>
+      <li><strong>pending_policy_fetch が立っているか</strong> → 立っていれば fetch を試みる。</li>
+      <li><strong>fetched_policy_snapshot &gt; applied_policy_snapshot か</strong> → 差分があれば Sync Engine を起動 (work list を再計算)。</li>
+      <li>いずれでもなければ「最新です」状態。</li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="work-loop">
+    <p class="section-kicker">Work loop</p>
+    <h2 id="work-loop">差分処理サイクル (1反復)</h2>
+    <p>1反復の流れは「work list を計算 → 各 work item をワンパス試行 → 全て terminal なら報告」です。途中で kill されても、次のトリガで <strong>work list は永続データから再計算される</strong> ので状態の整合性は壊れません。</p>
+    <Mermaid chart={workItemLifecycle} title="work item の遷移 (1反復内)。deferred は永続化されず、次のトリガで同じ work item として再生成される" />
+
+    <h3>work list の計算規則</h3>
+    <p>各 <code>fetched_policy_snapshot.entries[i]</code> について、下記の優先順位で work item の初期状態を決めます。</p>
+    <ol class="usa-list">
+      <li><strong>AVAILABLE entry</strong> → <code>already_satisfied</code> (同期 attempt の対象外、報告でも常に skip)。</li>
+      <li><strong>同 release.id + version_code が failed_artifacts_blacklist にある</strong> → <code>blacklisted_skip</code> (action なし、報告では FAILED として組み立てる)。</li>
+      <li><strong>installed_package_index に同 package_name + 期待 version_code がある</strong> → <code>already_satisfied</code>。</li>
+      <li><strong>FORCE_INSTALLED で artifact が downloaded_artifact_index にない</strong> → <code>downloading</code> から開始。</li>
+      <li><strong>FORCE_INSTALLED で artifact が downloaded_artifact_index にある</strong> → <code>installing</code> から開始 (DOWNLOAD スキップ)。</li>
+    </ol>
+    <p>さらに、<strong>Policy に存在しない installed_package_index のエントリ</strong> で <code>installed_by_companion=true</code> のものは UNINSTALL 対象の work item として追加します。</p>
+
+    <h3>表示状態の定義 (1反復の結果から導出)</h3>
+    <p>UI の「最新です / 更新中 / やることがある / エラーで止まっている」は、永続データを毎回 derive します。</p>
+    <ul class="usa-list">
+      <li><strong>最新です</strong>: <code>fetched.updated_at == applied.updated_at</code>。</li>
+      <li><strong>やることがある</strong>: 直近の試行で <em>権限待ち / ユーザー操作待ちで deferred</em> になった work item があった、または failed_artifacts_blacklist にユーザー対応が意味を持つ entry がある。</li>
+      <li><strong>更新中</strong>: 上記以外で <code>fetched &gt; applied</code>、かつ DOWNLOAD / INSTALL の試行が実行中。</li>
+      <li><strong>エラーで止まっている</strong>: blacklist にエントリがあり、ユーザー操作で解消できない種別 (署名不一致など)。管理者対応待ちであることを表示する。</li>
+    </ul>
+    <p>同じ状態を別の場所で重複定義しないよう、画面表示はすべてここからの derive で表現します。</p>
+  </section>
+
+  <section aria-labelledby="recovery">
+    <p class="section-kicker">Recovery classification</p>
+    <h2 id="recovery">リカバリ可能 / 不能の判定基準</h2>
+    <p>原則: <strong>「同じ条件で再試行すれば結果が変わりうるか」</strong>。変わりうれば <em>リカバリ可能</em> (何も永続化しない = 次のトリガで work item が再生成される)、変わらなければ <em>リカバリ不能</em> (<code>failed_artifacts_blacklist</code> に追記)。</p>
+
+    <h3 id="recovery-fetch">Policy fetch フェーズ</h3>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr><th>状況</th><th>判定</th><th>対応</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>IOException / TLS 失敗 / DNS 失敗 / 圏外</td><td>リカバリ可能</td><td><code>pending_policy_fetch</code> 維持。次のトリガに委ねる。</td></tr>
+          <tr><td>5xx</td><td>リカバリ可能</td><td>同上。</td></tr>
+          <tr><td>401 DEVICE_AUTH_REQUIRED</td><td>(別カテゴリ)</td><td>Auth Controller へ。フラグは維持して再登録後に再試行。</td></tr>
+          <tr><td>400 / 404 (path 不正 / 旧クライアント)</td><td>リカバリ不能</td><td>フラグを下げる。クライアント更新を促す。</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="recovery-download">DOWNLOAD フェーズ</h3>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr><th>状況</th><th>判定</th><th>対応</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>artifact_url の TTL 切れ (S3 が 403 SignatureDoesNotMatch / AccessDenied 等)</td><td>リカバリ可能</td><td>永続化しない (deferred)。次のトリガで artifact_url を再取得して同じ release.id で再 DL。</td></tr>
+          <tr><td>S3 / CDN 一時障害 (5xx, タイムアウト, TLS失敗)</td><td>リカバリ可能</td><td>同上。</td></tr>
+          <tr><td>端末ストレージ一時不足</td><td>リカバリ可能</td><td>永続化しない。容量回復後の次のトリガで再試行。継続的不足は通知で利用者に促す (永続データには触らない)。</td></tr>
+          <tr><td>ダウンロード途中で切断 (部分 DL)</td><td>リカバリ可能</td><td>部分ファイルを破棄。Range/resume は採用しない。</td></tr>
+          <tr><td>404 ARTIFACT_GONE (release 削除直後で恒久的に欠落)</td><td>リカバリ不能</td><td>failed_artifacts_blacklist に追記 (phase=DOWNLOAD, code=ARTIFACT_GONE)。次の fetch で release.id が変わったら blacklist エントリは自動的にヒットしなくなる。</td></tr>
+          <tr><td>sha256 不一致</td><td>リカバリ不能</td><td>blacklist 追記 (code=ARTIFACT_CORRUPTED)。</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="recovery-install">INSTALL / UNINSTALL フェーズ</h3>
+    <p>Android のインストール結果は、軸B が <code>PACKAGE_INSTALLER</code> なら PackageInstaller UI 後の <code>PACKAGE_ADDED</code> / <code>PACKAGE_REMOVED</code> broadcast で確認します。軸B が <code>AMAPI_CUSTOM_APP</code> なら AMAPI SDK の <code>IssueCommandResponse</code> + <code>CommandListener</code> の status callback と broadcast の両方を併用します。下記の status コードは PackageInstaller の <code>EXTRA_STATUS</code> 値を想定しています (AMAPI SDK 経路は別の status enum)。</p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr><th>状況</th><th>判定</th><th>対応</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Session 開始失敗 (<code>AMAPI_CUSTOM_APP</code> 経路の一時エラー / "in use" / IssueCommand timeout)</td><td>リカバリ可能</td><td>永続化しない (deferred)。次のトリガで再試行。downloaded_artifact_index にあれば DOWNLOAD はスキップ。</td></tr>
+          <tr><td><code>PACKAGE_INSTALLER</code> 経路で FORCE_INSTALLED が未達 (= AMAPI custom app install の前提を満たさない場合の通常状態)</td><td>リカバリ可能</td><td>Notification Controller に Sticky 通知を依頼。永続データには触らない。同じキーで何度依頼しても通知は1個に集約される (= ユーザーが拒否した直後に再表示される可能性は許容)。</td></tr>
+          <tr><td>STATUS_FAILURE_BLOCKED / ユーザー1回キャンセル</td><td>リカバリ可能</td><td>通知を維持して次のトリガを待つ。永続化しない。</td></tr>
+          <tr><td>STATUS_FAILURE_INCOMPATIBLE (minSdk 未達 / abi 不適合)</td><td>リカバリ不能</td><td>blacklist 追記 (code=INCOMPATIBLE_OS)。</td></tr>
+          <tr><td>STATUS_FAILURE_CONFLICT (署名不一致)</td><td>リカバリ不能</td><td>blacklist 追記 (code=SIGNATURE_MISMATCH)。管理者に再リリース依頼。</td></tr>
+          <tr><td>STATUS_FAILURE_INVALID / VERSION_DOWNGRADE</td><td>リカバリ不能</td><td>blacklist 追記 (code=VERSION_DOWNGRADE)。</td></tr>
+          <tr><td>STATUS_FAILURE (STORAGE)</td><td>リカバリ可能 (容量解消で成功し得る)</td><td>永続化しない。継続的不足はホームに案内。</td></tr>
+          <tr><td>UNINSTALL の端末ポリシー拒否</td><td>リカバリ不能</td><td>blacklist 追記 (code=UNINSTALL_REFUSED)。</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="recovery-report">報告フェーズ</h3>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr><th>状況</th><th>判定</th><th>対応</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>IOException / 5xx</td><td>リカバリ可能</td><td><code>pending_report_payload</code> 保持。次のトリガで同じ payload を再送 (冪等)。</td></tr>
+          <tr><td>200 / 201 (重複受領含む)</td><td>受理</td><td>applied_policy_snapshot を更新、payload を破棄。</td></tr>
+          <tr><td>401</td><td>(別カテゴリ)</td><td>Auth Controller へ。再登録後に同じ payload を再送。</td></tr>
+          <tr><td>4xx (revision_id 不在等)</td><td>受理扱い</td><td>payload を破棄して applied を fetched で上書き (古い revision に対する報告は破棄で良い)。</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="scheduler">
+    <p class="section-kicker">Scheduler</p>
+    <h2 id="scheduler">再試行スケジューラの責務境界</h2>
+    <p>個別ライブラリ (WorkManager / JobScheduler / Foreground service) の選定はこのページでは行わず、各責務に求める要件のみ示します。</p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">役割</th>
+            <th scope="col">起動契機</th>
+            <th scope="col">要件</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">即時実行ワーカー</th>
+            <td>FCM 受信直後 / 手動更新 / ネット復帰 broadcast</td>
+            <td>プロセスが起きていればすぐ走り、kill されても永続ストアの整合だけで状態を再構築できること。途中の work item の進捗は永続化しないので、「中断」=「次回 work list 再計算でやり直し」で問題ない。</td>
+          </tr>
+          <tr>
+            <th scope="row">明示起動 / 手動更新による復旧</th>
+            <td>利用者がアプリを開く / ホームで pull-to-refresh</td>
+            <td>FCM を取りこぼした端末の保険。常時の周期 fetch は前提にせず、利用者が明示的に開いたときに復旧できればよい。</td>
+          </tr>
+          <tr>
+            <th scope="row">Foreground service (DOWNLOAD / INSTALL の窓)</th>
+            <td>大きな APK の DOWNLOAD 中 / INSTALL Session 実行中 / ユーザーが任意アプリ画面で待っている時間帯</td>
+            <td>通知必須 (Android 8+)、Android 14+ では <code>dataSync</code> foregroundServiceType を指定。<strong>常時起動はしない</strong>。DOWNLOAD と INSTALL の進行中の窓のみ Foreground service として走らせ、それ以外の処理 (fetch / 報告 / 状態判定 / blacklist追記等) は WorkManager に委ねる。</td>
+          </tr>
+          <tr>
+            <th scope="row">WorkManager (DOWNLOAD / INSTALL 以外)</th>
+            <td>Policy fetch、報告 (policy_sync_results)、起動後の状態判定 / work list 計算、blacklist cleanup など。</td>
+            <td>OS のジョブスケジューラに委ねる。Foreground 化は不要。expedited work が必要な場面はFCM受信→即fetch程度に留め、過剰な expedited 利用は避ける。</td>
+          </tr>
+          <tr>
+            <th scope="row">PACKAGE_ADDED / PACKAGE_REMOVED 受信</th>
+            <td>OS broadcast (manifest 登録)</td>
+            <td>installed_package_index を更新し、必要なら Sync Engine を再起動。Policy は再取得しない。</td>
+          </tr>
+          <tr>
+            <th scope="row">通知タップ / アクションボタン</th>
+            <td>ユーザー操作</td>
+            <td>本文タップはアプリ画面遷移、アクションは画面を開かず即時に Sync Engine を駆動する。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>バックオフ方針</h3>
+    <ul class="usa-list">
+      <li>同じ work item が連続して deferred になっても、アプリ独自のバックオフは <strong>行わない</strong>。FCM・ネット復帰 broadcast・アプリ明示起動・手動更新に「次の機会」を委ねる。</li>
+      <li>HTTP 429 / Retry-After を受け取った場合は OS のジョブ実行間隔に従い、独自 sleep はしない。</li>
+      <li>「同じ条件で結果が変わらない」と確定したものは即 blacklist に追記して次の機会を待たない。</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="device-prereq">
+    <p class="section-kicker">Device prerequisites</p>
+    <h2 id="device-prereq">端末側で前提とする条件 (要確認事項)</h2>
+    <p>同期メカニズムは下記の前提に依存します。これらは現時点で <strong>未確定 / 要議論</strong> の項目を含みます。確定したら本ページの責務記述と整合させます。</p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">前提</th>
+            <th scope="col">同期機構が依存する点</th>
+            <th scope="col">状態</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">AMAPI SDK custom app install 経路 (軸B = <code>AMAPI_CUSTOM_APP</code>)</th>
+            <td>使えるかどうかで、Sticky 通知の比重と「PACKAGE_INSTALLER 経路でのリカバリ可能扱い」の頻度が変わる。<a href="https://developers.google.com/android/management/manage-custom-apps">Manage custom apps with AMAPI</a> の前提 (fully managed、COMPANION_APP role、対象APKが installType=CUSTOM + signingKeyCerts一致、AMAPI SDK v1.6.0-rc01+、minSdk 21+、所定の FileProvider/queries 宣言) をすべて満たす場合のみ <code>AMAPI_CUSTOM_APP</code> を選ぶ。</td>
+            <td>本配信システム側では policy を書かない。前提充足は AMAPI policy 運用側の責務。前提を満たす端末 / 対象APK の組み合わせがどれだけあるかは導入時に確認。詳細は <a href="/android-app-prereq/#install-axis">Androidアプリ導入の前提 #インストール経路という独立した軸</a>。</td>
+          </tr>
+          <tr>
+            <th scope="row">POST_NOTIFICATIONS 権限 (API 33+)</th>
+            <td>Sticky 通知・再試行通知が出せる前提。拒否時のフォールバックはホーム画面の状態表示。</td>
+            <td>登録完了画面で求めるか、初回 Sticky 通知発火時に求めるかは <a href="/openapi/android-screens/">Android画面一覧</a> 側で議論中。</td>
+          </tr>
+          <tr>
+            <th scope="row">REQUEST_INSTALL_PACKAGES 権限</th>
+            <td><code>PACKAGE_INSTALLER</code> 経路で PackageInstaller を使うとき必須。拒否時は通知から再依頼に集約。<code>AMAPI_CUSTOM_APP</code> 経路では不要。</td>
+            <td>初回 INSTALL 要求時に求める想定。Settings からの委譲が必要な OEM は別経路。</td>
+          </tr>
+          <tr>
+            <th scope="row">QUERY_ALL_PACKAGES (API 30+)</th>
+            <td>自アプリが install したパッケージに対する <code>PackageManager.getPackageInfo(specificPackage)</code> / <code>PackageInstaller.uninstall(packageName)</code> / <code>PACKAGE_ADDED|REMOVED</code> 受信に影響。</td>
+            <td><strong>採用する</strong>。<a href="https://developer.android.com/training/package-visibility/automatic">Android 公式 "automatically visible" リスト</a>には <em>「自アプリを install したアプリ」</em> しか含まれず、<em>「自アプリが install したアプリ」</em> は公式に保証されていない (AOSP の AppsFilter で installer-of-record の可視化はあるが、ドキュメント上の保証なし)。配布対象 package_name は server から動的に来るため静的な <code>&lt;queries&gt;</code> 列挙は不可。本プロダクトは Play Store 公開アプリではなく managed Google Play / Play custom app / sideload (adb install) で配布する想定のため、<code>QUERY_ALL_PACKAGES</code> 宣言の Play Store 審査ロジックの対象外。これを許可する代わりに、own-installed のみ追跡する <code>installed_package_index</code> ポリシーは維持する (個人情報やプライバシー観点では <em>使い方</em> を own-installed に限定する規律で守る)。</td>
+          </tr>
+          <tr>
+            <th scope="row">PACKAGE_ADDED / PACKAGE_REMOVED 受信 (Android 8+ implicit broadcast 制限)</th>
+            <td>本設計では「画面表示時の初回描画で実際のインストール状況をワンショット確認する」用途と、Install Worker から自分が触ったパッケージの結果を受け取る用途に限定。</td>
+            <td>manifest 宣言型の implicit broadcast 制限は影響しない。画面の初回描画では <code>PackageManager.getPackageInfo(specificPackage)</code> を呼んで <code>installed_package_index</code> と突き合わせるだけで足り、常時受信のためのbackground receiver は不要 (broadcast は runtime registerReceiver で必要な場面だけ受ける)。<code>QUERY_ALL_PACKAGES</code> がある前提で getPackageInfo は安全に呼べる。</td>
+          </tr>
+          <tr>
+            <th scope="row">ダウンロード保存先</th>
+            <td>downloaded_artifact_index の local_path。アプリ専用ストレージ (app-specific cache or files dir) を想定。</td>
+            <td>容量逼迫時の cleanup ポリシー (applied 済み / blacklist にあるものから削除) は本ページの「状態モデル」で前提化済み。</td>
+          </tr>
+          <tr>
+            <th scope="row">FCM data message の優先度</th>
+            <td>POLICY_UPDATED の到達遅延が「同期完了までの所要時間」に直結する。</td>
+            <td><strong>high priority を要求する</strong>。バッテリ最適化・Doze 下でも POLICY_UPDATED 受信時に <code>pending_policy_fetch</code> を立てて即座に処理を開始できることを優先する。届かない端末は、利用者のアプリ明示起動または手動更新で救う。</td>
+          </tr>
+          <tr>
+            <th scope="row">永続ストアのバックエンド</th>
+            <td><code>pending_policy_fetch</code> / <code>fetched_policy_snapshot</code> / <code>applied_policy_snapshot</code> / <code>downloaded_artifact_index</code> / <code>failed_artifacts_blacklist</code> / <code>pending_report_payload</code> / <code>installed_package_index</code> / <code>device_auth_token</code> を端末側で永続化する箱。</td>
+            <td><strong>DataStore (Preferences DataStore + Proto DataStore) を採用</strong>。Room まで使うほどのリレーショナル要件はなく、状態モデル各オブジェクトを Proto で表現して原子的に書き換える。複合の更新は単一 Proto 内に閉じる。SQLite (Room) は使わない。</td>
+          </tr>
+          <tr>
+            <th scope="row">Direct Boot 対応の有無</th>
+            <td>暗号化ロック前に FCM を受けるか / device_auth_token をアクセスできるか。</td>
+            <td>現設計では非対応で良い想定 (ロック解除後に処理が再開する)。要確認。</td>
+          </tr>
+          <tr>
+            <th scope="row">Multi-user / Work profile</th>
+            <td>installed_package_index と Install Worker の scope が変わる。</td>
+            <td>本設計ではメインユーザーのみを対象とする想定。Work profile 対応は別ユースケース。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="component-sequence">
+    <p class="section-kicker">Sequence</p>
+    <h2 id="component-sequence">端末内コンポーネント間のシーケンス</h2>
+    <Mermaid chart={componentSequence} title="FCM受信から差分処理サイクル、報告、applied更新まで。work item の進捗は永続化しない" />
+  </section>
+
+  <section aria-labelledby="lifecycle">
+    <p class="section-kicker">Lifecycle</p>
+    <h2 id="lifecycle">同期全体のライフサイクル</h2>
+    <Mermaid chart={lifecycle} title="Synced / NeedFetch / Fetched / Syncing / AwaitingUser / Reporting / Unauthenticated の遷移" />
+  </section>
+
+  <section aria-labelledby="errors">
+    <p class="section-kicker">Errors</p>
+    <h2 id="errors">主要エラーとリトライ計画 (1枚)</h2>
+    <p>各 use-case ページに分散していたエラー扱いを、端末側のリトライ計画として集約します。永続データに触る/触らないの境界を明示しています。</p>
+    <div class="table-wrap">
+      <table class="usa-table">
+        <thead>
+          <tr>
+            <th scope="col">フェーズ</th>
+            <th scope="col">状況</th>
+            <th scope="col">永続データの変化</th>
+            <th scope="col">次の機会</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Fetch</td><td>5xx / IO / TLS</td><td>pending_policy_fetch=true のまま (他は触らない)</td><td>FCM / 明示起動 / 手動更新 / ネット復帰</td></tr>
+          <tr><td>Fetch</td><td>401</td><td>auth=invalid に切替。pending_policy_fetch は維持。</td><td>再登録完了</td></tr>
+          <tr><td>Fetch</td><td>400/404 (恒久)</td><td>pending_policy_fetch=false に下げる。</td><td>クライアント更新</td></tr>
+          <tr><td>Download</td><td>artifact_url 期限切れ / 5xx / IO / 部分DL / 容量一時不足</td><td>何も書かない</td><td>次のトリガで work list 再計算 → 同じ work item として再現</td></tr>
+          <tr><td>Download</td><td>404 / sha256 不一致</td><td>failed_artifacts_blacklist に追記</td><td>次の fetch で release.id か version_code が変わるまで再試行しない</td></tr>
+          <tr><td>Install</td><td><code>PACKAGE_INSTALLER</code> 経路で必須未達 / 1回キャンセル / <code>AMAPI_CUSTOM_APP</code> 経路のSession一時失敗 / 容量一時不足</td><td>何も書かない (通知は Notification Controller が管理)</td><td>ユーザー操作 / 次のトリガ</td></tr>
+          <tr><td>Install</td><td>署名不一致 / 非互換 / VERSION_DOWNGRADE / UNINSTALL 拒否</td><td>failed_artifacts_blacklist に追記、通知は解除</td><td>次の fetch で release.id が変わるまで再試行しない</td></tr>
+          <tr><td>Report</td><td>5xx / IO</td><td>pending_report_payload を保持、applied は未更新</td><td>次のトリガ (同 payload を再送)</td></tr>
+          <tr><td>Report</td><td>4xx (revision 不存在)</td><td>payload 破棄、applied を fetched で上書き</td><td>—</td></tr>
+          <tr><td>Report</td><td>401</td><td>payload 維持、auth=invalid</td><td>再登録完了後に再送</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="guidance">
+    <p class="section-kicker">Out-of-spec guidance</p>
+    <h2 id="guidance">不足ケースに遭遇したときの判断指針</h2>
+    <ol>
+      <li><strong>「リトライしてよいか?」は「同じ条件で結果が変わりうるか?」で判定する。</strong> 変わりうればリカバリ可能 (何も永続化しない)、変わらなければリカバリ不能 (blacklist に追記)。新しいエラーが出てきたらまずこの2分類に当てはめる。</li>
+      <li><strong>永続するのは「target / observed current / 不変の失敗事実 / 未送信報告」の4種。</strong> 進行中の work item の状態は永続化しない。差分から導けるものは毎反復で計算する。</li>
+      <li><strong>サーバー報告は「installed = INSTALLED」「blacklist = FAILED」だけ。</strong> リカバリ可能で deferred になった work item は報告に含めない (= 端末がリトライ継続中)。サーバーに「同じエラーが何度も来る」が観測されたら、それは判定区分の見直しサイン。</li>
+      <li><strong>FCM は「再取得の合図」だけ。</strong> Policy 本文を data に載せない。届かない端末は、利用者がアプリを明示起動するか手動更新したときに復旧できればよい。</li>
+      <li><strong>Foreground service は常時起動しない。</strong> DOWNLOAD/INSTALL の窓だけ。アイドル時は通常の Background work に戻す。</li>
+      <li><strong>Sticky 通知は (package_name, version_code) で重複排除する。</strong> 「同期中」全体の通知ではなく、ユーザー操作が必要な work item に紐づける。<code>PACKAGE_ADDED</code> や blacklist 追記で必ず下げる。<strong>ユーザーが1回拒否した直後に再表示される可能性は意図的に許容する</strong> ─ 本システムは管理者が業務アプリを配信する用途であり、利用者の拒否で長期間未インストールに留まる状態は管理者にとって想定外。なるべくインストールしてもらう方向の UX を採用し、work item の進捗を永続化しない (毎反復で「経路が PACKAGE_INSTALLER かつ未達」を検出したら通知依頼を再発する) ことでこれを実現する。</li>
+      <li><strong>installed_by_companion=true のものだけアンインストール候補。</strong> 不確かなら「ユーザーが他経路で入れた可能性」を優先して触らない。</li>
+      <li><strong>「pending_policy_fetch を false に下げる」と「fetched_policy_snapshot を保存する」は同一トランザクションで行うこと。</strong> 他の永続データの書き換えはフィールドごとの原子性で十分。</li>
+      <li><strong>device_auth_token 失効はリトライ対象外。</strong> 同期エンジンは停止状態で待機し、UI が再登録導線に誘導する。再認証完了で <code>pending_policy_fetch</code> を立て直して再開。</li>
+      <li><strong>blacklist エントリの cleanup は release.id ベース。</strong> fetched_policy_snapshot に出てこなくなった release.id は cleanup してよい。<code>recorded_at</code> ベースの TTL cleanup はしない (失敗事実は同 release.id である限り正しい)。</li>
+      <li><strong>判断に詰まったら</strong> <a href="/use-cases/app-distribution/">アプリの配信</a> の判断指針と本ページの状態モデル表に立ち返る。新しい同期要件は、まず本ページの状態モデルで表現できないかを検討してからスキーマ追加に進む。</li>
+    </ol>
+  </section>
+</BaseLayout>
