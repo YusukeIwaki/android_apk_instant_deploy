@@ -371,7 +371,7 @@ paths:
         device_policy_revisions, device_policy_sync_reports, and finally
         devices itself.
 
-        Observation tables (fcm_delivery_failures, device_contact_observations)
+        Observation tables (fcm_delivery_failures, device_heartbeats)
         are intentionally kept for audit; deletion is recorded in the admin
         operation log. After deletion, requests that present the old
         device_auth_token receive 401 DEVICE_AUTH_REQUIRED, and the admin must
