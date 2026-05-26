@@ -32,6 +32,14 @@
           </dl>
         </div>
       </div>
+      <hr>
+      <h3 class="h6">AMAPI ApplicationPolicy</h3>
+      <p class="text-muted small">
+        For Android Management API verification, add this object to the policy <code>applications[]</code>.
+        The companion app reads <code>managedConfiguration</code> and registers automatically after it obtains an FCM token.
+      </p>
+      <pre class="bg-light border rounded p-3 small"><code id="amapi-application-policy-value"><%= h(result[:amapi_application_policy_json]) %></code></pre>
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-copy-target="#amapi-application-policy-value">Copy ApplicationPolicy JSON</button>
     </div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
@@ -55,7 +63,8 @@
         btn.addEventListener('click', function () {
           var target = document.querySelector(btn.dataset.copyTarget);
           if (!target) return;
-          navigator.clipboard.writeText(target.value).then(function () {
+          var value = typeof target.value === 'string' ? target.value : target.textContent;
+          navigator.clipboard.writeText(value).then(function () {
             var original = btn.textContent;
             btn.textContent = 'Copied!';
             setTimeout(function () { btn.textContent = original; }, 1500);
@@ -76,6 +85,11 @@
         <label for="expires_in_minutes" class="form-label">Expires in (minutes)</label>
         <input type="number" min="1" name="expires_in_minutes" id="expires_in_minutes" class="form-control" value="60" required>
         <div class="form-text">Time until the registration link expires.</div>
+      </div>
+      <div class="mb-3">
+        <label for="managed_config_display_name" class="form-label">Managed configuration display name</label>
+        <input type="text" name="managed_config_display_name" id="managed_config_display_name" class="form-control" value="AMAPI test device" required>
+        <div class="form-text">Used only in the generated AMAPI ApplicationPolicy JSON. The Android app stores it as the device profile display name.</div>
       </div>
       <button class="btn btn-primary" type="submit">Issue token</button>
     </form>

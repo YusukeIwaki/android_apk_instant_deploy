@@ -42,6 +42,19 @@ module ApkInstantDeploy
       Base64.strict_encode64(iv + cipher.auth_tag + ciphertext)
     end
 
+    def decrypt_token(value)
+      key = OpenSSL::Digest::SHA256.digest(encryption_secret)
+      bytes = Base64.strict_decode64(value.to_s)
+      iv = bytes.byteslice(0, 12)
+      auth_tag = bytes.byteslice(12, 16)
+      ciphertext = bytes.byteslice(28, bytes.bytesize - 28)
+      cipher = OpenSSL::Cipher.new("aes-256-gcm").decrypt
+      cipher.key = key
+      cipher.iv = iv
+      cipher.auth_tag = auth_tag
+      cipher.update(ciphertext) + cipher.final
+    end
+
     def hmac_secret
       ENV.fetch("TOKEN_HMAC_SECRET", "development-token-hmac-secret")
     end

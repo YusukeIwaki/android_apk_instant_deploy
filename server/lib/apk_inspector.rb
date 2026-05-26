@@ -12,6 +12,8 @@ module ApkInstantDeploy
       :version_code,
       :version_name,
       :display_name,
+      :display_name_resource_id,
+      :display_name_resource_name,
       :icon_bytes,
       :sha256,
       :size_bytes,
@@ -31,6 +33,7 @@ module ApkInstantDeploy
 
     def inspect
       metadata = inspect_with_android_tool || inspect_manifest_from_zip
+      metadata.display_name = resolve_display_name(metadata)
       metadata.sha256 = Digest::SHA256.file(@path).hexdigest
       metadata.size_bytes = File.size(@path)
       metadata.signing_cert_sha256 = signing_certificate_sha256 || "UNKNOWN"
@@ -83,13 +86,16 @@ module ApkInstantDeploy
       version_code = manifest[/android:versionCode=["']([^"']+)["']/, 1]
       version_name = manifest[/android:versionName=["']([^"']*)["']/, 1]
       label = manifest[/<application[^>]*android:label=["']([^"']+)["']/, 1]
+      display_name, display_name_resource_id, display_name_resource_name = display_name_parts(label)
       raise InvalidApk, "manifest package or versionCode was not found." if package_name.to_s.empty? || version_code.to_s.empty?
 
       ApkMetadata.new(
         package_name: package_name,
         version_code: Integer(version_code),
         version_name: version_name.to_s,
-        display_name: label
+        display_name: display_name,
+        display_name_resource_id: display_name_resource_id,
+        display_name_resource_name: display_name_resource_name
       )
     rescue ArgumentError
       raise InvalidApk, "versionCode was not an integer."
@@ -129,13 +135,40 @@ module ApkInstantDeploy
       ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map { |dir| File.join(dir, name) }.find { |path| File.executable?(path) }
     end
 
+    def resolve_display_name(metadata)
+      display_name = metadata.display_name.to_s
+      return display_name unless display_name.empty? && (metadata.display_name_resource_id || metadata.display_name_resource_name)
+
+      resources = ZipFile.read_entry(@path, "resources.arsc")
+      return display_name unless resources
+
+      ResourceTableParser.new(resources).string(
+        metadata.display_name_resource_id,
+        metadata.display_name_resource_name
+      ).to_s
+    end
+
+    def display_name_parts(label)
+      return [nil, nil, nil] if label.to_s.empty?
+
+      resource_name = label[/\A@string\/(.+)\z/, 1]
+      return [nil, nil, resource_name] if resource_name
+
+      resource_id = label[/\A@(?:0x)?([0-9a-fA-F]+)\z/, 1]
+      return [nil, resource_id.to_i(16), nil] if resource_id
+
+      [label, nil, nil]
+    end
+
     class BinaryManifestParser
       UTF8_FLAG = 0x00000100
       RES_STRING_POOL_TYPE = 0x0001
       RES_XML_START_ELEMENT_TYPE = 0x0102
+      TYPE_REFERENCE = 0x01
       TYPE_STRING = 0x03
       TYPE_INT_DEC = 0x10
       TYPE_INT_HEX = 0x11
+      AttributeValue = Struct.new(:value, :data_type, :data, keyword_init: true)
 
       def initialize(bytes)
         @bytes = bytes
@@ -144,6 +177,7 @@ module ApkInstantDeploy
         @version_code = nil
         @version_name = nil
         @display_name = nil
+        @display_name_resource_id = nil
       end
 
       def parse
@@ -166,7 +200,8 @@ module ApkInstantDeploy
           package_name: @package_name,
           version_code: Integer(@version_code),
           version_name: @version_name.to_s,
-          display_name: @display_name
+          display_name: @display_name,
+          display_name_resource_id: @display_name_resource_id
         )
       end
 
@@ -202,21 +237,25 @@ module ApkInstantDeploy
         end
 
         if element_name == "manifest"
-          @package_name = attrs["package"]
-          @version_code = attrs["versionCode"]
-          @version_name = attrs["versionName"]
+          @package_name = attrs["package"]&.value
+          @version_code = attrs["versionCode"]&.value
+          @version_name = attrs["versionName"]&.value
         elsif element_name == "application"
           label = attrs["label"]
-          @display_name = label if label && !label.start_with?("@") && !label.match?(/\A\d+\z/)
+          if label&.data_type == TYPE_REFERENCE
+            @display_name_resource_id = label.data
+          elsif label&.value && !label.value.start_with?("@") && !label.value.match?(/\A\d+\z/)
+            @display_name = label.value
+          end
         end
       end
 
       def attribute_value(raw_value_index, data_type, data)
-        return string_at(raw_value_index) if raw_value_index != 0xffffffff
-        return string_at(data) if data_type == TYPE_STRING
-        return data.to_s if [TYPE_INT_DEC, TYPE_INT_HEX].include?(data_type)
+        return AttributeValue.new(value: string_at(raw_value_index), data_type: data_type, data: data) if raw_value_index != 0xffffffff
+        return AttributeValue.new(value: string_at(data), data_type: data_type, data: data) if data_type == TYPE_STRING
+        return AttributeValue.new(value: data.to_s, data_type: data_type, data: data) if [TYPE_REFERENCE, TYPE_INT_DEC, TYPE_INT_HEX].include?(data_type)
 
-        data.to_s
+        AttributeValue.new(value: data.to_s, data_type: data_type, data: data)
       end
 
       def utf8_string(offset)
@@ -249,6 +288,170 @@ module ApkInstantDeploy
         return nil if index == 0xffffffff
 
         @strings[index]
+      end
+
+      def u16(offset)
+        @bytes.unpack1("@#{offset}v")
+      end
+
+      def u32(offset)
+        @bytes.unpack1("@#{offset}V")
+      end
+    end
+
+    class ResourceTableParser
+      UTF8_FLAG = 0x00000100
+      RES_STRING_POOL_TYPE = 0x0001
+      RES_TABLE_TYPE = 0x0002
+      RES_TABLE_PACKAGE_TYPE = 0x0200
+      RES_TABLE_TYPE_TYPE = 0x0201
+      NO_ENTRY = 0xffffffff
+      FLAG_COMPLEX = 0x0001
+      TYPE_STRING = 0x03
+
+      def initialize(bytes)
+        @bytes = bytes
+        @global_strings = []
+        @values = {}
+        @values_by_name = {}
+        @priorities = {}
+      end
+
+      def string(resource_id, resource_name = nil)
+        parse
+        @values[resource_id] || (resource_name && @values_by_name[resource_name])
+      rescue InvalidApk
+        nil
+      end
+
+      private
+
+      def parse
+        raise InvalidApk, "invalid resource table." unless u16(0) == RES_TABLE_TYPE
+
+        offset = u16(2)
+        table_size = u32(4)
+        if u16(offset) == RES_STRING_POOL_TYPE
+          @global_strings = parse_string_pool(offset)
+          offset += u32(offset + 4)
+        end
+
+        while offset + 8 <= table_size
+          type = u16(offset)
+          size = u32(offset + 4)
+          raise InvalidApk, "invalid resource table chunk." if size <= 0
+
+          parse_package(offset) if type == RES_TABLE_PACKAGE_TYPE
+          offset += size
+        end
+      end
+
+      def parse_package(offset)
+        package_size = u32(offset + 4)
+        package_id = u32(offset + 8)
+        type_strings_offset = u32(offset + 268)
+        key_strings_offset = u32(offset + 276)
+        type_id_offset = u16(offset + 2) >= 288 ? u32(offset + 284) : 0
+        type_strings = parse_string_pool(offset + type_strings_offset)
+        key_strings = parse_string_pool(offset + key_strings_offset)
+
+        chunk_offset = offset + u16(offset + 2)
+        package_end = offset + package_size
+        while chunk_offset + 8 <= package_end
+          type = u16(chunk_offset)
+          size = u32(chunk_offset + 4)
+          raise InvalidApk, "invalid package chunk." if size <= 0
+
+          parse_type_chunk(chunk_offset, package_id, type_id_offset, type_strings, key_strings) if type == RES_TABLE_TYPE_TYPE
+          chunk_offset += size
+        end
+      end
+
+      def parse_type_chunk(offset, package_id, type_id_offset, type_strings, key_strings)
+        header_size = u16(offset + 2)
+        type_id = @bytes.getbyte(offset + 8)
+        entry_count = u32(offset + 12)
+        entries_start = u32(offset + 16)
+        entry_offsets_start = offset + header_size
+        type_name = type_strings[type_id - 1]
+        default_config = default_config?(offset)
+
+        entry_count.times do |entry_id|
+          entry_offset = u32(entry_offsets_start + (entry_id * 4))
+          next if entry_offset == NO_ENTRY
+
+          parse_entry(
+            offset + entries_start + entry_offset,
+            (package_id << 24) | ((type_id + type_id_offset) << 16) | entry_id,
+            type_name,
+            key_strings,
+            default_config
+          )
+        end
+      end
+
+      def parse_entry(offset, resource_id, type_name, key_strings, default_config)
+        flags = u16(offset + 2)
+        return if (flags & FLAG_COMPLEX) != 0
+
+        key_name = key_strings[u32(offset + 4)]
+        value_offset = offset + u16(offset)
+        data_type = @bytes.getbyte(value_offset + 3)
+        data = u32(value_offset + 4)
+        return unless data_type == TYPE_STRING
+
+        value = @global_strings[data]
+        priority = default_config ? 2 : 1
+        return if @priorities.fetch(resource_id, 0) > priority
+
+        @values[resource_id] = value
+        @values_by_name[key_name] = value if type_name == "string" && key_name
+        @priorities[resource_id] = priority
+      end
+
+      def default_config?(offset)
+        config_size = u32(offset + 20)
+        config = @bytes.byteslice(offset + 24, config_size - 4)
+        config.nil? || config.bytes.all?(&:zero?)
+      end
+
+      def parse_string_pool(offset)
+        string_count = u32(offset + 8)
+        flags = u32(offset + 16)
+        strings_start = offset + u32(offset + 20)
+        offsets_start = offset + u16(offset + 2)
+        utf8 = (flags & UTF8_FLAG) != 0
+
+        string_count.times.map do |index|
+          string_offset = strings_start + u32(offsets_start + (index * 4))
+          utf8 ? utf8_string(string_offset) : utf16_string(string_offset)
+        end
+      end
+
+      def utf8_string(offset)
+        _utf16_length, pos = read_length8(offset)
+        byte_length, pos = read_length8(pos)
+        @bytes.byteslice(pos, byte_length).force_encoding("UTF-8")
+      end
+
+      def utf16_string(offset)
+        length = u16(offset)
+        offset += 2
+        if (length & 0x8000) != 0
+          length = ((length & 0x7fff) << 16) | u16(offset)
+          offset += 2
+        end
+        @bytes.byteslice(offset, length * 2).force_encoding("UTF-16LE").encode("UTF-8")
+      end
+
+      def read_length8(offset)
+        first = @bytes.getbyte(offset)
+        if (first & 0x80) == 0
+          [first, offset + 1]
+        else
+          second = @bytes.getbyte(offset + 1)
+          [((first & 0x7f) << 8) | second, offset + 2]
+        end
       end
 
       def u16(offset)

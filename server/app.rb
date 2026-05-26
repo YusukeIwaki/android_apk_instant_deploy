@@ -1,11 +1,13 @@
 # frozen_string_literal: true
 
 require "json"
+require "logger"
 require "securerandom"
 require "sinatra/base"
 require "time"
 require "uri"
 require_relative "lib/apk_inspector"
+require_relative "lib/fcm_push_client"
 require_relative "lib/models"
 require_relative "lib/object_store"
 require_relative "lib/security"
@@ -21,6 +23,16 @@ module ApkInstantDeploy
       set :show_exceptions, :after_handler
       set :host_authorization, { permitted_hosts: [] }
       set :views, File.expand_path("views", __dir__)
+      default_fcm_push_enabled = ENV.fetch("RACK_ENV", "development") == "test" ? "false" : "true"
+      fcm_push_enabled = ENV.fetch("FCM_PUSH_ENABLED", default_fcm_push_enabled)
+      set :fcm_push_enabled, !%w[0 false no].include?(fcm_push_enabled.downcase)
+      set :fcm_push_client_factory, FcmPushClientFactory.new
+      fcm_event_logger = Logger.new($stdout)
+      fcm_event_logger.level = Logger::INFO
+      fcm_event_logger.formatter = proc do |severity, datetime, _progname, message|
+        "#{datetime.utc.iso8601} #{severity} #{message}\n"
+      end
+      set :fcm_event_logger, fcm_event_logger
       enable :sessions
       set :session_secret, SecureRandom.hex(64)
     end
@@ -136,6 +148,11 @@ module ApkInstantDeploy
         app.releases.order(version_code: :desc, id: :desc).first
       end
 
+      def app_display_name(app)
+        display_name = app.app_profile&.display_name.to_s.strip
+        display_name.empty? ? app.package_name : display_name
+      end
+
       def policy_entry_payload(entry)
         app = entry.app
         release = latest_release_for(app)
@@ -144,20 +161,22 @@ module ApkInstantDeploy
         {
           app: {
             id: app.id,
-            package_name: app.package_name
+            package_name: app.package_name,
+            display_name: app_display_name(app)
           },
           install_mode: entry.install_mode,
           install: {
             release: { id: release.id },
             version_code: release.version_code,
-            version_name: release.version_name
+            version_name: release.version_name,
+            artifact_sha256: release.artifact.sha256
           }
         }
       end
 
       def admin_policy_payload(device, policy)
         revision = policy.current_revision
-        entries = revision ? revision.device_policy_app_entries.includes(:app).map { |entry| policy_entry_payload(entry) }.compact : []
+        entries = revision ? revision.device_policy_app_entries.includes(app: :app_profile).map { |entry| policy_entry_payload(entry) }.compact : []
         {
           device_policy: {
             identifier: device.identifier,
@@ -170,7 +189,7 @@ module ApkInstantDeploy
 
       def device_policy_payload(device, policy)
         revision = policy.current_revision
-        entries = revision ? revision.device_policy_app_entries.includes(:app).map { |entry| policy_entry_payload(entry) }.compact : []
+        entries = revision ? revision.device_policy_app_entries.includes(app: :app_profile).map { |entry| policy_entry_payload(entry) }.compact : []
         {
           device_policy_revision: { id: revision.id },
           updated_at: timestamp(policy.updated_at),
@@ -201,7 +220,8 @@ module ApkInstantDeploy
         if notification.app
           payload[:app] = {
             id: notification.app.id,
-            package_name: notification.app.package_name
+            package_name: notification.app.package_name,
+            display_name: app_display_name(notification.app)
           }
         end
         payload
@@ -260,8 +280,45 @@ module ApkInstantDeploy
         end
       end
 
+      def upsert_fcm_push_token!(device, fcm_push_token)
+        record = device.fcm_push_token || FcmPushToken.new(device: device)
+        record.assign_attributes(
+          token_hash: Security.hmac(fcm_push_token),
+          encrypted_token: Security.encrypt_token(fcm_push_token),
+          last_registered_at: Time.now.utc
+        )
+        record.save!
+        record
+      end
+
       def notify_policy_updated(device, policy)
-        logger.info("policy updated for #{device.identifier} at #{timestamp(policy.updated_at)}")
+        settings.fcm_event_logger.info("policy updated for #{device.identifier} at #{timestamp(policy.updated_at)}")
+        return unless settings.fcm_push_enabled
+
+        token = device.fcm_push_token
+        unless token
+          settings.fcm_event_logger.warn("fcm push skipped for #{device.identifier}: fcm token is not registered")
+          return
+        end
+
+        payload = {
+          type: "POLICY_UPDATED",
+          identifier: device.identifier,
+          device_policy_revision_id: policy.current_revision_id,
+          device_policy_updated_at: timestamp(policy.updated_at)
+        }
+        fcm_push_token_value = Security.decrypt_token(token.encrypted_token)
+        fcm_push_client = settings.fcm_push_client_factory.call(fcm_push_token_value)
+        fcm_push_client.logger = settings.fcm_event_logger if fcm_push_client.respond_to?(:logger=)
+        fcm_push_client.send_message(payload)
+      rescue FcmPushClient::NotConfigured => e
+        settings.fcm_event_logger.warn("fcm push skipped for #{device.identifier}: #{e.message}")
+      rescue FcmPushClient::Error => e
+        settings.fcm_event_logger.warn("fcm push failed for #{device.identifier}: #{e.message}")
+      rescue ArgumentError, OpenSSL::Cipher::CipherError => e
+        settings.fcm_event_logger.warn("fcm token decrypt failed for #{device.identifier}: #{e.message}")
+      rescue StandardError => e
+        settings.fcm_event_logger.error("fcm push failed for #{device.identifier}: #{e.class}: #{e.message}")
       end
 
       def public_base_url
@@ -276,6 +333,30 @@ module ApkInstantDeploy
           server_base_url: public_base_url
         )
         "apkdist://register-device?#{query}"
+      end
+
+      def companion_app_package_name
+        ENV.fetch("COMPANION_APP_PACKAGE_NAME", "io.github.yusukeiwaki.android_apk_instant_deploy.alpha")
+      end
+
+      def amapi_application_policy_payload(identifier, secret, display_name)
+        {
+          packageName: companion_app_package_name,
+          installType: "FORCE_INSTALLED",
+          defaultPermissionPolicy: "GRANT",
+          permissionGrants: [
+            {
+              permission: "android.permission.POST_NOTIFICATIONS",
+              policy: "GRANT"
+            }
+          ],
+          managedConfiguration: {
+            server_base_url: public_base_url,
+            device_registration_identifier: identifier,
+            device_registration_secret: secret,
+            display_name: display_name
+          }
+        }
       end
 
       def h(text)
@@ -380,12 +461,7 @@ module ApkInstantDeploy
         device = Device.create!(device_identifier: device_identifier, registered_at: Time.now.utc)
         DeviceProfile.create!(device: device, display_name: display_name)
         DeviceCredential.create!(device: device, token_hmac: Security.hmac(device_auth_token), issued_at: Time.now.utc)
-        FcmPushToken.create!(
-          device: device,
-          token_hash: Security.hmac(fcm_push_token),
-          encrypted_token: Security.encrypt_token(fcm_push_token),
-          last_registered_at: Time.now.utc
-        )
+        upsert_fcm_push_token!(device, fcm_push_token)
         token.destroy!
       end
 
@@ -428,12 +504,12 @@ module ApkInstantDeploy
         halt 400, error_response("INVALID_APK", "file must be a parseable APK.", 400)
       end
 
+      if Artifact.exists?(sha256: metadata.sha256)
+        halt 400, error_response("ARTIFACT_ALREADY_EXISTS", "The exact same APK artifact has already been uploaded. Re-uploading the same package_name and version_code is allowed only when the APK checksum differs.", 400)
+      end
+
       app = App.find_by(package_name: metadata.package_name)
       if app
-        if app.releases.where(version_code: metadata.version_code).exists?
-          halt 400, error_response("VERSION_ALREADY_EXISTS", "A release with the same package_name and version_code already exists. Bump version_code in the APK and re-upload.", 400)
-        end
-
         existing_cert = app.releases.joins(:artifact).where.not(artifacts: { signing_cert_sha256: "UNKNOWN" }).pick("artifacts.signing_cert_sha256")
         if existing_cert && metadata.signing_cert_sha256 != "UNKNOWN" && existing_cert != metadata.signing_cert_sha256
           halt 400, error_response("SIGNING_CERT_MISMATCH", "Signing certificate differs from the previously registered release for this package.", 400)
@@ -456,7 +532,7 @@ module ApkInstantDeploy
         object_store.put(stored_key, uploaded[:tempfile].path)
         artifact.update!(s3_key: stored_key)
 
-        app ||= App.create!(package_name: metadata.package_name)
+        app ||= App.create_or_find_by!(package_name: metadata.package_name)
         AppProfile.find_or_initialize_by(app: app).tap do |profile|
           profile.display_name = metadata.display_name
           profile.save!
@@ -473,7 +549,7 @@ module ApkInstantDeploy
       json_response({ artifact: artifact_payload(artifact) }, 201)
     rescue ActiveRecord::RecordNotUnique
       object_store.delete(stored_key) if stored_key
-      halt 400, error_response("VERSION_ALREADY_EXISTS", "A release with the same package_name and version_code already exists. Bump version_code in the APK and re-upload.", 400)
+      halt 400, error_response("ARTIFACT_ALREADY_EXISTS", "The exact same APK artifact has already been uploaded. Re-uploading the same package_name and version_code is allowed only when the APK checksum differs.", 400)
     rescue Aws::S3::Errors::ServiceError
       halt 502, error_response("ARTIFACT_UPLOAD_FAILED", "Failed to store the uploaded APK. Retry the upload.", 502)
     end
@@ -586,9 +662,23 @@ module ApkInstantDeploy
       json_response(device_policy_payload(device, policy))
     end
 
+    put "/api/devices/me/fcm_push_token" do
+      device = current_device
+      payload = parsed_json_body
+      fcm_push_token = payload["fcm_push_token"].to_s.strip
+      halt 400, error_response("FCM_PUSH_TOKEN_REQUIRED", "fcm_push_token is required.", 400) if fcm_push_token.empty?
+
+      token = upsert_fcm_push_token!(device, fcm_push_token)
+      json_response(
+        fcm_push_token: {
+          registered_at: timestamp(token.last_registered_at)
+        }
+      )
+    end
+
     get "/api/notifications" do
       device = current_device
-      notifications = device.notifications.includes(:app).order(created_at: :desc, id: :desc).map { |notification| notification_payload(notification) }
+      notifications = device.notifications.includes(app: :app_profile).order(created_at: :desc, id: :desc).map { |notification| notification_payload(notification) }
       json_response({ notifications: notifications })
     end
 
@@ -706,6 +796,8 @@ module ApkInstantDeploy
         @error = "expires_in_minutes must be a positive integer."
         return render_page :"devices/new", title: "Issue device registration token", locals: { result: nil }
       end
+      managed_config_display_name = params["managed_config_display_name"].to_s.strip
+      managed_config_display_name = "AMAPI test device" if managed_config_display_name.empty?
 
       issued_at = Time.now.utc
       expires_at = issued_at + (expires_in * 60)
@@ -726,9 +818,13 @@ module ApkInstantDeploy
       result = {
         identifier: token.device_identifier.identifier,
         secret: secret,
+        managed_config_display_name: managed_config_display_name,
         issued_at: token.issued_at,
         expires_at: token.expires_at,
-        deep_link: deep_link
+        deep_link: deep_link,
+        amapi_application_policy_json: JSON.pretty_generate(
+          amapi_application_policy_payload(token.device_identifier.identifier, secret, managed_config_display_name)
+        )
       }
       render_page :"devices/new", title: "Issue device registration token", locals: { result: result }
     end
@@ -805,13 +901,13 @@ module ApkInstantDeploy
         redirect "/apps/new"
       end
 
+      if Artifact.exists?(sha256: metadata.sha256)
+        set_flash(:danger, "The exact same APK artifact has already been uploaded. The same package_name and versionCode can be uploaded again only when the APK checksum differs.")
+        redirect "/apps/new"
+      end
+
       app = App.find_by(package_name: metadata.package_name)
       if app
-        if app.releases.where(version_code: metadata.version_code).exists?
-          set_flash(:danger, "Release #{metadata.package_name} versionCode=#{metadata.version_code} already exists.")
-          redirect "/apps/new"
-        end
-
         existing_cert = app.releases.joins(:artifact).where.not(artifacts: { signing_cert_sha256: "UNKNOWN" }).pick("artifacts.signing_cert_sha256")
         if existing_cert && metadata.signing_cert_sha256 != "UNKNOWN" && existing_cert != metadata.signing_cert_sha256
           set_flash(:danger, "Signing certificate differs from the previously registered release.")
@@ -837,7 +933,7 @@ module ApkInstantDeploy
           object_store.put(stored_key, uploaded[:tempfile].path)
           artifact.update!(s3_key: stored_key)
 
-          created_app ||= App.create!(package_name: metadata.package_name)
+          created_app ||= App.create_or_find_by!(package_name: metadata.package_name)
           AppProfile.find_or_initialize_by(app: created_app).tap do |profile|
             profile.display_name = metadata.display_name
             profile.save!
@@ -852,7 +948,7 @@ module ApkInstantDeploy
         end
       rescue ActiveRecord::RecordNotUnique
         object_store.delete(stored_key) if stored_key
-        set_flash(:danger, "A release with the same package_name and version_code already exists.")
+        set_flash(:danger, "The exact same APK artifact has already been uploaded. The same package_name and versionCode can be uploaded again only when the APK checksum differs.")
         redirect "/apps/new"
       rescue Aws::S3::Errors::ServiceError
         set_flash(:danger, "Failed to store the uploaded APK. Retry the upload.")

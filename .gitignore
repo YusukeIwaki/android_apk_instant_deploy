@@ -10,6 +10,9 @@ local.properties
 
 androidapp/keystore.properties
 androidapp/app/release.keystore
+androidapp/app/google-services.json
+*.hprof
+server/config/firebase-service-account.json
 
 development/node_modules/
 development/dist/

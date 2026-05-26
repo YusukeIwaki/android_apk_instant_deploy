@@ -95,7 +95,7 @@ create_table "artifacts", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t
   t.datetime "updated_at", null: false
 
   t.index ["s3_key"], name: "index_artifacts_on_s3_key", unique: true
-  t.index ["sha256"], name: "index_artifacts_on_sha256"
+  t.index ["sha256"], name: "index_artifacts_on_sha256", unique: true
 end
 
 create_table "releases", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
@@ -106,8 +106,18 @@ create_table "releases", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
   t.datetime "created_at", null: false
   t.datetime "updated_at", null: false
 
-  t.index ["app_id", "version_code"], name: "index_releases_on_app_id_and_version_code", unique: true
+  t.index ["app_id"], name: "index_releases_on_app_id"
+  t.index ["app_id", "version_code"], name: "index_releases_on_app_id_and_version_code", ignore: true
   t.index ["artifact_id"], name: "index_releases_on_artifact_id", unique: true
+end
+
+execute "ALTER TABLE releases DROP INDEX index_releases_on_app_id_and_version_code, ADD INDEX index_releases_on_app_id_and_version_code (app_id, version_code)" do |connection|
+  rows = connection.select_all("SHOW INDEX FROM releases WHERE Key_name = 'index_releases_on_app_id_and_version_code'").to_a
+  rows.any? { |row| row.fetch("Non_unique").to_i == 0 }
+end
+
+execute "ALTER TABLE releases ADD INDEX index_releases_on_app_id_and_version_code (app_id, version_code)" do |connection|
+  connection.select_all("SHOW INDEX FROM releases WHERE Key_name = 'index_releases_on_app_id_and_version_code'").to_a.empty?
 end
 
 create_table "device_policies", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|

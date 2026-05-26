@@ -9,7 +9,7 @@
         <input type="file" name="file" id="file" class="form-control" accept=".apk,application/vnd.android.package-archive" required>
         <div class="form-text">
           The package name, versionCode, versionName, display name, and signing certificate are extracted from the uploaded APK.
-          A duplicate (package_name, versionCode) is rejected.
+          Re-uploading the same package_name and versionCode creates another release; the newest release is selected for policy delivery.
         </div>
       </div>
       <button class="btn btn-primary" type="submit">Upload</button>

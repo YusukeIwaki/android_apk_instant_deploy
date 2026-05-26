@@ -13,14 +13,17 @@ services:
       DATABASE_PORT: "3306"
       DATABASE_SSL_CA: /mysql-certs/ca.pem
       DATABASE_USERNAME: apk
+      FCM_SERVICE_ACCOUNT_JSON: /app/config/firebase-service-account.json
       RACK_ENV: development
       S3_BUCKET: apk-artifacts
       S3_DOWNLOAD_URL_EXPIRES_IN: "900"
       S3_ENDPOINT: http://floci:4566
       S3_FORCE_PATH_STYLE: "true"
       S3_UPLOAD_URL_EXPIRES_IN: "900"
+      SQL_LOG: "true"
       TOKEN_ENCRYPTION_SECRET: local-token-encryption-secret
       TOKEN_HMAC_SECRET: local-token-hmac-secret
+      VERBOSE_QUERY_LOGS: "true"
     ports:
       - "4567:4567"
     depends_on:

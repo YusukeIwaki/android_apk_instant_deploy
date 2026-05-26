@@ -11,7 +11,9 @@ module ApkInstantDeploy
 
     def establish_connection
       ActiveRecord.default_timezone = :utc
-      ActiveRecord::Base.logger = Logger.new($stdout) if ENV.fetch("SQL_LOG", "false") == "true"
+      sql_log_enabled = env_enabled?("SQL_LOG", false)
+      ActiveRecord::Base.logger = Logger.new($stdout) if sql_log_enabled
+      ActiveRecord.verbose_query_logs = env_enabled?("VERBOSE_QUERY_LOGS", sql_log_enabled)
       ActiveRecord::Base.establish_connection(database_config)
     end
 
@@ -25,6 +27,13 @@ module ApkInstantDeploy
       env = ENV.fetch("RACK_ENV", "development")
       config_path = File.expand_path("../config/database.yml", __dir__)
       YAML.safe_load(ERB.new(File.read(config_path)).result, aliases: true).fetch(env)
+    end
+
+    def env_enabled?(key, default)
+      value = ENV.fetch(key, nil)
+      return default if value.nil?
+
+      !%w[0 false no off].include?(value.downcase)
     end
   end
 end
