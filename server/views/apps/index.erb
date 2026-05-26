@@ -1,0 +1,43 @@
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h1 class="h3 mb-0">Apps</h1>
+  <a href="/apps/new" class="btn btn-primary btn-sm">Upload APK</a>
+</div>
+
+<div class="table-card">
+  <% if apps.empty? %>
+    <p class="text-muted small mb-0">No apps have been uploaded yet.</p>
+  <% else %>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Package</th>
+            <th>Display name</th>
+            <th>Latest version</th>
+            <th class="text-end">Releases</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% apps.each do |app|
+               latest = app.releases.max_by { |r| [r.version_code, r.id] }
+          %>
+            <tr>
+              <td><a href="/apps/<%= app.id %>"><code><%= h(app.package_name) %></code></a></td>
+              <td><%= h(app.app_profile&.display_name) %></td>
+              <td>
+                <% if latest %>
+                  <%= h(latest.version_name) %> <span class="text-muted small">(code <%= latest.version_code %>)</span>
+                <% else %>
+                  <span class="text-muted">—</span>
+                <% end %>
+              </td>
+              <td class="text-end"><%= app.releases.size %></td>
+              <td><%= h(timestamp(app.updated_at)) %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>

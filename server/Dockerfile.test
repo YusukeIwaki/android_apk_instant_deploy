@@ -1,0 +1,18 @@
+FROM ruby:4.0-alpine
+
+WORKDIR /app
+
+ENV HOST="0.0.0.0" \
+    PORT="4567" \
+    RACK_ENV="test"
+
+RUN apk add --no-cache build-base mariadb-dev
+
+COPY Gemfile Gemfile.lock ./
+RUN bundle install
+
+COPY . .
+
+EXPOSE 4567
+
+CMD ["bundle", "exec", "smartest", "smartest/"]

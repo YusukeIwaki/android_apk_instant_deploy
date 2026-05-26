@@ -1,0 +1,70 @@
+<h1 class="h3 mb-4">Dashboard</h1>
+
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm">
+      <div class="card-body">
+        <div class="text-muted small">Registered devices</div>
+        <div class="display-6"><%= device_count %></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm">
+      <div class="card-body">
+        <div class="text-muted small">Apps</div>
+        <div class="display-6"><%= app_count %></div>
+        <div class="text-muted small mt-1"><%= release_count %> releases</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm">
+      <div class="card-body">
+        <div class="text-muted small">Policies in effect</div>
+        <div class="display-6"><%= policy_count %></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm">
+      <div class="card-body">
+        <div class="text-muted small">Pending registration tokens</div>
+        <div class="display-6"><%= pending_token_count %></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="table-card">
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="h5 mb-0">Recent sync reports</h2>
+    <a href="/devices" class="btn btn-sm btn-outline-secondary">View devices</a>
+  </div>
+  <% if recent_reports.empty? %>
+    <p class="text-muted small mb-0">No sync reports yet.</p>
+  <% else %>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th>Revision</th>
+            <th>Actions</th>
+            <th>Reported at</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% recent_reports.each do |report| %>
+            <tr>
+              <td><a href="/devices/<%= h(report.device.identifier) %>"><code><%= h(report.device.identifier) %></code></a></td>
+              <td>#<%= report.device_policy_revision_id %></td>
+              <td><%= Array(report.actions).length %></td>
+              <td><%= h(timestamp(report.reported_at)) %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>

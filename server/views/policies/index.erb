@@ -1,0 +1,47 @@
+<h1 class="h3 mb-3">Policies</h1>
+<p class="text-muted">Each device has its own policy revision. Edit a row to publish a new revision.</p>
+
+<div class="table-card">
+  <% if devices.empty? %>
+    <p class="text-muted small mb-0">No devices registered yet.</p>
+  <% else %>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th>Display name</th>
+            <th>Revision</th>
+            <th>Apps</th>
+            <th>Updated</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <% devices.each do |device|
+               policy = device.device_policy
+               revision = policy&.current_revision
+               entry_count = revision ? revision.device_policy_app_entries.size : 0
+          %>
+            <tr>
+              <td><a href="/devices/<%= h(device.identifier) %>"><code><%= h(device.identifier) %></code></a></td>
+              <td><%= h(device.device_profile&.display_name) %></td>
+              <td>
+                <% if revision %>
+                  <span class="badge bg-success">rev #<%= revision.id %></span>
+                <% else %>
+                  <span class="badge bg-secondary">none</span>
+                <% end %>
+              </td>
+              <td><%= entry_count %></td>
+              <td><%= h(timestamp(policy&.updated_at)) %></td>
+              <td class="text-end">
+                <a href="/policies/<%= h(device.identifier) %>/edit" class="btn btn-sm btn-primary">Edit</a>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>

@@ -1,0 +1,51 @@
+<div class="mb-3"><a href="/apps" class="text-decoration-none">&larr; Back to apps</a></div>
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <div>
+    <h1 class="h4 mb-0"><code><%= h(app.package_name) %></code></h1>
+    <p class="text-muted mb-0"><%= h(profile&.display_name) %></p>
+  </div>
+  <a href="/apps/new" class="btn btn-primary btn-sm">Upload new version</a>
+</div>
+
+<div class="table-card">
+  <h2 class="h6 text-muted mb-3">Releases</h2>
+  <% if releases.empty? %>
+    <p class="text-muted small mb-0">No releases.</p>
+  <% else %>
+    <div class="table-responsive">
+      <table class="table align-middle mb-0">
+        <thead>
+          <tr>
+            <th>versionCode</th>
+            <th>versionName</th>
+            <th>Filename</th>
+            <th>Size</th>
+            <th>SHA-256</th>
+            <th>Signing cert</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <% releases.each do |release|
+               artifact = release.artifact
+          %>
+            <tr>
+              <td><%= release.version_code %></td>
+              <td><%= h(release.version_name) %></td>
+              <td><code class="small"><%= h(artifact.filename) %></code></td>
+              <td class="small"><%= artifact.size_bytes %> bytes</td>
+              <td><code class="small"><%= h(artifact.sha256[0, 16]) %>…</code></td>
+              <td><code class="small"><%= h(artifact.signing_cert_sha256[0, 16]) %>…</code></td>
+              <td class="text-end">
+                <form method="post" action="/apps/<%= app.id %>/releases/<%= release.id %>/delete" class="d-inline" onsubmit="return confirm('Delete this release?');">
+                  <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>

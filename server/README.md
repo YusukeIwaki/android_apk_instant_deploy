@@ -1,73 +1,55 @@
 # Server
 
-Sinatra based control-plane skeleton for APK distribution.
+Sinatra implementation of the API described in `development/public/openapi.yaml`.
 
 ## Run
-
-The server is Docker-first and uses S3-compatible object storage for APK artifacts. The local Compose stack starts:
-
-- Sinatra server on `http://localhost:4567`
-- Swagger UI OpenAPI preview on `http://localhost:8000`
-- MySQL for ActiveRecord metadata
-- Floci AWS emulator on the Compose network only
-- `apk-artifacts` bucket creation job
 
 ```sh
 cd server
 docker compose up --build
-```
-
-Run database migrations with Ridgepole:
-
-```sh
-cd server
 docker compose run --rm migrate
 ```
 
-The `migrate` service runs:
+The local server listens on `http://localhost:4567`. Admin endpoints require:
 
 ```sh
-bundle exec ridgepole --config config/database.yml --env development --file db/Schemafile --apply
+Authorization: Bearer dev-admin-token
 ```
 
-## Endpoints
+Set `ADMIN_TOKEN`, `TOKEN_HMAC_SECRET`, and `TOKEN_ENCRYPTION_SECRET` for non-local environments.
 
-- `GET /health`
-- `GET /api/storage`
-- `POST /api/artifacts/presigned_uploads`
-- `POST /api/releases`
-- `GET /api/releases`
-- `GET /api/releases/:release_id/artifact_url`
+Sinatra 4's Host Authorization is disabled for this development server so ngrok and physical-device testing work without host allow-list churn. If generated artifact URLs must always use a specific public origin, set `PUBLIC_BASE_URL`, for example `https://example.ngrok-free.app`.
+
+Device registration deep links also include `server_base_url`. When testing through ngrok, open the admin UI through ngrok or set `PUBLIC_BASE_URL` so QR/deep link registration points the Android app at the tunnel URL instead of `localhost`.
+
+If you previously ran the old skeleton server, reset the local MySQL volume before applying this schema:
+
+```sh
+docker compose down -v
+docker compose up --build
+docker compose run --rm migrate
+```
+
+## Implemented API
+
+- `POST /admin/device_registration_tokens`
 - `POST /api/devices`
-- `GET /api/devices`
-- `POST /api/jobs`
-- `GET /api/devices/:device_id/sync`
-- `POST /api/install_results`
+- `DELETE /admin/devices/:identifier`
+- `POST /admin/artifacts`
+- `GET /admin/apps`
+- `DELETE /admin/releases/:release_id`
+- `GET /api/releases/:release_id/artifact_url`
+- `GET /admin/devices/:identifier/policy`
+- `PUT /admin/devices/:identifier/policy`
+- `GET /api/devices/me/policy`
+- `POST /api/devices/me/policy_sync_results`
 
-## S3 artifact flow
+## Notes
 
-Create a presigned upload URL:
+`POST /admin/artifacts` accepts a single multipart field named `file`. The server validates APK structure, extracts manifest metadata, stores the APK object, creates `apps` / `app_profiles` / `app_icons` / `artifacts` / `releases`, and rejects duplicate `(app, version_code)` uploads.
 
-```sh
-curl -sS http://localhost:4567/api/artifacts/presigned_uploads \
-  -H 'Content-Type: application/json' \
-  -d '{"filename":"app.apk"}'
-```
+Object storage defaults to S3 when `S3_BUCKET` is set. In Compose, Floci is only reachable from other containers on the Compose network. Device-facing artifact URLs point at the Sinatra server, and the server streams the object from Floci.
 
-Upload the APK using the returned `upload_url`. In the local Compose stack, the URL points at `http://floci:4566` and is reachable from containers on the Compose network, not from the host. Keep the content type aligned with the signed request:
+Set `OBJECT_STORE=local` to store APK bytes under `server/storage/artifacts` and return local download URLs.
 
-```sh
-curl -X PUT '<upload_url>' \
-  -H 'Content-Type: application/vnd.android.package-archive' \
-  --upload-file app.apk
-```
-
-Register release metadata using the returned `s3_key`:
-
-```sh
-curl -sS http://localhost:4567/api/releases \
-  -H 'Content-Type: application/json' \
-  -d '{"package_name":"com.example.app","version_code":1,"s3_key":"<s3_key>"}'
-```
-
-APK artifacts are stored in S3/Floci. Release, device, rollout job, and install result metadata are stored in MySQL through ActiveRecord.
+APK signing certificate extraction uses `APKSIGNER_PATH` or `apksigner` when available. If neither `apksigner` nor a v1 signature certificate is available, `signing_cert_sha256` is recorded as `UNKNOWN`; existing known certificates are still enforced when present.

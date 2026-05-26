@@ -1,0 +1,18 @@
+<div class="mb-3"><a href="/apps" class="text-decoration-none">&larr; Back to apps</a></div>
+<h1 class="h3 mb-4">Upload APK</h1>
+
+<div class="card">
+  <div class="card-body">
+    <form method="post" action="/apps" enctype="multipart/form-data">
+      <div class="mb-3">
+        <label for="file" class="form-label">APK file</label>
+        <input type="file" name="file" id="file" class="form-control" accept=".apk,application/vnd.android.package-archive" required>
+        <div class="form-text">
+          The package name, versionCode, versionName, display name, and signing certificate are extracted from the uploaded APK.
+          A duplicate (package_name, versionCode) is rejected.
+        </div>
+      </div>
+      <button class="btn btn-primary" type="submit">Upload</button>
+    </form>
+  </div>
+</div>

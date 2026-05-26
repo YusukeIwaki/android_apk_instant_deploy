@@ -1,50 +1,187 @@
-create_table "devices", id: { type: :string, limit: 191 }, collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
-  t.string "name"
-  t.boolean "amapi_managed", null: false, default: false
-  t.string "model"
-  t.integer "sdk_int"
-  t.datetime "last_seen_at", null: false
+create_table "device_identifiers", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.string "identifier", null: false
   t.datetime "created_at", null: false
   t.datetime "updated_at", null: false
+
+  t.index ["identifier"], name: "index_device_identifiers_on_identifier", unique: true
 end
 
-create_table "releases", id: { type: :string, limit: 191 }, collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+create_table "device_registration_tokens", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_identifier_id", null: false
+  t.string "secret_hash", null: false
+  t.datetime "issued_at", null: false
+  t.datetime "expires_at", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["device_identifier_id"], name: "index_device_registration_tokens_on_identifier", unique: true
+end
+
+create_table "devices", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_identifier_id", null: false
+  t.datetime "registered_at", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["device_identifier_id"], name: "index_devices_on_device_identifier", unique: true
+end
+
+create_table "device_profiles", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_id", null: false
+  t.string "display_name", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["device_id"], name: "index_device_profiles_on_device_id", unique: true
+end
+
+create_table "device_credentials", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_id", null: false
+  t.string "token_hmac", null: false
+  t.datetime "issued_at", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["device_id"], name: "index_device_credentials_on_device_id", unique: true
+  t.index ["token_hmac"], name: "index_device_credentials_on_token_hmac", unique: true
+end
+
+create_table "fcm_push_tokens", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_id", null: false
+  t.string "token_hash", null: false
+  t.text "encrypted_token", null: false
+  t.datetime "last_registered_at", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["device_id"], name: "index_fcm_push_tokens_on_device_id", unique: true
+  t.index ["token_hash"], name: "index_fcm_push_tokens_on_token_hash"
+end
+
+create_table "apps", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
   t.string "package_name", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["package_name"], name: "index_apps_on_package_name", unique: true
+end
+
+create_table "app_profiles", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "app_id", null: false
+  t.string "display_name", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["app_id"], name: "index_app_profiles_on_app_id", unique: true
+end
+
+create_table "app_icons", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "app_id", null: false
+  t.text "image_data"
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["app_id"], name: "index_app_icons_on_app_id", unique: true
+end
+
+create_table "artifacts", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.string "filename", null: false
+  t.string "content_type", null: false
+  t.string "s3_key", null: false
+  t.string "sha256", null: false
+  t.bigint "size_bytes", null: false
+  t.string "signing_cert_sha256", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["s3_key"], name: "index_artifacts_on_s3_key", unique: true
+  t.index ["sha256"], name: "index_artifacts_on_sha256"
+end
+
+create_table "releases", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "app_id", null: false
+  t.bigint "artifact_id", null: false
   t.integer "version_code", null: false
-  t.string "version_name"
-  t.string "s3_key"
-  t.text "artifact_url"
-  t.string "sha256"
-  t.text "changelog"
+  t.string "version_name", null: false, default: ""
   t.datetime "created_at", null: false
   t.datetime "updated_at", null: false
 
-  t.index ["package_name", "version_code"], name: "index_releases_on_package_and_version"
+  t.index ["app_id", "version_code"], name: "index_releases_on_app_id_and_version_code", unique: true
+  t.index ["artifact_id"], name: "index_releases_on_artifact_id", unique: true
 end
 
-create_table "rollout_jobs", id: { type: :string, limit: 191 }, collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
-  t.string "release_id", null: false, limit: 191
-  t.string "device_id", null: false, limit: 191
-  t.string "state", null: false
+create_table "device_policies", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_id", null: false
+  t.bigint "current_revision_id"
   t.datetime "created_at", null: false
   t.datetime "updated_at", null: false
 
-  t.index ["device_id"], name: "index_rollout_jobs_on_device_id"
-  t.index ["release_id"], name: "index_rollout_jobs_on_release_id"
+  t.index ["current_revision_id"], name: "index_device_policies_on_current_revision_id"
+  t.index ["device_id"], name: "index_device_policies_on_device_id", unique: true
 end
 
-create_table "install_results", id: { type: :string, limit: 191 }, collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
-  t.string "rollout_job_id", null: false, limit: 191
-  t.string "state", null: false
-  t.text "reason"
-  t.integer "installed_version_code"
+create_table "device_policy_revisions", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_policy_id", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["device_policy_id"], name: "index_device_policy_revisions_on_device_policy_id"
+end
+
+create_table "device_policy_app_entries", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_policy_revision_id", null: false
+  t.bigint "app_id", null: false
+  t.string "install_mode", null: false
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["app_id"], name: "index_device_policy_app_entries_on_app_id"
+  t.index ["device_policy_revision_id", "app_id"], name: "index_policy_entries_on_revision_and_app", unique: true
+end
+
+create_table "device_policy_sync_reports", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_id", null: false
+  t.bigint "device_policy_revision_id", null: false
+  t.datetime "fetched_policy_updated_at", null: false
+  t.datetime "applied_policy_updated_at", null: false
+  t.json "actions", null: false
   t.datetime "reported_at", null: false
   t.datetime "created_at", null: false
   t.datetime "updated_at", null: false
 
-  t.index ["rollout_job_id"], name: "index_install_results_on_rollout_job_id"
+  t.index ["device_id", "device_policy_revision_id"], name: "index_sync_reports_on_device_and_revision", unique: true
+  t.index ["device_policy_revision_id"], name: "index_sync_reports_on_revision"
 end
 
-add_foreign_key "rollout_jobs", "devices", column: "device_id"
-add_foreign_key "rollout_jobs", "releases", column: "release_id"
-add_foreign_key "install_results", "rollout_jobs", column: "rollout_job_id"
+create_table "notifications", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+  t.bigint "device_id", null: false
+  t.string "kind", null: false
+  t.string "title", null: false
+  t.string "body", null: false
+  t.bigint "app_id"
+  t.datetime "created_at", null: false
+  t.datetime "updated_at", null: false
+
+  t.index ["device_id", "kind", "app_id"], name: "index_notifications_on_device_kind_and_app", unique: true
+  t.index ["device_id", "created_at"], name: "index_notifications_on_device_and_created_at"
+  t.index ["app_id"], name: "index_notifications_on_app_id"
+end
+
+add_foreign_key "device_registration_tokens", "device_identifiers"
+add_foreign_key "devices", "device_identifiers"
+add_foreign_key "device_profiles", "devices"
+add_foreign_key "device_credentials", "devices"
+add_foreign_key "fcm_push_tokens", "devices"
+add_foreign_key "app_profiles", "apps"
+add_foreign_key "app_icons", "apps"
+add_foreign_key "releases", "apps"
+add_foreign_key "releases", "artifacts"
+add_foreign_key "device_policies", "devices"
+add_foreign_key "device_policies", "device_policy_revisions", column: "current_revision_id", on_delete: :nullify
+add_foreign_key "device_policy_revisions", "device_policies"
+add_foreign_key "device_policy_app_entries", "device_policy_revisions"
+add_foreign_key "device_policy_app_entries", "apps", on_delete: :cascade
+add_foreign_key "device_policy_sync_reports", "devices"
+add_foreign_key "device_policy_sync_reports", "device_policy_revisions"
+add_foreign_key "notifications", "devices"
+add_foreign_key "notifications", "apps", on_delete: :cascade

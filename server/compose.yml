@@ -6,6 +6,7 @@ services:
       AWS_ACCESS_KEY_ID: test
       AWS_REGION: us-east-1
       AWS_SECRET_ACCESS_KEY: test
+      ADMIN_TOKEN: dev-admin-token
       DATABASE_HOST: mysql
       DATABASE_NAME: apk_instant_deploy
       DATABASE_PASSWORD: apk
@@ -18,6 +19,8 @@ services:
       S3_ENDPOINT: http://floci:4566
       S3_FORCE_PATH_STYLE: "true"
       S3_UPLOAD_URL_EXPIRES_IN: "900"
+      TOKEN_ENCRYPTION_SECRET: local-token-encryption-secret
+      TOKEN_HMAC_SECRET: local-token-hmac-secret
     ports:
       - "4567:4567"
     depends_on:
@@ -29,6 +32,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - mysql-certs:/mysql-certs:ro
+      - .:/app
 
   migrate:
     build:
@@ -57,6 +61,7 @@ services:
         condition: service_healthy
     volumes:
       - mysql-certs:/mysql-certs:ro
+      - .:/app
     profiles:
       - tools
 
@@ -72,6 +77,7 @@ services:
       MYSQL_USER: apk
     volumes:
       - ./docker/mysql-entrypoint.sh:/usr/local/bin/apk-mysql-entrypoint.sh:ro
+      - ./docker/mysql-init-test-db.sql:/docker-entrypoint-initdb.d/01-create-test-db.sql:ro
       - mysql-certs:/etc/mysql/certs
       - mysql-data:/var/lib/mysql
     healthcheck:
@@ -94,6 +100,88 @@ services:
       timeout: 3s
       retries: 20
 
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.60.0-noble
+    command:
+      - /bin/sh
+      - -c
+      - npx -y playwright@1.60.0 run-server --host 0.0.0.0 --port 8888
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8888 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    profiles:
+      - test
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      ADMIN_TOKEN: dev-admin-token
+      BROWSER: chromium
+      DATABASE_HOST: mysql
+      DATABASE_NAME: apk_instant_deploy_test
+      DATABASE_PASSWORD: apk
+      DATABASE_PORT: "3306"
+      DATABASE_SSL_CA: /mysql-certs/ca.pem
+      DATABASE_USERNAME: apk
+      HEADLESS: "true"
+      OBJECT_STORE: local
+      LOCAL_ARTIFACT_DIR: /tmp/artifacts
+      PLAYWRIGHT_WS_ENDPOINT: ws://playwright:8888/
+      RACK_ENV: test
+      SMARTEST_RAILS_TEST_SERVER_HOST: 0.0.0.0
+      SMARTEST_RAILS_TEST_SERVER_PORT: "4001"
+      SMARTEST_RAILS_BASE_URL: http://test:4001
+      TOKEN_ENCRYPTION_SECRET: test-token-encryption-secret
+      TOKEN_HMAC_SECRET: test-token-hmac-secret
+    depends_on:
+      mysql:
+        condition: service_healthy
+      playwright:
+        condition: service_started
+      test-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - mysql-certs:/mysql-certs:ro
+      - .:/app
+    profiles:
+      - test
+
+  test-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    command:
+      - bundle
+      - exec
+      - ridgepole
+      - --config
+      - config/database.yml
+      - --env
+      - test
+      - --file
+      - db/Schemafile
+      - --apply
+    environment:
+      DATABASE_HOST: mysql
+      DATABASE_NAME: apk_instant_deploy_test
+      DATABASE_PASSWORD: apk
+      DATABASE_PORT: "3306"
+      DATABASE_SSL_CA: /mysql-certs/ca.pem
+      DATABASE_USERNAME: apk
+      RACK_ENV: test
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - mysql-certs:/mysql-certs:ro
+      - .:/app
+    profiles:
+      - test
+
   create-bucket:
     image: amazon/aws-cli:latest
     depends_on:
@@ -109,15 +197,6 @@ services:
     command:
       - |
         aws --endpoint-url=http://floci:4566 s3api create-bucket --bucket apk-artifacts || true
-
-  swagger-ui:
-    image: swaggerapi/swagger-ui
-    environment:
-      SWAGGER_JSON: /openapi.yaml
-    ports:
-      - "8000:8080"
-    volumes:
-      - ./openapi.yaml:/openapi.yaml:ro
 
 volumes:
   floci-data:

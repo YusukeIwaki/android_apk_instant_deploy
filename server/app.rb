@@ -4,8 +4,11 @@ require "json"
 require "securerandom"
 require "sinatra/base"
 require "time"
-require "aws-sdk-s3"
+require "uri"
+require_relative "lib/apk_inspector"
 require_relative "lib/models"
+require_relative "lib/object_store"
+require_relative "lib/security"
 
 module ApkInstantDeploy
   class Server < Sinatra::Base
@@ -16,20 +19,33 @@ module ApkInstantDeploy
       set :bind, ENV.fetch("HOST", "0.0.0.0")
       set :port, ENV.fetch("PORT", "4567")
       set :show_exceptions, :after_handler
+      set :host_authorization, { permitted_hosts: [] }
+      set :views, File.expand_path("views", __dir__)
+      enable :sessions
+      set :session_secret, SecureRandom.hex(64)
     end
 
     before do
-      content_type :json
+      path = request.path_info
+      @flash = session.delete(:flash)
+      if path == "/health" || path.start_with?("/api/") || path.start_with?("/admin/")
+        content_type :json
+      elsif path.start_with?("/artifact_objects/")
+        # signed url path — content type set in handler
+      else
+        require_ui_session! unless path == "/login"
+      end
     end
 
     helpers do
-      def now_iso8601
-        Time.now.utc.iso8601
-      end
-
       def json_response(payload, response_status = 200)
         status response_status
         JSON.pretty_generate(payload)
+      end
+
+      def error_response(code, message, response_status)
+        content_type :json
+        json_response({ error: { code: code, message: message } }, response_status)
       end
 
       def parsed_json_body
@@ -38,141 +54,260 @@ module ApkInstantDeploy
 
         JSON.parse(body)
       rescue JSON::ParserError
-        halt 400, json_response(error: "invalid_json")
+        halt 400, error_response("INVALID_REQUEST", "Request body is not valid JSON.", 400)
       end
 
-      def require_fields!(payload, *fields)
-        missing = fields.select { |field| payload[field.to_s].to_s.strip.empty? }
-        return if missing.empty?
+      def bearer_token
+        authorization = request.env["HTTP_AUTHORIZATION"].to_s
+        return nil unless authorization.start_with?("Bearer ")
 
-        halt 422, json_response(error: "missing_fields", fields: missing)
+        authorization.delete_prefix("Bearer ").strip
       end
 
-      def require_any_field!(payload, *fields)
-        return if fields.any? { |field| !payload[field.to_s].to_s.strip.empty? }
+      def require_admin!
+        token = bearer_token
+        if token.to_s.empty?
+          halt 401, error_response("ADMIN_AUTH_REQUIRED", "Admin bearer token is required.", 401)
+        end
 
-        halt 422, json_response(error: "missing_one_of", fields: fields)
+        expected = ENV.fetch("ADMIN_TOKEN", "dev-admin-token")
+        return if Security.secure_compare(Security.hmac(token), Security.hmac(expected))
+
+        halt 401, error_response("ADMIN_AUTH_INVALID", "Admin bearer token is invalid or has been revoked.", 401)
       end
 
-      def pagination
-        offset = [Integer(params.fetch("offset", "0")), 0].max
-        limit = Integer(params.fetch("limit", "30"))
-        limit = 30 if limit <= 0
-        limit = [limit, 100].min
+      def current_device
+        token = bearer_token
+        if token.to_s.empty?
+          halt 401, error_response("DEVICE_AUTH_REQUIRED", "Device bearer token is required. Re-register the device if it was previously valid.", 401)
+        end
 
-        { offset: offset, limit: limit }
-      rescue ArgumentError
-        halt 422, json_response(error: "invalid_pagination")
-      end
+        credential = DeviceCredential.find_by(token_hmac: Security.hmac(token))
+        unless credential
+          halt 401, error_response("DEVICE_AUTH_REQUIRED", "Device bearer token is required. Re-register the device if it was previously valid.", 401)
+        end
 
-      def list_response(collection_name, records, total_count, offset)
-        {
-          collection_name => records,
-          total_count: total_count,
-          count: records.length,
-          offset: offset
-        }
-      end
-
-      def s3_bucket
-        ENV.fetch("S3_BUCKET")
-      end
-
-      def s3_region
-        ENV.fetch("AWS_REGION", "ap-northeast-1")
-      end
-
-      def s3_force_path_style?
-        ENV.fetch("S3_FORCE_PATH_STYLE", "false") == "true"
-      end
-
-      def s3_credentials
-        Aws::Credentials.new(
-          ENV.fetch("AWS_ACCESS_KEY_ID"),
-          ENV.fetch("AWS_SECRET_ACCESS_KEY")
-        )
-      end
-
-      def s3_client(endpoint: ENV["S3_ENDPOINT"])
-        options = {
-          region: s3_region,
-          credentials: s3_credentials,
-          force_path_style: s3_force_path_style?
-        }
-        options[:endpoint] = endpoint unless endpoint.to_s.empty?
-
-        Aws::S3::Client.new(options)
-      end
-
-      def s3_presigner
-        endpoint = ENV.fetch("S3_PUBLIC_ENDPOINT", ENV["S3_ENDPOINT"])
-        Aws::S3::Presigner.new(client: s3_client(endpoint: endpoint))
-      end
-
-      def presigned_download_url(s3_key)
-        s3_presigner.presigned_url(
-          :get_object,
-          bucket: s3_bucket,
-          key: s3_key,
-          expires_in: Integer(ENV.fetch("S3_DOWNLOAD_URL_EXPIRES_IN", "900"))
-        )
+        credential.device
       end
 
       def timestamp(value)
         value&.utc&.iso8601
       end
 
-      def release_payload(release)
-        artifact_url = release.s3_key.to_s.empty? ? release.artifact_url : presigned_download_url(release.s3_key)
+      def positive_integer(value)
+        integer = Integer(value)
+        integer.positive? ? integer : nil
+      rescue ArgumentError, TypeError
+        nil
+      end
+
+      def object_store
+        @object_store ||= ObjectStore.build(self)
+      end
+
+      def artifact_payload(artifact)
         {
-          id: release.id,
-          package_name: release.package_name,
-          version_code: release.version_code,
-          version_name: release.version_name,
-          s3_key: release.s3_key,
-          artifact_url: artifact_url,
-          sha256: release.sha256,
-          changelog: release.changelog,
-          created_at: timestamp(release.created_at),
-          updated_at: timestamp(release.updated_at)
+          id: artifact.id,
+          filename: artifact.filename,
+          sha256: artifact.sha256,
+          size_bytes: artifact.size_bytes,
+          signing_cert_sha256: artifact.signing_cert_sha256
         }
       end
 
-      def device_payload(device)
+      def apps_payload
+        apps = App.includes(:releases).order(updated_at: :desc, id: :desc).map do |app|
+          {
+            id: app.id,
+            package_name: app.package_name,
+            releases: app.releases.sort_by { |release| [-release.version_code, -release.id] }.map do |release|
+              {
+                id: release.id,
+                version_code: release.version_code,
+                version_name: release.version_name
+              }
+            end
+          }
+        end
+        { apps: apps }
+      end
+
+      def latest_release_for(app)
+        app.releases.order(version_code: :desc, id: :desc).first
+      end
+
+      def policy_entry_payload(entry)
+        app = entry.app
+        release = latest_release_for(app)
+        return nil unless release
+
         {
-          id: device.id,
-          name: device.name,
-          amapi_managed: device.amapi_managed,
-          model: device.model,
-          sdk_int: device.sdk_int,
-          last_seen_at: timestamp(device.last_seen_at),
-          created_at: timestamp(device.created_at),
-          updated_at: timestamp(device.updated_at)
+          app: {
+            id: app.id,
+            package_name: app.package_name
+          },
+          install_mode: entry.install_mode,
+          install: {
+            release: { id: release.id },
+            version_code: release.version_code,
+            version_name: release.version_name
+          }
         }
       end
 
-      def job_payload(job)
+      def admin_policy_payload(device, policy)
+        revision = policy.current_revision
+        entries = revision ? revision.device_policy_app_entries.includes(:app).map { |entry| policy_entry_payload(entry) }.compact : []
         {
-          id: job.id,
-          release_id: job.release_id,
-          device_id: job.device_id,
-          state: job.state,
-          created_at: timestamp(job.created_at),
-          updated_at: timestamp(job.updated_at)
+          device_policy: {
+            identifier: device.identifier,
+            current_revision: { id: revision&.id },
+            updated_at: timestamp(policy.updated_at),
+            entries: entries
+          }
         }
       end
 
-      def install_result_payload(result)
+      def device_policy_payload(device, policy)
+        revision = policy.current_revision
+        entries = revision ? revision.device_policy_app_entries.includes(:app).map { |entry| policy_entry_payload(entry) }.compact : []
         {
-          id: result.id,
-          job_id: result.rollout_job_id,
-          state: result.state,
-          reason: result.reason,
-          installed_version_code: result.installed_version_code,
-          reported_at: timestamp(result.reported_at),
-          created_at: timestamp(result.created_at),
-          updated_at: timestamp(result.updated_at)
+          device_policy_revision: { id: revision.id },
+          updated_at: timestamp(policy.updated_at),
+          server_time: Time.now.utc.iso8601,
+          entries: entries
         }
+      end
+
+      def create_empty_policy_for_device!(device)
+        DevicePolicy.transaction do
+          policy = device.device_policy || DevicePolicy.create!(device: device)
+          unless policy.current_revision
+            revision = policy.device_policy_revisions.create!
+            policy.update!(current_revision: revision)
+          end
+          policy
+        end
+      end
+
+      def notification_payload(notification)
+        payload = {
+          id: notification.id,
+          kind: notification.kind,
+          title: notification.title,
+          body: notification.body,
+          created_at: timestamp(notification.created_at)
+        }
+        if notification.app
+          payload[:app] = {
+            id: notification.app.id,
+            package_name: notification.app.package_name
+          }
+        end
+        payload
+      end
+
+      def sync_report_payload(report)
+        {
+          id: report.id,
+          device_policy_revision: { id: report.device_policy_revision_id },
+          fetched_policy_updated_at: timestamp(report.fetched_policy_updated_at),
+          applied_policy_updated_at: timestamp(report.applied_policy_updated_at),
+          reported_at: timestamp(report.reported_at),
+          actions: report.actions
+        }
+      end
+
+      def validate_policy_entries!(payload)
+        entries = payload["entries"]
+        unless entries.is_a?(Array)
+          halt 400, error_response("INVALID_REQUEST", "Request body is not valid JSON.", 400)
+        end
+
+        app_ids = []
+        entries.each do |entry|
+          app_id = positive_integer(entry.dig("app", "id")) if entry.is_a?(Hash)
+          mode = entry["install_mode"] if entry.is_a?(Hash)
+          unless app_id
+            halt 400, error_response("APP_NOT_FOUND_FOR_ENTRY", "One or more entries reference an app that does not exist.", 400)
+          end
+          unless %w[FORCE_INSTALLED AVAILABLE].include?(mode)
+            halt 400, error_response("INSTALL_MODE_INVALID", "install_mode must be one of FORCE_INSTALLED, AVAILABLE.", 400)
+          end
+          app_ids << app_id
+        end
+
+        existing_ids = App.where(id: app_ids).pluck(:id)
+        if app_ids.length != app_ids.uniq.length || existing_ids.sort != app_ids.uniq.sort
+          halt 400, error_response("APP_NOT_FOUND_FOR_ENTRY", "One or more entries reference an app that does not exist.", 400)
+        end
+
+        entries
+      end
+
+      def validate_sync_actions!(actions)
+        return false unless actions.is_a?(Array)
+
+        actions.all? do |action|
+          next false unless action.is_a?(Hash)
+
+          valid = action["package_name"].to_s.strip != "" &&
+            %w[INSTALL UNINSTALL].include?(action["action"]) &&
+            %w[AMAPI_CUSTOM_APP PACKAGE_INSTALLER].include?(action["route"]) &&
+            %w[INSTALLED UNINSTALLED FAILED SKIPPED].include?(action["result"])
+          failed = action["result"] == "FAILED"
+          valid && (!failed || (%w[DOWNLOAD INSTALL].include?(action["phase"]) && action["code"].to_s.strip != ""))
+        end
+      end
+
+      def notify_policy_updated(device, policy)
+        logger.info("policy updated for #{device.identifier} at #{timestamp(policy.updated_at)}")
+      end
+
+      def public_base_url
+        configured = ENV["PUBLIC_BASE_URL"].to_s.strip
+        configured.empty? ? request.base_url : configured.delete_suffix("/")
+      end
+
+      def device_registration_deep_link(identifier, secret)
+        query = URI.encode_www_form(
+          identifier: identifier,
+          secret: secret,
+          server_base_url: public_base_url
+        )
+        "apkdist://register-device?#{query}"
+      end
+
+      def h(text)
+        Rack::Utils.escape_html(text.to_s)
+      end
+
+      def require_ui_session!
+        redirect "/login" unless session[:authenticated]
+      end
+
+      def set_flash(type, message)
+        session[:flash] = { type: type, message: message }
+      end
+
+      def admin_token_matches?(input)
+        expected = ENV.fetch("ADMIN_TOKEN", "dev-admin-token")
+        Security.secure_compare(Security.hmac(input.to_s), Security.hmac(expected))
+      end
+
+      def render_page(view, title:, locals: {})
+        @title = title
+        erb view, locals: locals
+      end
+
+      def valid_artifact_signature?(key)
+        expires_at = Integer(params.fetch("expires_at"))
+        return false if expires_at < Time.now.utc.to_i
+
+        expected = Security.hmac("#{key}:#{expires_at}")
+        Security.secure_compare(params.fetch("signature").to_s, expected)
+      rescue ArgumentError, KeyError
+        false
       end
     end
 
@@ -180,185 +315,685 @@ module ApkInstantDeploy
       json_response(status: "ok", service: "android_apk_instant_deploy")
     end
 
-    get "/api/storage" do
-      json_response(
-        storage_configuration: {
-          type: "s3",
-          bucket: s3_bucket,
-          region: s3_region,
-          endpoint_configured: !ENV["S3_ENDPOINT"].to_s.empty?,
-          public_endpoint_configured: !ENV["S3_PUBLIC_ENDPOINT"].to_s.empty?
-        }
-      )
-    end
-
-    post "/api/artifacts/presigned_uploads" do
+    post "/admin/device_registration_tokens" do
+      require_admin!
       payload = parsed_json_body
-      require_fields!(payload, :filename)
+      expires_in = positive_integer(payload["expires_in_minutes"])
+      unless expires_in
+        halt 400, error_response("EXPIRES_IN_MINUTES_INVALID", "expires_in_minutes must be a positive integer.", 400)
+      end
 
-      filename = File.basename(payload.fetch("filename"))
-      s3_key = payload["s3_key"].to_s.strip
-      s3_key = "artifacts/#{SecureRandom.uuid}/#{filename}" if s3_key.empty?
-      expires_in = Integer(ENV.fetch("S3_UPLOAD_URL_EXPIRES_IN", "900"))
+      issued_at = Time.now.utc
+      expires_at = issued_at + (expires_in * 60)
+      identifier = Security.registration_identifier
+      secret = Security.registration_secret
 
-      upload_url = s3_presigner.presigned_url(
-        :put_object,
-        bucket: s3_bucket,
-        key: s3_key,
-        content_type: payload.fetch("content_type", "application/vnd.android.package-archive"),
-        expires_in: expires_in
-      )
+      token = DeviceRegistrationToken.transaction do
+        device_identifier = DeviceIdentifier.create!(identifier: identifier)
+        DeviceRegistrationToken.create!(
+          device_identifier: device_identifier,
+          secret_hash: Security.hmac(secret),
+          issued_at: issued_at,
+          expires_at: expires_at
+        )
+      end
 
+      deep_link = device_registration_deep_link(identifier, secret)
       json_response(
         {
-          artifact_presigned_upload: {
-            s3_key: s3_key,
-            upload_url: upload_url,
-            expires_in: expires_in
+          device_registration_token: {
+            identifier: token.device_identifier.identifier,
+            registration_secret: secret,
+            issued_at: timestamp(token.issued_at),
+            expires_at: timestamp(token.expires_at),
+            deep_link: deep_link
           }
         },
         201
       )
     end
 
-    get "/api/releases" do
-      page = pagination
-      scope = Release.order(created_at: :desc)
-      releases = scope.offset(page.fetch(:offset)).limit(page.fetch(:limit)).map { |release| release_payload(release) }
-      json_response(list_response(:releases, releases, scope.count, page.fetch(:offset)))
-    end
-
-    post "/api/releases" do
+    post "/api/devices" do
       payload = parsed_json_body
-      require_fields!(payload, :package_name, :version_code)
-      require_any_field!(payload, :s3_key, :artifact_url)
+      display_name = payload["display_name"].to_s.strip
+      fcm_push_token = payload["fcm_push_token"].to_s.strip
+      halt 400, error_response("DISPLAY_NAME_REQUIRED", "display_name is required.", 400) if display_name.empty?
+      halt 400, error_response("FCM_PUSH_TOKEN_REQUIRED", "fcm_push_token is required.", 400) if fcm_push_token.empty?
 
-      release = Release.create!(
-        package_name: payload.fetch("package_name"),
-        version_code: payload.fetch("version_code").to_i,
-        version_name: payload["version_name"],
-        s3_key: payload["s3_key"],
-        artifact_url: payload["artifact_url"],
-        sha256: payload["sha256"],
-        changelog: payload["changelog"]
+      identifier = payload["identifier"].to_s.strip
+      registration_secret = payload["registration_secret"].to_s
+      device_identifier = DeviceIdentifier.find_by(identifier: identifier)
+
+      if device_identifier&.device
+        halt 403, error_response("DEVICE_ALREADY_REGISTERED", "A device already exists for this identifier.", 403)
+      end
+
+      token = device_identifier&.device_registration_token
+      unless token && token.expires_at > Time.now.utc && Security.secure_compare(token.secret_hash, Security.hmac(registration_secret))
+        halt 404, error_response("REGISTRATION_TOKEN_NOT_FOUND", "Registration link is expired, already used, or the secret is incorrect.", 404)
+      end
+
+      device_auth_token = Security.device_auth_token
+      device = nil
+
+      Device.transaction do
+        device = Device.create!(device_identifier: device_identifier, registered_at: Time.now.utc)
+        DeviceProfile.create!(device: device, display_name: display_name)
+        DeviceCredential.create!(device: device, token_hmac: Security.hmac(device_auth_token), issued_at: Time.now.utc)
+        FcmPushToken.create!(
+          device: device,
+          token_hash: Security.hmac(fcm_push_token),
+          encrypted_token: Security.encrypt_token(fcm_push_token),
+          last_registered_at: Time.now.utc
+        )
+        token.destroy!
+      end
+
+      json_response(
+        {
+          device: {
+            identifier: device.identifier,
+            device_auth_token: device_auth_token,
+            profile: { display_name: display_name },
+            registered_at: timestamp(device.registered_at)
+          }
+        },
+        201
       )
-
-      json_response({ release: release_payload(release) }, 201)
+    rescue ActiveRecord::RecordNotUnique
+      halt 403, error_response("DEVICE_ALREADY_REGISTERED", "A device already exists for this identifier.", 403)
     end
 
-    get "/api/releases/:release_id" do
-      release = Release.find_by(id: params.fetch("release_id"))
-      halt 404, json_response(error: "release_not_found") unless release
+    delete "/admin/devices/:identifier" do
+      require_admin!
+      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
+      device = device_identifier&.device
+      halt 404, error_response("DEVICE_NOT_FOUND", "Device was not found.", 404) unless device
 
-      json_response(release: release_payload(release))
+      device.destroy!
+      status 204
+      body ""
+    end
+
+    post "/admin/artifacts" do
+      require_admin!
+      uploaded = params["file"]
+      unless uploaded.is_a?(Hash) && uploaded[:tempfile] && uploaded[:filename]
+        halt 400, error_response("FILE_REQUIRED", 'multipart field "file" is required (exactly one).', 400)
+      end
+
+      begin
+        metadata = ApkInspector.inspect(uploaded[:tempfile].path)
+      rescue ApkInspector::InvalidApk
+        halt 400, error_response("INVALID_APK", "file must be a parseable APK.", 400)
+      end
+
+      app = App.find_by(package_name: metadata.package_name)
+      if app
+        if app.releases.where(version_code: metadata.version_code).exists?
+          halt 400, error_response("VERSION_ALREADY_EXISTS", "A release with the same package_name and version_code already exists. Bump version_code in the APK and re-upload.", 400)
+        end
+
+        existing_cert = app.releases.joins(:artifact).where.not(artifacts: { signing_cert_sha256: "UNKNOWN" }).pick("artifacts.signing_cert_sha256")
+        if existing_cert && metadata.signing_cert_sha256 != "UNKNOWN" && existing_cert != metadata.signing_cert_sha256
+          halt 400, error_response("SIGNING_CERT_MISMATCH", "Signing certificate differs from the previously registered release for this package.", 400)
+        end
+      end
+
+      artifact = nil
+      stored_key = nil
+
+      Artifact.transaction do
+        artifact = Artifact.create!(
+          filename: File.basename(uploaded[:filename]),
+          content_type: uploaded[:type].to_s.empty? ? "application/vnd.android.package-archive" : uploaded[:type],
+          s3_key: "artifacts/pending/#{SecureRandom.uuid}/#{File.basename(uploaded[:filename])}",
+          sha256: metadata.sha256,
+          size_bytes: metadata.size_bytes,
+          signing_cert_sha256: metadata.signing_cert_sha256
+        )
+        stored_key = "artifacts/#{artifact.id}/#{artifact.filename}"
+        object_store.put(stored_key, uploaded[:tempfile].path)
+        artifact.update!(s3_key: stored_key)
+
+        app ||= App.create!(package_name: metadata.package_name)
+        AppProfile.find_or_initialize_by(app: app).tap do |profile|
+          profile.display_name = metadata.display_name
+          profile.save!
+        end
+        AppIcon.find_or_create_by!(app: app)
+        Release.create!(
+          app: app,
+          artifact: artifact,
+          version_code: metadata.version_code,
+          version_name: metadata.version_name.to_s
+        )
+      end
+
+      json_response({ artifact: artifact_payload(artifact) }, 201)
+    rescue ActiveRecord::RecordNotUnique
+      object_store.delete(stored_key) if stored_key
+      halt 400, error_response("VERSION_ALREADY_EXISTS", "A release with the same package_name and version_code already exists. Bump version_code in the APK and re-upload.", 400)
+    rescue Aws::S3::Errors::ServiceError
+      halt 502, error_response("ARTIFACT_UPLOAD_FAILED", "Failed to store the uploaded APK. Retry the upload.", 502)
+    end
+
+    get "/admin/apps" do
+      require_admin!
+      json_response(apps_payload)
+    end
+
+    delete "/admin/releases/:release_id" do
+      require_admin!
+      release = Release.includes(:artifact, :app).find_by(id: params.fetch("release_id"))
+      halt 404, error_response("RELEASE_NOT_FOUND", "Release was not found.", 404) unless release
+
+      artifact = release.artifact
+      app = release.app
+
+      begin
+        object_store.delete(artifact.s3_key)
+      rescue Aws::S3::Errors::ServiceError
+        halt 502, error_response("ARTIFACT_DELETE_FAILED", "Failed to remove the stored APK object. The release was not deleted.", 502)
+      end
+
+      Release.transaction do
+        release.destroy!
+        artifact.destroy!
+        app.destroy! unless app.releases.exists?
+      end
+
+      status 204
+      body ""
     end
 
     get "/api/releases/:release_id/artifact_url" do
+      current_device
       release = Release.find_by(id: params.fetch("release_id"))
-      halt 404, json_response(error: "release_not_found") unless release
+      halt 404, error_response("RELEASE_NOT_FOUND", "Release was not found.", 404) unless release
 
+      detail = object_store.download_url(release.artifact.s3_key)
       json_response(
         release_artifact_url: {
-          release_id: release.id,
-          artifact_url: release_payload(release)[:artifact_url]
+          release: { id: release.id },
+          artifact_url: detail.url,
+          expires_at: timestamp(detail.expires_at)
         }
       )
     end
 
-    get "/api/devices" do
-      page = pagination
-      scope = Device.order(updated_at: :desc)
-      devices = scope.offset(page.fetch(:offset)).limit(page.fetch(:limit)).map { |device| device_payload(device) }
-      json_response(list_response(:devices, devices, scope.count, page.fetch(:offset)))
+    get "/artifact_objects/*" do
+      store = object_store
+      key = URI.decode_www_form_component(params.fetch("splat").first)
+      halt 403, error_response("ARTIFACT_URL_EXPIRED", "Artifact download URL is expired or invalid.", 403) unless valid_artifact_signature?(key)
+
+      content_type "application/vnd.android.package-archive"
+      headers "Content-Disposition" => "attachment; filename=\"#{File.basename(key)}\""
+
+      if store.respond_to?(:local_path)
+        path = store.local_path(key)
+        halt 404 unless File.file?(path)
+
+        send_file path, filename: File.basename(path), disposition: "attachment"
+      else
+        body store.read(key)
+      end
     end
 
-    post "/api/devices" do
+    get "/admin/devices/:identifier/policy" do
+      require_admin!
+      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
+      device = device_identifier&.device
+      halt 404, error_response("DEVICE_NOT_FOUND", "Device was not found.", 404) unless device
+
+      policy = device.device_policy
+      unless policy&.current_revision
+        halt 404, error_response("DEVICE_POLICY_NOT_FOUND", "Device policy has not been created for this device yet.", 404)
+      end
+
+      json_response(admin_policy_payload(device, policy))
+    end
+
+    put "/admin/devices/:identifier/policy" do
+      require_admin!
       payload = parsed_json_body
-      device_id = payload["device_id"].to_s.strip
-      device_id = SecureRandom.uuid if device_id.empty?
+      entries = validate_policy_entries!(payload)
+      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
+      device = device_identifier&.device
+      halt 404, error_response("DEVICE_NOT_FOUND", "Device was not found.", 404) unless device
 
-      device = Device.find_or_initialize_by(id: device_id)
-      device.assign_attributes(
-        name: payload["name"],
-        amapi_managed: !!payload["amapi_managed"],
-        model: payload["model"],
-        sdk_int: payload["sdk_int"],
-        last_seen_at: Time.now.utc
-      )
-      device.save!
+      policy = nil
+      DevicePolicy.transaction do
+        policy = device.device_policy || DevicePolicy.create!(device: device)
+        revision = policy.device_policy_revisions.create!
+        entries.each do |entry|
+          DevicePolicyAppEntry.create!(
+            device_policy_revision: revision,
+            app_id: entry.fetch("app").fetch("id"),
+            install_mode: entry.fetch("install_mode")
+          )
+        end
+        policy.update!(current_revision: revision)
+      end
 
-      json_response({ device: device_payload(device) }, 201)
+      notify_policy_updated(device, policy)
+      json_response(admin_policy_payload(device, policy))
     end
 
-    get "/api/devices/:device_id" do
-      device = Device.find_by(id: params.fetch("device_id"))
-      halt 404, json_response(error: "device_not_found") unless device
-
-      json_response(device: device_payload(device))
+    get "/api/devices/me/policy" do
+      device = current_device
+      policy = create_empty_policy_for_device!(device)
+      json_response(device_policy_payload(device, policy))
     end
 
-    post "/api/jobs" do
+    get "/api/notifications" do
+      device = current_device
+      notifications = device.notifications.includes(:app).order(created_at: :desc, id: :desc).map { |notification| notification_payload(notification) }
+      json_response({ notifications: notifications })
+    end
+
+    post "/api/devices/me/policy_sync_results" do
+      device = current_device
       payload = parsed_json_body
-      require_fields!(payload, :release_id, :device_id)
+      revision_id = positive_integer(payload.dig("device_policy_revision", "id"))
+      unless revision_id
+        halt 400, error_response("DEVICE_POLICY_REVISION_REQUIRED", "device_policy_revision.id is required.", 400)
+      end
 
-      release = Release.find_by(id: payload.fetch("release_id"))
-      device = Device.find_by(id: payload.fetch("device_id"))
-      halt 404, json_response(error: "release_not_found") unless release
-      halt 404, json_response(error: "device_not_found") unless device
+      actions = payload["actions"]
+      unless validate_sync_actions!(actions)
+        halt 400, error_response("ACTIONS_INVALID", "actions must be an array of valid PolicySyncAction objects.", 400)
+      end
 
-      job = RolloutJob.create!(
-        release_id: release.id,
-        device_id: device.id,
-        state: "created"
-      )
+      revision = DevicePolicyRevision.joins(:device_policy).find_by(id: revision_id, device_policies: { device_id: device.id })
+      unless revision
+        halt 404, error_response("DEVICE_POLICY_REVISION_NOT_FOUND", "The referenced device_policy_revision was not found for this device.", 404)
+      end
 
-      json_response({ job: job_payload(job) }, 201)
+      existing = DevicePolicySyncReport.find_by(device: device, device_policy_revision: revision)
+      if existing
+        json_response({ policy_sync_result: sync_report_payload(existing) }, 200)
+      else
+        report = DevicePolicySyncReport.create!(
+          device: device,
+          device_policy_revision: revision,
+          fetched_policy_updated_at: Time.parse(payload.fetch("fetched_policy_updated_at")),
+          applied_policy_updated_at: Time.parse(payload.fetch("applied_policy_updated_at")),
+          actions: actions,
+          reported_at: Time.now.utc
+        )
+
+        json_response({ policy_sync_result: sync_report_payload(report) }, 201)
+      end
+    rescue ArgumentError, KeyError
+      halt 400, error_response("INVALID_REQUEST", "Request body is not valid JSON.", 400)
+    rescue ActiveRecord::RecordNotUnique
+      existing = DevicePolicySyncReport.find_by(device: device, device_policy_revision_id: revision_id)
+      json_response({ policy_sync_result: sync_report_payload(existing) }, 200)
     end
 
-    get "/api/jobs/:job_id" do
-      job = RolloutJob.find_by(id: params.fetch("job_id"))
-      halt 404, json_response(error: "job_not_found") unless job
+    # ----- Admin UI -----
 
-      json_response(job: job_payload(job))
+    get "/login" do
+      redirect "/" if session[:authenticated]
+      render_page :login, title: "Sign in"
     end
 
-    get "/api/devices/:device_id/sync" do
-      device = Device.find_by(id: params.fetch("device_id"))
-      halt 404, json_response(error: "device_not_found") unless device
-
-      device.update!(last_seen_at: Time.now.utc)
-      jobs = RolloutJob.includes(:release).where(device_id: device.id).order(created_at: :desc).to_a
-      releases = jobs.map(&:release).uniq.map { |release| release_payload(release) }
-
-      json_response(device: device_payload(device), jobs: jobs.map { |job| job_payload(job) }, releases: releases)
+    post "/login" do
+      token = params["token"].to_s.strip
+      if !token.empty? && admin_token_matches?(token)
+        session[:authenticated] = true
+        redirect "/"
+      else
+        @error = "Admin token is invalid."
+        render_page :login, title: "Sign in"
+      end
     end
 
-    post "/api/install_results" do
-      payload = parsed_json_body
-      require_fields!(payload, :job_id, :state)
+    post "/logout" do
+      session.clear
+      redirect "/login"
+    end
 
-      job = RolloutJob.find_by(id: payload.fetch("job_id"))
-      halt 404, json_response(error: "job_not_found") unless job
+    get "/" do
+      device_count = Device.count
+      app_count = App.count
+      release_count = Release.count
+      pending_token_count = DeviceRegistrationToken.where("expires_at > ?", Time.now.utc).count
+      policy_count = DevicePolicy.where.not(current_revision_id: nil).count
+      recent_reports = DevicePolicySyncReport
+        .includes(device: :device_identifier)
+        .order(reported_at: :desc)
+        .limit(8)
+      render_page :dashboard, title: "Dashboard", locals: {
+        device_count: device_count,
+        app_count: app_count,
+        release_count: release_count,
+        pending_token_count: pending_token_count,
+        policy_count: policy_count,
+        recent_reports: recent_reports
+      }
+    end
 
-      job.update!(state: payload.fetch("state"))
+    # ----- Devices -----
 
-      result = InstallResult.create!(
-        rollout_job_id: job.id,
-        state: payload.fetch("state"),
-        reason: payload["reason"],
-        installed_version_code: payload["installed_version_code"],
-        reported_at: Time.now.utc
-      )
+    get "/devices" do
+      devices = Device.includes(:device_identifier, :device_profile, :device_policy)
+        .order(registered_at: :desc)
+      latest_reports = DevicePolicySyncReport
+        .where(device_id: devices.map(&:id))
+        .order(reported_at: :desc)
+        .group_by(&:device_id)
+        .transform_values(&:first)
+      pending_tokens = DeviceRegistrationToken
+        .includes(:device_identifier)
+        .where("expires_at > ?", Time.now.utc)
+        .order(expires_at: :asc)
+      render_page :"devices/index", title: "Devices", locals: {
+        devices: devices,
+        latest_reports: latest_reports,
+        pending_tokens: pending_tokens
+      }
+    end
 
-      json_response({ install_result: install_result_payload(result) }, 201)
+    get "/devices/new" do
+      render_page :"devices/new", title: "Issue device registration token", locals: { result: nil }
+    end
+
+    post "/devices" do
+      expires_in = positive_integer(params["expires_in_minutes"])
+      unless expires_in
+        @error = "expires_in_minutes must be a positive integer."
+        return render_page :"devices/new", title: "Issue device registration token", locals: { result: nil }
+      end
+
+      issued_at = Time.now.utc
+      expires_at = issued_at + (expires_in * 60)
+      identifier = Security.registration_identifier
+      secret = Security.registration_secret
+
+      token = DeviceRegistrationToken.transaction do
+        device_identifier = DeviceIdentifier.create!(identifier: identifier)
+        DeviceRegistrationToken.create!(
+          device_identifier: device_identifier,
+          secret_hash: Security.hmac(secret),
+          issued_at: issued_at,
+          expires_at: expires_at
+        )
+      end
+
+      deep_link = device_registration_deep_link(identifier, secret)
+      result = {
+        identifier: token.device_identifier.identifier,
+        secret: secret,
+        issued_at: token.issued_at,
+        expires_at: token.expires_at,
+        deep_link: deep_link
+      }
+      render_page :"devices/new", title: "Issue device registration token", locals: { result: result }
+    end
+
+    get "/devices/:identifier" do
+      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
+      device = device_identifier&.device
+      halt 404, render_page(:not_found, title: "Not found") unless device
+
+      policy = device.device_policy
+      revision = policy&.current_revision
+      entries = revision ? revision.device_policy_app_entries.includes(:app).to_a : []
+      reports = device.device_policy_sync_reports.order(reported_at: :desc).limit(10)
+      render_page :"devices/show", title: device.identifier, locals: {
+        device: device,
+        profile: device.device_profile,
+        fcm_token: device.fcm_push_token,
+        policy: policy,
+        revision: revision,
+        entries: entries,
+        reports: reports
+      }
+    end
+
+    post "/devices/:identifier/delete" do
+      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
+      device = device_identifier&.device
+      if device
+        device.destroy!
+        set_flash(:success, "Device #{device_identifier.identifier} was deleted.")
+      else
+        set_flash(:danger, "Device was not found.")
+      end
+      redirect "/devices"
+    end
+
+    post "/device_registration_tokens/:identifier/delete" do
+      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
+      token = device_identifier&.device_registration_token
+      if token
+        DeviceRegistrationToken.transaction do
+          token.destroy!
+          device_identifier.destroy! unless device_identifier.device
+        end
+        set_flash(:success, "Registration token was revoked.")
+      else
+        set_flash(:danger, "Registration token was not found.")
+      end
+      redirect "/devices"
+    end
+
+    # ----- Apps -----
+
+    get "/apps" do
+      apps = App.includes(:app_profile, :releases).order(updated_at: :desc, id: :desc)
+      render_page :"apps/index", title: "Apps", locals: { apps: apps }
+    end
+
+    get "/apps/new" do
+      render_page :"apps/new", title: "Upload APK", locals: {}
+    end
+
+    post "/apps" do
+      uploaded = params["file"]
+      unless uploaded.is_a?(Hash) && uploaded[:tempfile] && uploaded[:filename]
+        set_flash(:danger, "Choose an APK file to upload.")
+        redirect "/apps/new"
+      end
+
+      begin
+        metadata = ApkInspector.inspect(uploaded[:tempfile].path)
+      rescue ApkInspector::InvalidApk => e
+        set_flash(:danger, "Invalid APK: #{e.message}")
+        redirect "/apps/new"
+      end
+
+      app = App.find_by(package_name: metadata.package_name)
+      if app
+        if app.releases.where(version_code: metadata.version_code).exists?
+          set_flash(:danger, "Release #{metadata.package_name} versionCode=#{metadata.version_code} already exists.")
+          redirect "/apps/new"
+        end
+
+        existing_cert = app.releases.joins(:artifact).where.not(artifacts: { signing_cert_sha256: "UNKNOWN" }).pick("artifacts.signing_cert_sha256")
+        if existing_cert && metadata.signing_cert_sha256 != "UNKNOWN" && existing_cert != metadata.signing_cert_sha256
+          set_flash(:danger, "Signing certificate differs from the previously registered release.")
+          redirect "/apps/new"
+        end
+      end
+
+      artifact = nil
+      stored_key = nil
+      created_app = app
+
+      begin
+        Artifact.transaction do
+          artifact = Artifact.create!(
+            filename: File.basename(uploaded[:filename]),
+            content_type: uploaded[:type].to_s.empty? ? "application/vnd.android.package-archive" : uploaded[:type],
+            s3_key: "artifacts/pending/#{SecureRandom.uuid}/#{File.basename(uploaded[:filename])}",
+            sha256: metadata.sha256,
+            size_bytes: metadata.size_bytes,
+            signing_cert_sha256: metadata.signing_cert_sha256
+          )
+          stored_key = "artifacts/#{artifact.id}/#{artifact.filename}"
+          object_store.put(stored_key, uploaded[:tempfile].path)
+          artifact.update!(s3_key: stored_key)
+
+          created_app ||= App.create!(package_name: metadata.package_name)
+          AppProfile.find_or_initialize_by(app: created_app).tap do |profile|
+            profile.display_name = metadata.display_name
+            profile.save!
+          end
+          AppIcon.find_or_create_by!(app: created_app)
+          Release.create!(
+            app: created_app,
+            artifact: artifact,
+            version_code: metadata.version_code,
+            version_name: metadata.version_name.to_s
+          )
+        end
+      rescue ActiveRecord::RecordNotUnique
+        object_store.delete(stored_key) if stored_key
+        set_flash(:danger, "A release with the same package_name and version_code already exists.")
+        redirect "/apps/new"
+      rescue Aws::S3::Errors::ServiceError
+        set_flash(:danger, "Failed to store the uploaded APK. Retry the upload.")
+        redirect "/apps/new"
+      end
+
+      set_flash(:success, "Uploaded #{metadata.package_name} versionCode=#{metadata.version_code}.")
+      redirect "/apps/#{created_app.id}"
+    end
+
+    get "/apps/:id" do
+      app = App.includes(:app_profile, releases: :artifact).find_by(id: params.fetch("id"))
+      halt 404, render_page(:not_found, title: "Not found") unless app
+
+      releases = app.releases.sort_by { |release| [-release.version_code, -release.id] }
+      render_page :"apps/show", title: app.package_name, locals: {
+        app: app,
+        profile: app.app_profile,
+        releases: releases
+      }
+    end
+
+    post "/apps/:id/releases/:release_id/delete" do
+      release = Release.includes(:artifact, :app).find_by(id: params.fetch("release_id"))
+      app_id = params.fetch("id")
+      unless release && release.app_id.to_s == app_id.to_s
+        set_flash(:danger, "Release was not found.")
+        redirect "/apps/#{app_id}"
+      end
+
+      artifact = release.artifact
+      app = release.app
+
+      begin
+        object_store.delete(artifact.s3_key)
+      rescue Aws::S3::Errors::ServiceError
+        set_flash(:danger, "Failed to remove the stored APK object. The release was not deleted.")
+        redirect "/apps/#{app.id}"
+      end
+
+      destroyed_app = false
+      Release.transaction do
+        release.destroy!
+        artifact.destroy!
+        if app.releases.exists?
+          # leave the app in place
+        else
+          app.destroy!
+          destroyed_app = true
+        end
+      end
+
+      set_flash(:success, "Release was deleted.")
+      redirect(destroyed_app ? "/apps" : "/apps/#{app.id}")
+    end
+
+    # ----- Policies -----
+
+    get "/policies" do
+      devices = Device.includes(:device_identifier, :device_profile, device_policy: { current_revision: :device_policy_app_entries })
+        .order(registered_at: :desc)
+      render_page :"policies/index", title: "Policies", locals: { devices: devices }
+    end
+
+    get "/policies/:identifier/edit" do
+      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
+      device = device_identifier&.device
+      halt 404, render_page(:not_found, title: "Not found") unless device
+
+      policy = device.device_policy
+      revision = policy&.current_revision
+      current_entries = {}
+      if revision
+        revision.device_policy_app_entries.each do |entry|
+          current_entries[entry.app_id] = entry.install_mode
+        end
+      end
+      apps = App.includes(:app_profile).order(:package_name)
+      render_page :"policies/edit", title: "Edit policy", locals: {
+        device: device,
+        apps: apps,
+        current_entries: current_entries
+      }
+    end
+
+    post "/policies/:identifier" do
+      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
+      device = device_identifier&.device
+      halt 404, render_page(:not_found, title: "Not found") unless device
+
+      include_ids = Array(params["include"]).map { |id| positive_integer(id) }.compact
+      install_modes = params["install_mode"] || {}
+
+      entries = include_ids.map do |app_id|
+        mode = install_modes[app_id.to_s]
+        unless %w[FORCE_INSTALLED AVAILABLE].include?(mode)
+          set_flash(:danger, "install_mode must be FORCE_INSTALLED or AVAILABLE for every selected app.")
+          redirect "/policies/#{device.identifier}/edit"
+        end
+        { app_id: app_id, install_mode: mode }
+      end
+
+      existing_ids = App.where(id: entries.map { |e| e[:app_id] }).pluck(:id)
+      if entries.map { |e| e[:app_id] }.uniq.length != entries.length || existing_ids.sort != entries.map { |e| e[:app_id] }.uniq.sort
+        set_flash(:danger, "One or more selected apps no longer exist.")
+        redirect "/policies/#{device.identifier}/edit"
+      end
+
+      policy = nil
+      DevicePolicy.transaction do
+        policy = device.device_policy || DevicePolicy.create!(device: device)
+        revision = policy.device_policy_revisions.create!
+        entries.each do |entry|
+          DevicePolicyAppEntry.create!(
+            device_policy_revision: revision,
+            app_id: entry[:app_id],
+            install_mode: entry[:install_mode]
+          )
+        end
+        policy.update!(current_revision: revision)
+      end
+
+      notify_policy_updated(device, policy)
+      set_flash(:success, "Policy updated for #{device.identifier}.")
+      redirect "/policies"
     end
 
     not_found do
-      json_response({ error: "not_found", path: request.path_info }, 404)
+      if request.path_info.start_with?("/api/") || request.path_info.start_with?("/admin/")
+        error_response("NOT_FOUND", "The requested endpoint was not found.", 404)
+      else
+        render_page :not_found, title: "Not found"
+      end
+    end
+
+    error ActiveRecord::RecordInvalid do
+      error_response("INVALID_REQUEST", "Request body is not valid JSON.", 400)
     end
 
     error do
-      json_response(error: "internal_server_error")
+      error_response("INTERNAL_SERVER_ERROR", "An unexpected server error occurred.", 500)
     end
   end
 end

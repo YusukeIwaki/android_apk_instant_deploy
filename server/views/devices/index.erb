@@ -1,0 +1,87 @@
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h1 class="h3 mb-0">Devices</h1>
+  <a href="/devices/new" class="btn btn-primary btn-sm">Issue registration token</a>
+</div>
+
+<div class="table-card mb-4">
+  <h2 class="h6 text-muted mb-3">Registered devices</h2>
+  <% if devices.empty? %>
+    <p class="text-muted small mb-0">No devices have been registered yet.</p>
+  <% else %>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Identifier</th>
+            <th>Display name</th>
+            <th>Registered</th>
+            <th>Policy</th>
+            <th>Last sync</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <% devices.each do |device| %>
+            <% report = latest_reports[device.id] %>
+            <tr>
+              <td><a href="/devices/<%= h(device.identifier) %>"><code><%= h(device.identifier) %></code></a></td>
+              <td><%= h(device.device_profile&.display_name) %></td>
+              <td><%= h(timestamp(device.registered_at)) %></td>
+              <td>
+                <% if device.device_policy&.current_revision_id %>
+                  <span class="badge bg-success">rev #<%= device.device_policy.current_revision_id %></span>
+                <% else %>
+                  <span class="badge bg-secondary">none</span>
+                <% end %>
+              </td>
+              <td><%= h(timestamp(report&.reported_at)) %></td>
+              <td class="text-end">
+                <a href="/policies/<%= h(device.identifier) %>/edit" class="btn btn-sm btn-outline-primary">Policy</a>
+                <form method="post" action="/devices/<%= h(device.identifier) %>/delete" class="d-inline" onsubmit="return confirm('Delete this device?');">
+                  <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>
+
+<div class="table-card">
+  <h2 class="h6 text-muted mb-3">Pending registration tokens</h2>
+  <% unless pending_tokens.empty? %>
+    <p class="text-muted small">The QR code and secret are only shown right after issuance. Issue a new token if you need them again, or revoke unused ones.</p>
+  <% end %>
+  <% if pending_tokens.empty? %>
+    <p class="text-muted small mb-0">No pending registration tokens.</p>
+  <% else %>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Identifier</th>
+            <th>Issued at</th>
+            <th>Expires at</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <% pending_tokens.each do |token| %>
+            <tr>
+              <td><code><%= h(token.device_identifier.identifier) %></code></td>
+              <td><%= h(timestamp(token.issued_at)) %></td>
+              <td><%= h(timestamp(token.expires_at)) %></td>
+              <td class="text-end">
+                <form method="post" action="/device_registration_tokens/<%= h(token.device_identifier.identifier) %>/delete" class="d-inline" onsubmit="return confirm('Revoke this pending registration token?');">
+                  <button class="btn btn-sm btn-outline-danger" type="submit">Revoke</button>
+                </form>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>

@@ -1,0 +1,83 @@
+<div class="mb-3"><a href="/devices" class="text-decoration-none">&larr; Back to devices</a></div>
+<h1 class="h3 mb-4">Issue device registration token</h1>
+
+<% if result %>
+  <div class="card border-success mb-4">
+    <div class="card-body">
+      <h2 class="h5 text-success">Registration token issued</h2>
+      <p class="text-muted small">
+        Scan the QR code from the device, or open the deep link. The secret is shown here only once and will not be retrievable from the pending list — if you lose it, issue a new token.
+        The link expires at <%= h(timestamp(result[:expires_at])) %>.
+      </p>
+      <div class="row g-4 align-items-start">
+        <div class="col-md-4 text-center">
+          <div id="qr-code" class="d-inline-block bg-white p-2 border rounded" data-deep-link="<%= h(result[:deep_link]) %>"></div>
+        </div>
+        <div class="col-md-8">
+          <dl class="row mb-0">
+            <dt class="col-sm-4">Identifier</dt>
+            <dd class="col-sm-8"><code><%= h(result[:identifier]) %></code></dd>
+            <dt class="col-sm-4">Registration secret</dt>
+            <dd class="col-sm-8"><code><%= h(result[:secret]) %></code></dd>
+            <dt class="col-sm-4">Deep link</dt>
+            <dd class="col-sm-8">
+              <code class="d-block mb-2"><%= h(result[:deep_link]) %></code>
+              <button type="button" class="btn btn-sm btn-outline-secondary" data-copy-target="#deep-link-value">Copy</button>
+              <input type="hidden" id="deep-link-value" value="<%= h(result[:deep_link]) %>">
+            </dd>
+            <dt class="col-sm-4">Issued at</dt>
+            <dd class="col-sm-8"><%= h(timestamp(result[:issued_at])) %></dd>
+            <dt class="col-sm-4">Expires at</dt>
+            <dd class="col-sm-8"><%= h(timestamp(result[:expires_at])) %></dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <script>
+    (function () {
+      var container = document.getElementById('qr-code');
+      if (container) {
+        var qr = qrcode(0, 'M');
+        qr.addData(container.dataset.deepLink);
+        qr.make();
+        container.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+        var svg = container.querySelector('svg');
+        if (svg) {
+          svg.removeAttribute('width');
+          svg.removeAttribute('height');
+          svg.style.width = '220px';
+          svg.style.height = '220px';
+        }
+      }
+      document.querySelectorAll('[data-copy-target]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var target = document.querySelector(btn.dataset.copyTarget);
+          if (!target) return;
+          navigator.clipboard.writeText(target.value).then(function () {
+            var original = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(function () { btn.textContent = original; }, 1500);
+          });
+        });
+      });
+    })();
+  </script>
+<% end %>
+
+<div class="card">
+  <div class="card-body">
+    <% if @error %>
+      <div class="alert alert-danger py-2"><%= h(@error) %></div>
+    <% end %>
+    <form method="post" action="/devices">
+      <div class="mb-3">
+        <label for="expires_in_minutes" class="form-label">Expires in (minutes)</label>
+        <input type="number" min="1" name="expires_in_minutes" id="expires_in_minutes" class="form-control" value="60" required>
+        <div class="form-text">Time until the registration link expires.</div>
+      </div>
+      <button class="btn btn-primary" type="submit">Issue token</button>
+    </form>
+  </div>
+</div>

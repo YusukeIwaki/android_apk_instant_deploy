@@ -12,3 +12,9 @@ gem "rackup", "~> 2.2"
 gem "rexml", "~> 3.4"
 gem "ridgepole", "~> 3.2"
 gem "sinatra", "~> 4.1"
+
+group :test do
+  gem "playwright-ruby-client"
+  gem "smartest"
+  gem "websocket-driver"
+end
