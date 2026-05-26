@@ -23,9 +23,10 @@ const newVersionCurl = `curl -X POST https://distribution.example.test/admin/art
   -F "file=@qa-camera-2.4.1-43.apk;type=application/vnd.android.package-archive"
 
 # 既存パッケージの新しいバージョンを追加する場合も同じエンドポイントへ送る。
-# - APK の version_code が新規 (これまで未登録) なら、新しい release 行を追加する
+# - APK の checksum が新規 (これまで未登録) なら、新しい release 行を追加する
+# - 同じ package_name / version_code でも checksum が異なれば新しい release 行を追加する
 # - 古い release はそのまま残る (削除は管理者が明示的に DELETE する)
-# - 同じ (package_name, version_code) が既に存在すれば拒否される (400 VERSION_ALREADY_EXISTS)`;
+# - 完全に同じ APK bytes は拒否される (400 ARTIFACT_ALREADY_EXISTS)`;
 
 const newVersionResponse = `HTTP/1.1 201 Created
 {
@@ -42,17 +43,17 @@ const newVersionResponse = `HTTP/1.1 201 Created
 # 既存パッケージへの新バージョン追加でも、artifact メタデータのみを返す。
 # 「どの release が増えたか」は次の GET /admin/apps から確認する。`;
 
-const versionAlreadyExistsResponse = `HTTP/1.1 400 Bad Request
+const artifactAlreadyExistsResponse = `HTTP/1.1 400 Bad Request
 {
   "error": {
-    "code": "VERSION_ALREADY_EXISTS",
-    "message": "A release with the same package_name and version_code already exists. Bump version_code in the APK and re-upload."
+    "code": "ARTIFACT_ALREADY_EXISTS",
+    "message": "The exact same APK artifact has already been uploaded. Re-uploading the same package_name and version_code is allowed only when the APK checksum differs."
   }
 }
 
 # release は append-only。
-# 同じ (package_name, version_code) を後から差し替えることはできない。
-# 内容を直したい場合は APK の version_code を上げて新しい release として登録する。`;
+# 同じ package_name / version_code でも checksum が異なる APK は別 release として追加する。
+# 完全に同じ APK bytes は二重登録しない。`;
 
 const invalidApkResponse = `HTTP/1.1 400 Bad Request
 {
@@ -183,8 +184,8 @@ const artifactFlow = `flowchart TD
   Receive --> Parse["APKを解析<br/>package_name / version_code / version_name / sha256 / cert<br/>application label / icon"]
   Parse --> Valid{"APKとして受け入れ可能か"}
   Valid -->|いいえ| Reject["400 INVALID_APK で拒否<br/>apps / releases / artifacts / S3は変更しない"]
-  Valid -->|はい| Dup{"(package_name, version_code) が<br/>既に release に存在?"}
-  Dup -->|ある| RejectDup["400 VERSION_ALREADY_EXISTS で拒否<br/>artifacts / S3 にも書かない"]
+  Valid -->|はい| Dup{"同じ sha256 の artifact が<br/>既に存在?"}
+  Dup -->|ある| RejectDup["400 ARTIFACT_ALREADY_EXISTS で拒否<br/>artifacts / S3 にも書かない"]
   Dup -->|ない| CertCheck{"既存 release と署名一致?"}
   CertCheck -->|不一致| RejectCert["400 SIGNING_CERT_MISMATCH で拒否<br/>S3にも書かない"]
   CertCheck -->|一致 or 新規 package| Upload["input[:file]をS3へアップロード"]
@@ -212,15 +213,15 @@ const sequence = `sequenceDiagram
 
   Operator->>Api: POST /admin/artifacts(file)
     Api->>Inspector: input[:file]からAPK metadata / label / iconを抽出
-  alt APKとして受け入れ可能 + 同じ (app, version_code) が無い + 署名一致
+  alt APKとして受け入れ可能 + 同じ artifact sha256 が無い + 署名一致
     Api->>S3: input[:file]をS3 objectとして保存
     Api->>AR: artifactsを作成
     Api->>AR: appsをpackage_nameで作成または参照
     Api->>AR: app_profiles / app_iconsを作成または更新
     Api->>AR: releasesを新規作成 (append-only)
     Api-->>Operator: artifact メタデータを返す
-  else 不正なAPK / 既存 (app, version_code) / 署名不一致
-    Api-->>Operator: 400 INVALID_APK / VERSION_ALREADY_EXISTS / SIGNING_CERT_MISMATCH を返す
+  else 不正なAPK / 既存 artifact sha256 / 署名不一致
+    Api-->>Operator: 400 INVALID_APK / ARTIFACT_ALREADY_EXISTS / SIGNING_CERT_MISMATCH を返す
   end
 
   Operator->>Api: DELETE /admin/releases/:id
@@ -233,7 +234,7 @@ const sequence = `sequenceDiagram
 const lifecycle = `stateDiagram-v2
   [*] --> FileSubmitted: POST /admin/artifacts(file)
   FileSubmitted --> Inspecting: input[:file]を解析
-  Inspecting --> Rejected: APKではない / 解析不可 / 同 (app, version_code) 既存 / 署名不一致
+  Inspecting --> Rejected: APKではない / 解析不可 / 同一 artifact sha256 既存 / 署名不一致
   Inspecting --> StoredInS3: 受け入れ可能
   StoredInS3 --> ArtifactRecorded: artifacts作成
   ArtifactRecorded --> AppResolved: apps を作成 or 参照<br/>(行が無ければ新しい app.id で新規作成)
@@ -285,7 +286,7 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">APIサーバー</th>
             <td>POST /admin/artifacts / DELETE /admin/releases/:id</td>
-            <td>APK解析 → 重複バージョンチェック → 署名検証 → S3保存 → artifact / (必要なら apps) / releases を1トランザクションで確定 (releases は常に append-only)。Release削除時は artifact を destroy して S3 object を削除し、その app の release が0件になったら apps を hard delete (関連 device_policy_app_entries も FK CASCADE で削除)。</td>
+            <td>APK解析 → 重複 checksum チェック → 署名検証 → S3保存 → artifact / (必要なら apps) / releases を1トランザクションで確定 (releases は常に append-only)。Release削除時は artifact を destroy して S3 object を削除し、その app の release が0件になったら apps を hard delete (関連 device_policy_app_entries も FK CASCADE で削除)。</td>
             <td>apps, artifacts, releases, S3 bucket</td>
           </tr>
           <tr>
@@ -322,7 +323,7 @@ const lifecycle = `stateDiagram-v2
       </div>
       <div>
         <dt>releases</dt>
-        <dd>app_id、artifact_id、version_code、version_name を持つバージョン単位の配信対象。app_id + version_code の release がなければ作成し、既にあれば 400 VERSION_ALREADY_EXISTS で拒否する。ユーザーが削除する単位でもあり、削除時には関連artifactの削除へ推移する。</dd>
+        <dd>app_id、artifact_id、version_code、version_name を持つバージョン単位の配信対象。同じ app_id + version_code でも artifact sha256 が異なれば別 release として作成する。ユーザーが削除する単位でもあり、削除時には関連artifactの削除へ推移する。</dd>
       </div>
     </dl>
   </section>
@@ -422,11 +423,11 @@ const lifecycle = `stateDiagram-v2
           <dl class="db-list">
             <div>
               <dt>releases</dt>
-              <dd>常に新規行として追加。古い release.id はそのまま残り続け、artifact と S3 object も削除されない。DevicePolicy は app を参照しているため、新しい release が増えただけで Policy entries は変わらない。端末は次の Policy fetch で「最新release」として新しい version_code を受け取る。</dd>
+              <dd>checksum が未登録なら常に新規行として追加。古い release.id はそのまま残り続け、artifact と S3 object も削除されない。DevicePolicy は app を参照しているため、新しい release が増えただけで Policy entries は変わらない。端末は次の Policy fetch で「最新release」として新しい version_code と artifact sha256 を受け取る。</dd>
             </div>
             <div>
-              <dt>同じ (package_name, version_code) を再送した場合</dt>
-              <dd>400 VERSION_ALREADY_EXISTS で拒否する。artifacts も S3 も触らない。中身を直したい場合は APK の version_code を上げてもらう。</dd>
+              <dt>同じ APK bytes を再送した場合</dt>
+              <dd>400 ARTIFACT_ALREADY_EXISTS で拒否する。artifacts も S3 も触らない。同じ package_name / version_code でも checksum が異なれば新しい release として追加する。</dd>
             </div>
           </dl>
         </div>
@@ -586,16 +587,16 @@ const lifecycle = `stateDiagram-v2
             <td>正しく <code>file</code> 1つだけ送る。複数同時登録は今回スコープ外。</td>
           </tr>
           <tr>
-            <th scope="row">同じ (app, version_code) を再アップロード</th>
-            <td>400 VERSION_ALREADY_EXISTS</td>
+            <th scope="row">同じ APK bytes を再アップロード</th>
+            <td>400 ARTIFACT_ALREADY_EXISTS</td>
             <td>何も書かない。S3にも書かない。既存の release.id / artifact.id は変わらない。</td>
-            <td>APK の version_code を上げて新しい release として登録する。「中身だけ直したい」は許容しない (古い artifact 本体を後から書き換える経路を作らないため)。</td>
+            <td>同じ package_name / versionCode のテスト APK でも、内容が変わっていれば checksum が変わるため新しい release として登録できる。</td>
           </tr>
           <tr>
-            <th scope="row">同じ (app, version_code) を同時に2回アップロード (race)</th>
-            <td>片方 201、もう片方 400 VERSION_ALREADY_EXISTS</td>
-            <td>releases の <code>(app_id, version_code)</code> unique 制約で守る。負けた側は S3 にも書かない。</td>
-            <td>CIの並列実行は同じ version_code を避ける運用にする。</td>
+            <th scope="row">同じ APK bytes を同時に2回アップロード (race)</th>
+            <td>片方 201、もう片方 400 ARTIFACT_ALREADY_EXISTS</td>
+            <td>artifacts の <code>sha256</code> unique 制約で守る。負けた側は S3 にも書かない。</td>
+            <td>CIの並列実行で同じ成果物を二重登録しても片方だけが残る。</td>
           </tr>
           <tr>
             <th scope="row">release削除時、S3 objectのみ削除に失敗</th>
@@ -609,8 +610,8 @@ const lifecycle = `stateDiagram-v2
       <pre class="curl-block"><code>{invalidApkResponse}</code></pre>
       <h3>署名不一致の応答例</h3>
       <pre class="curl-block"><code>{signingCertMismatchResponse}</code></pre>
-      <h3>重複バージョン (VERSION_ALREADY_EXISTS) の応答例</h3>
-      <pre class="curl-block"><code>{versionAlreadyExistsResponse}</code></pre>
+      <h3>重複 artifact (ARTIFACT_ALREADY_EXISTS) の応答例</h3>
+      <pre class="curl-block"><code>{artifactAlreadyExistsResponse}</code></pre>
     </div>
   </section>
 
@@ -624,7 +625,7 @@ const lifecycle = `stateDiagram-v2
       <li><strong>表示メタデータはappsに混ぜない。</strong> application label は <code>app_profiles</code>、launcher icon は Shrine-backed の <code>app_icons</code> に保存する。package_name identity と表示名・画像の lifecycle を分ける。</li>
       <li><strong>build由来情報を登録データに混ぜない。</strong> branch、commit SHA、CIビルド番号、Slack通知用のリリースノートなどは、必要なら別ユースケースとして別の paths / tables で扱う。</li>
       <li><strong>署名は配信前に必ず検証する。</strong> 同じ package_name で署名が変わると、端末のPackageInstallerが必ず失敗する。サーバー側で先に検出して、不整合のあるartifactをS3に書かない。</li>
-      <li><strong>releases は append-only。「差し替え」は無い。</strong> 同じ (package_name, version_code) を後から差し替える経路は提供しない。中身を直したい場合は APK の version_code を上げて新しい release として登録する。古い release が不要なら管理者が明示的に DELETE する。</li>
+      <li><strong>releases は append-only。「差し替え」は無い。</strong> 同じ package_name / version_code でも checksum が異なる APK は新しい release として追加する。完全に同じ APK bytes は <code>artifacts.sha256</code> で二重登録を拒否する。古い release が不要なら管理者が明示的に DELETE する。</li>
       <li><strong>削除は管理者の明示的な操作のみ。</strong> アップロードや新バージョン追加では古い release / artifact / S3 object を一切自動削除しない。これにより「いつの時点でも管理者が知らないうちに過去成果物が消える」状況を避ける。</li>
       <li><strong>S3に書く前にDB検証を終える。</strong> S3 objectを書いてからDB保存に失敗するパターンは作らない。「検証 → S3保存 → DB作成」の順で、DB作成失敗時はS3も巻き戻すか、cleanupジョブで掃除可能な状態にしておく。</li>
       <li><strong>「直接削除したい」は通常 release.delete で十分。</strong> 配信から外す = release削除。APK bytes だけ消したい要求が来ても、通常は release を消すことで artifact も S3 も連動して消えるため、別APIを足す前にユースケースを問い直す。</li>

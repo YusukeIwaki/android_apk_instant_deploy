@@ -28,7 +28,7 @@ const axisMatrix = `flowchart LR
 const amapiPolicy = `{
   "applications": [
     {
-      "packageName": "com.example.apkdist.companion",
+      "packageName": "io.github.yusukeiwaki.android_apk_instant_deploy.alpha",
       "installType": "FORCE_INSTALLED",
       "defaultPermissionPolicy": "GRANT",
       "permissionGrants": [
@@ -218,6 +218,7 @@ const sequence = `sequenceDiagram
     <p>
       端末への導入と初回登録は、同じpolicy内の <code>applications[]</code> に <code>installType</code> と <code>managedConfiguration</code> を並べることでひと括りにします。
       管理者は事前に <code>POST /admin/device_registration_tokens</code> で DeviceRegistrationToken を発行し、その <code>identifier</code> と <code>secret</code> を <code>managedConfiguration</code> に詰めます。
+      管理画面の登録トークン発行結果には、QRコード / deep link とあわせて、この <code>ApplicationPolicy</code> オブジェクトを端末別の値で生成して表示します。
     </p>
     <pre class="curl-block"><code>{amapiPolicy}</code></pre>
     <ul class="usa-list">

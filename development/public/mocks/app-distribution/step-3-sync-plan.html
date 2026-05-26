@@ -151,42 +151,22 @@
         padding: 12px;
         text-align: center;
       }
+
+      .button.disabled {
+        background: #e1e3e1;
+        color: #565c65;
+      }
     </style>
   </head>
   <body>
-    <div class="phone" aria-label="スマートフォン上のPolicy差分同期計画">
+    <div class="phone" aria-label="スマートフォン上のアプリ詳細画面">
       <div class="screen">
         <div class="statusbar"><span>10:13</span><span>5G 100%</span></div>
         <div class="bar">APK Remote Companion</div>
         <div class="body">
-          <h1>これから同期する内容</h1>
-          <p>新しい配信設定に合わせて、必要なアプリをそろえます。</p>
-          <div class="banner">
-            未反映の変更があります。同期を開始してください。
-          </div>
-          <div class="list">
-            <div class="item">
-              <div class="badge install">インストール</div>
-              <div><b>App A v1.0.0</b><span>必須アプリ・ダウンロード中 48%</span></div>
-            </div>
-            <div class="item">
-              <div class="badge keep">そのまま</div>
-              <div><b>App B v1.0.0</b><span>必須アプリ・最新版です</span></div>
-            </div>
-            <div class="item">
-              <div class="badge install">更新</div>
-              <div><b>App C v1.0.0</b><span>必須アプリ・新しいバージョンに更新します</span></div>
-            </div>
-            <div class="item">
-              <div class="badge available">一覧に表示</div>
-              <div><b>App D v1.0.0</b><span>任意アプリ・ご自身で入れたいときに選べます</span></div>
-            </div>
-            <div class="item">
-              <div class="badge remove">削除</div>
-              <div><b>Legacy App</b><span>配信対象から外れたアプリです</span></div>
-            </div>
-          </div>
-          <div class="button">同期中</div>
+          <h1>com.example.appa</h1>
+          <p>version 1.0.0</p>
+          <div class="button disabled">ダウンロード中</div>
         </div>
       </div>
     </div>

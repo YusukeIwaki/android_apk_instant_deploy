@@ -28,22 +28,22 @@ const updatePolicyResponse = `HTTP/1.1 200 OK
       {
         "app": { "id": 12, "package_name": "com.example.appa", "deleted_at": null },
         "install_mode": "FORCE_INSTALLED",
-        "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa" }
+        "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa", "artifact_sha256": "58f7d4..." }
       },
       {
         "app": { "id": 13, "package_name": "com.example.appb", "deleted_at": null },
         "install_mode": "FORCE_INSTALLED",
-        "install": { "release": { "id": 410 }, "version_code": 5, "version_name": "1.2.0" }
+        "install": { "release": { "id": 410 }, "version_code": 5, "version_name": "1.2.0", "artifact_sha256": "9a81c0..." }
       },
       {
         "app": { "id": 14, "package_name": "com.example.appc", "deleted_at": null },
         "install_mode": "FORCE_INSTALLED",
-        "install": { "release": { "id": 520 }, "version_code": 9, "version_name": "0.9.3" }
+        "install": { "release": { "id": 520 }, "version_code": 9, "version_name": "0.9.3", "artifact_sha256": "35cd02..." }
       },
       {
         "app": { "id": 15, "package_name": "com.example.appd", "deleted_at": null },
         "install_mode": "AVAILABLE",
-        "install": { "release": { "id": 612 }, "version_code": 3, "version_name": "0.3.1" }
+        "install": { "release": { "id": 612 }, "version_code": 3, "version_name": "0.3.1", "artifact_sha256": "66ad22..." }
       }
     ]
   }
@@ -71,7 +71,7 @@ const adminPolicyGetResponse = `HTTP/1.1 200 OK
       {
         "app": { "id": 12, "package_name": "com.example.appa" },
         "install_mode": "FORCE_INSTALLED",
-        "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa" }
+        "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa", "artifact_sha256": "58f7d4..." }
       }
     ]
   }
@@ -107,24 +107,24 @@ const fetchPolicyResponse = `HTTP/1.1 200 OK
   "server_time": "2026-05-23T10:12:04+09:00",
   "entries": [
     {
-      "app": { "id": 12, "package_name": "com.example.appa" },
+      "app": { "id": 12, "package_name": "com.example.appa", "display_name": "勤怠アプリ" },
       "install_mode": "FORCE_INSTALLED",
-      "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa" }
+      "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa", "artifact_sha256": "58f7d4..." }
     },
     {
-      "app": { "id": 13, "package_name": "com.example.appb" },
+      "app": { "id": 13, "package_name": "com.example.appb", "display_name": "棚卸アプリ" },
       "install_mode": "FORCE_INSTALLED",
-      "install": { "release": { "id": 410 }, "version_code": 5, "version_name": "1.2.0" }
+      "install": { "release": { "id": 410 }, "version_code": 5, "version_name": "1.2.0", "artifact_sha256": "9a81c0..." }
     },
     {
-      "app": { "id": 14, "package_name": "com.example.appc" },
+      "app": { "id": 14, "package_name": "com.example.appc", "display_name": "配送アプリ" },
       "install_mode": "FORCE_INSTALLED",
-      "install": { "release": { "id": 520 }, "version_code": 9, "version_name": "0.9.3" }
+      "install": { "release": { "id": 520 }, "version_code": 9, "version_name": "0.9.3", "artifact_sha256": "35cd02..." }
     },
     {
-      "app": { "id": 15, "package_name": "com.example.appd" },
+      "app": { "id": 15, "package_name": "com.example.appd", "display_name": "社内ポータル" },
       "install_mode": "AVAILABLE",
-      "install": { "release": { "id": 612 }, "version_code": 3, "version_name": "0.3.1" }
+      "install": { "release": { "id": 612 }, "version_code": 3, "version_name": "0.3.1", "artifact_sha256": "66ad22..." }
     }
   ]
 }
@@ -136,7 +136,7 @@ const downloadUrlCurl = `curl -X GET https://distribution.example.test/api/relea
   -H "Authorization: Bearer $DEVICE_AUTH_TOKEN"
 
 # Policy fetch で受け取った install.release.id をそのまま使う。
-# FORCE_INSTALLED で未インストールまたは要求 version_code と異なる場合だけ取得する。
+# FORCE_INSTALLED で未インストール、要求 version_code が新しい、または同じ version_code で artifact_sha256 が異なる場合だけ取得する。
 # AVAILABLE のアプリは、ユーザーがアプリ内 UI から選んだときだけ取得する。
 # 応答は短命の presigned URL を返す。
 # 端末は WorkManager の download worker に投入し、OkHttp で app-private files に保存する。
@@ -498,12 +498,12 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">3</span>
         <div>
           <h3 id="step-3">entry ごとに DOWNLOAD と INSTALL を進め、リカバリ可能な失敗はリトライする</h3>
-          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code」と「端末上の installed_package_index の version_code」。同期は永続的な entry 進捗ではなく、毎反復で計算する <strong>work list</strong> として扱います。work list は fetched_policy_snapshot、installed_package_index、active_download_jobs、downloaded_artifact_index、failed_artifacts_blacklist からその場で作り、各 work item を1回進めます。既に同じ release.id + version_code の active_download_jobs がある場合は新しい work を enqueue せず、ローカル download state を UI に反映して待ちます。リカバリ可能な失敗では同じ WorkManager job が artifact URL を取り直して retry します。リカバリ不能な失敗だけ failed_artifacts_blacklist に追記し、以後は同じ artifact では再試行しません。</p>
+          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code / artifact_sha256」と「端末上の installed package の versionCode / APK checksum」。同期は永続的な entry 進捗ではなく、毎反復で計算する <strong>work list</strong> として扱います。work list は fetched_policy_snapshot、installed_package_index、active_download_jobs、downloaded_artifact_index、failed_artifacts_blacklist からその場で作り、各 work item を1回進めます。既に同じ release.id + version_code の active_download_jobs がある場合は新しい work を enqueue せず、ローカル download state を UI に反映して待ちます。リカバリ可能な失敗では同じ WorkManager job が artifact URL を取り直して retry します。リカバリ不能な失敗だけ failed_artifacts_blacklist に追記し、以後は同じ artifact では再試行しません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-distribution/step-3-sync-plan.html" title="コンパニオンアプリ: Policy差分同期計画" />
+          <DiagramFrame src="/mocks/app-distribution/step-3-sync-plan.html" title="コンパニオンアプリ: アプリ詳細のダウンロード状態" />
         </div>
         <div class="flow-step__details">
           <h4>必要なときだけ artifact URL を取得する</h4>
@@ -512,7 +512,7 @@ const lifecycle = `stateDiagram-v2
           <dl class="db-list">
             <div>
               <dt>INSTALL対象</dt>
-              <dd>FORCE_INSTALLED かつ「未インストール」または「インストール済み version_code &lt; Policy install.version_code」の entry。</dd>
+              <dd>FORCE_INSTALLED かつ「未インストール」または「インストール済み version_code &lt; Policy install.version_code」または「同じ version_code だが端末上の APK checksum と Policy install.artifact_sha256 が異なる」の entry。</dd>
             </div>
             <div>
               <dt>DOWNLOAD進行中の扱い</dt>
@@ -621,7 +621,7 @@ const lifecycle = `stateDiagram-v2
             <td>1デバイスのあるべきアプリ状態を app 単位で表す。release / version は持たない。</td>
           </tr>
           <tr>
-            <th scope="row">install (release.id, version_code, version_name)</th>
+            <th scope="row">install (release.id, version_code, version_name, artifact_sha256)</th>
             <td>サーバーが GET 応答時に各 entry へ付与</td>
             <td>その時点で配信すべき具体的リリース。サーバーが apps.id から「最新release」を解決した結果。DB には保存せず、毎回の GET で算出する。</td>
           </tr>
@@ -754,10 +754,10 @@ const lifecycle = `stateDiagram-v2
             <td>FCM 再受信で pending_policy_fetch が立つ。途中の同期は最後まで進めても、次の fetch で fetched が更新され、work list は永続データから再計算される。</td>
           </tr>
           <tr>
-            <th scope="row">差し替えで release.id は同じだが artifact が更新された</th>
+            <th scope="row">同じ version_code で artifact が更新された</th>
             <td>—</td>
-            <td>install.version_name のみが変わる。release.id は同じ。</td>
-            <td>端末は version_code を見て差分を判断するので、同じ release.id でも version_name のみが変わった場合は同期不要。version_code が変わっていれば更新する。</td>
+            <td>新しい release.id と artifact_sha256 が返る。version_code は同じ。</td>
+            <td>端末は version_code が同じでも artifact_sha256 が端末上の APK checksum と異なれば更新する。version_name のみが変わった場合は同期不要。</td>
           </tr>
         </tbody>
       </table>

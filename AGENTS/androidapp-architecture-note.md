@@ -11,7 +11,8 @@ The app is intentionally framework-light:
 - `MainActivity.java` owns screen state, navigation, user input, permission prompts, and orchestration.
 - `ApiClient.java` owns API HTTP calls, JSON parsing, and API error mapping.
 - `AppStore.java` owns local `SharedPreferences` persistence for server URL, registration credentials, display name, FCM token, pending fetch state, and the last fetched policy JSON.
-- `FcmTokenProvider.java` currently returns a deterministic development token. It is a placeholder for Firebase Messaging integration.
+- `FcmTokenProvider.java` obtains the current Firebase Messaging token for registration.
+- `FcmMessagingService.java` handles FCM data messages and token refresh callbacks.
 - `ApkDownloadManager.java` enqueues unique WorkManager jobs for APK downloads and keeps the app-private file path stable per release/version.
 - `ApkDownloadWorker.java` fetches a fresh artifact URL, streams the APK with OkHttp into app-private storage, updates local progress, and starts installation.
 - `ApkDownloadStore.java` stores active WorkManager job metadata by release/version so repeated taps do not enqueue the same APK multiple times.
@@ -24,7 +25,7 @@ The code currently uses programmatic Android views rather than XML layouts. Keep
 
 ## Registration Flow
 
-The app must be opened through a custom scheme link:
+The app supports two registration inputs. AMAPI managed devices can receive registration values through managed configuration, while manual or unmanaged devices open a custom scheme link:
 
 ```text
 apkdist://register-device?identifier=...&secret=...&server_base_url=...
@@ -34,14 +35,18 @@ Registration is not browser-based AMAPI enrollment. The companion app must run b
 
 Current behavior:
 
-1. `MainActivity.handleIntent` detects the deep link.
-2. If already registered locally, the app shows an already-registered screen and does not post registration again.
-3. If the link includes `server_base_url`, the app validates that it is HTTP(S), saves it, and rebuilds `ApiClient` before registration.
-4. If the link is missing identifier or secret, the app blocks registration.
-5. The registration screen asks for a required display name.
-6. The registration button stays disabled until both display name and FCM token are available.
-7. `ApiClient.registerDevice` calls `POST /api/devices`.
-8. `AppStore.saveRegistration` stores `identifier`, `device_auth_token`, display name, FCM token, and marks policy fetch pending.
+1. `MainActivity` declares `android.content.APP_RESTRICTIONS` and reads `RestrictionsManager.getApplicationRestrictions()` on launch/resume and when `ACTION_APPLICATION_RESTRICTIONS_CHANGED` is received.
+2. If managed configuration includes `device_registration_identifier`, `device_registration_secret`, `server_base_url`, and `display_name`, the app saves the server URL, obtains an FCM token, and calls `POST /api/devices` automatically.
+3. If managed configuration includes identifier/secret but no display name, the app falls back to the registration screen so the user can enter the required display name.
+4. `MainActivity.handleIntent` detects the deep link.
+5. If already registered locally, the app shows an already-registered screen and does not post registration again.
+6. If the link includes `server_base_url`, the app validates that it is HTTP(S), saves it, and rebuilds `ApiClient` before registration.
+7. If the link is missing identifier or secret, the app blocks registration.
+8. The registration screen asks for a required display name.
+9. The registration button stays disabled until both display name and FCM token are available.
+10. `ApiClient.registerDevice` calls `POST /api/devices`.
+11. `AppStore.saveRegistration` stores `identifier`, `device_auth_token`, display name, FCM token, and marks policy fetch pending.
+12. `FcmMessagingService.onNewToken` stores refreshed FCM tokens locally and updates the server via `PUT /api/devices/me/fcm_push_token` when the device is registered.
 
 Do not introduce a device-generated primary identifier. The server/device identity is `devices.identifier`, created from the server-issued `DeviceRegistrationToken` identifier.
 
@@ -66,14 +71,15 @@ Policy entries are split by install mode:
 Install flow:
 
 1. User selects an entry.
-2. The app checks `REQUEST_INSTALL_PACKAGES` capability and sends the user to Android settings when needed.
-3. `ApkDownloadManager` enqueues a WorkManager unique work named by `release_id + version_code` and records the app-private APK path.
-4. `ApkDownloadWorker` calls `GET /api/releases/:release_id/artifact_url` inside the worker so retries obtain a fresh short-lived URL.
-5. `ApkDownloadWorker` streams the APK with OkHttp to `context.getFilesDir()/apk-downloads/*.apk.part`, resumes with HTTP `Range` when a partial file exists and the server supports it, then renames to `.apk`.
-6. While `ApkDownloadStore` has an active job for that release, `MainActivity` disables the matching install action and displays waiting/running/installing progress.
-7. After download completion, `ApkDownloadWorker` passes the app-private APK file to `ApkInstaller`.
-8. `ApkInstaller.install` streams the downloaded APK into a full-install `PackageInstaller` session and commits it.
-9. `InstallNotificationReceiver` handles success, failure, or pending user action and removes the temporary APK file/state when the install reaches a terminal result.
+2. The app treats an install/update as needed when the package is missing, the server `version_code` is newer than the installed one, or the `version_code` is the same but the server `artifact_sha256` differs from the installed APK checksum.
+3. The app checks `REQUEST_INSTALL_PACKAGES` capability and sends the user to Android settings when needed.
+4. `ApkDownloadManager` enqueues a WorkManager unique work named by `release_id + version_code` and records the app-private APK path.
+5. `ApkDownloadWorker` calls `GET /api/releases/:release_id/artifact_url` inside the worker so retries obtain a fresh short-lived URL.
+6. `ApkDownloadWorker` streams the APK with OkHttp to `context.getFilesDir()/apk-downloads/*.apk.part`, resumes with HTTP `Range` when a partial file exists and the server supports it, then renames to `.apk`.
+7. While `ApkDownloadStore` has an active job for that release, `MainActivity` disables the matching install action and displays waiting/running/installing progress.
+8. After download completion, `ApkDownloadWorker` passes the app-private APK file to `ApkInstaller`.
+9. `ApkInstaller.install` streams the downloaded APK into a full-install `PackageInstaller` session and commits it.
+10. `InstallNotificationReceiver` handles success, failure, or pending user action and removes the temporary APK file/state when the install reaches a terminal result.
 
 Android does not allow silent arbitrary APK installs for this companion app. Expect a platform confirmation flow unless the app later becomes a device owner, profile owner, privileged app, or uses another managed-device channel.
 
@@ -99,15 +105,13 @@ Default server URL is `http://10.0.2.2:4567`, which works for Android Emulator t
 
 ## FCM
 
-`FcmTokenProvider` is a development shim and returns `fcm:dev:<sha256>`. This only satisfies the registration contract locally.
+`FcmTokenProvider` retrieves the Firebase Messaging token through Firebase SDK. `FcmMessagingService` handles:
 
-Before using push delivery outside local development:
+- `POLICY_UPDATED` data messages by setting `pending_policy_fetch=true`,
+- deleted-message callbacks by setting `pending_policy_fetch=true` so the next foreground/update path performs a full policy fetch,
+- token refresh by storing the new token and calling `PUT /api/devices/me/fcm_push_token` for registered devices.
 
-- add Firebase dependencies and configuration,
-- retrieve the real Firebase Messaging token asynchronously,
-- handle token refresh,
-- update the server-side `fcm_push_tokens` record when the token changes,
-- keep registration disabled until a valid token is available.
+Registration stays disabled until a valid token is available.
 
 Do not rename server data to `device_push_tokens`; the design calls the table `fcm_push_tokens`.
 

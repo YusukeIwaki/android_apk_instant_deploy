@@ -83,20 +83,22 @@ Device registration:
 3. Android saves `server_base_url`, then posts identifier, secret, display name, and FCM token to `POST /api/devices`.
 4. The server creates device identity/profile/credential/push-token records in one transaction and deletes the registration token.
 5. Reusing the same link returns an already-registered error without changing device, profile, or push-token records.
+6. Later Firebase token refreshes are written through `PUT /api/devices/me/fcm_push_token`.
 
 Artifact upload:
 
 1. Admin uploads exactly one multipart field named `file`.
 2. The server validates the APK, extracts package/version/signing metadata, computes object facts, and stores bytes.
 3. The server creates or updates app profile data and creates one release for the uploaded version.
-4. Duplicate `(app, version_code)` uploads are rejected. Signing certificate mismatches are rejected when the existing and incoming certificates are known.
+4. Duplicate APK bytes are rejected by `artifacts.sha256`, while the same `(app, version_code)` may be uploaded again when the APK checksum differs. Signing certificate mismatches are rejected when the existing and incoming certificates are known.
 
 Policy sync:
 
 1. Admin writes a full policy entry list for a device.
 2. The server creates a new policy revision and flips `current_revision_id`.
-3. Device fetches `GET /api/devices/me/policy`.
-4. Device reports applied actions to `POST /api/devices/me/policy_sync_results`; the server returns the existing report on repeated submission for the same revision.
+3. `notify_policy_updated` sends an FCM data message through `FcmPushClient` after the DB transaction completes. FCM failures are logged and do not roll back the policy revision.
+4. Device fetches `GET /api/devices/me/policy`.
+5. Device reports applied actions to `POST /api/devices/me/policy_sync_results`; the server returns the existing report on repeated submission for the same revision.
 
 ## Development Cautions
 
@@ -105,6 +107,6 @@ Policy sync:
 - When storing or returning secrets, return raw values only at issuance time; persist hashes or encrypted values.
 - Do not put Floci hostnames or internal S3 URLs into device-facing responses unless the deployment intentionally exposes that endpoint.
 - `ApkInspector` has fallbacks for local tooling, but production-quality signing validation should prefer `apksigner`.
-- `notify_policy_updated` is currently a logging stub. Real FCM delivery should be added behind a small adapter and should not change the registration data model.
+- `FcmPushClient` owns HTTP v1 FCM delivery and OAuth token minting from the configured service account JSON. Keep it behind `settings.fcm_push_client_factory` so tests can replace it without network access.
 - When adding Android-visible errors, keep the server error code stable and update `androidapp` handling deliberately.
 - `server/openapi.yaml` is not the canonical local source right now; use `development/public/openapi.yaml` and the Astro pages as the behavior reference unless the project reintroduces a generated copy.

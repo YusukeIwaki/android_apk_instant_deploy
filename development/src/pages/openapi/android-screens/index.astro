@@ -96,7 +96,7 @@ const notificationFlow = `flowchart TB
           <div class="phone-screen">
             <div class="phone-status"><span>9:40</span><span>5G 100%</span></div>
             <header class="app-bar">
-              <span class="app-bar-title">APK Remote Distribution</span>
+              <span class="app-bar-title">APK Instant Deploy</span>
             </header>
             <main class="app-body app-body--center">
               <div class="warning-mark">!</div>
@@ -122,7 +122,7 @@ const notificationFlow = `flowchart TB
           <div class="phone-screen">
             <div class="phone-status"><span>9:41</span><span>5G 100%</span></div>
             <header class="app-bar">
-              <span class="app-bar-title">APK Remote Distribution</span>
+              <span class="app-bar-title">APK Instant Deploy</span>
             </header>
             <main class="app-body">
               <p class="screen-eyebrow">端末登録</p>
@@ -222,7 +222,7 @@ const notificationFlow = `flowchart TB
           <div class="phone-screen">
             <div class="phone-status"><span>10:10</span><span>5G 100%</span></div>
             <header class="app-bar app-bar--with-actions">
-              <span class="app-bar-title">APK Remote Distribution</span>
+              <span class="app-bar-title">APK Instant Deploy</span>
               <button class="app-bar-bell" aria-label="通知一覧を開く">
                 <span class="bell-icon" aria-hidden="true">🔔</span>
               </button>
@@ -230,11 +230,21 @@ const notificationFlow = `flowchart TB
             <main class="app-body app-body--center">
               <h3>ポリシーが未指定です</h3>
               <p class="screen-copy">管理者がこの端末向けのアプリ配信を設定すると、ここに一覧が表示されます。</p>
-              <dl class="home-device-info home-device-info--standalone">
-                <div><dt>端末名</dt><dd>Pixel 8 QA-01</dd></div>
-                <div><dt>サーバー</dt><dd>distribution.example.test</dd></div>
-                <div><dt>アプリバージョン</dt><dd>1.0.0</dd></div>
-              </dl>
+              <div class="home-section-label home-section-label--inline">現在のデバイス</div>
+              <md-list class="home-device-info-list home-device-info--standalone" aria-label="現在のデバイス">
+                <md-list-item>
+                  <div slot="headline">デバイス情報</div>
+                  <div slot="supporting-text">Pixel 8 QA-01</div>
+                </md-list-item>
+                <md-list-item>
+                  <div slot="headline">サーバー情報</div>
+                  <div slot="supporting-text">distribution.example.test</div>
+                </md-list-item>
+                <md-list-item>
+                  <div slot="headline">アプリ情報</div>
+                  <div slot="supporting-text">1.0.0</div>
+                </md-list-item>
+              </md-list>
             </main>
           </div>
         </div>
@@ -254,58 +264,65 @@ const notificationFlow = `flowchart TB
           <div class="phone-screen">
             <div class="phone-status"><span>10:12</span><span>5G 100%</span></div>
             <header class="app-bar app-bar--with-actions">
-              <span class="app-bar-title">APK Remote Distribution</span>
+              <span class="app-bar-title">APK Instant Deploy</span>
               <button class="app-bar-bell app-bar-bell--has-badge" aria-label="通知一覧を開く (2件)">
                 <span class="bell-icon" aria-hidden="true">🔔</span>
                 <span class="bell-badge" aria-hidden="true">2</span>
               </button>
             </header>
-            <main class="app-body app-body--list">
-              <ul class="policy-app-list">
-                <li class="policy-app-row policy-app-row--action">
-                  <div class="policy-app-main">
-                    <strong>勤怠アプリ</strong>
-                    <span>version 2.3</span>
+            <main class="app-body app-body--list app-body--home-list">
+              <div class="home-section-label">ポリシーで指定されたアプリ</div>
+              <md-list class="policy-app-list">
+                <md-list-item type="button">
+                  <div slot="headline">勤怠アプリ</div>
+                  <div slot="supporting-text" class="policy-app-meta">
+                    <span>com.example.unitname.company12345</span>
+                    <span>version 13.4444444.2</span>
+                    <span>インストール準備中</span>
                   </div>
-                  <span class="policy-app-chip">必須</span>
-                </li>
-                <li class="policy-app-row policy-app-row--idle">
-                  <div class="policy-app-main">
-                    <strong>棚卸サポート</strong>
-                    <span>version 1.1</span>
-                  </div>
-                </li>
-                <li class="policy-app-row policy-app-row--action">
-                  <div class="policy-app-main">
-                    <strong>配達ナビ</strong>
-                    <span>version 1.0.5</span>
-                  </div>
-                </li>
-                <li class="policy-app-row policy-app-row--idle">
-                  <div class="policy-app-main">
-                    <strong>来客受付</strong>
-                    <span>version 2.1.3</span>
-                  </div>
-                  <span class="policy-app-chip">必須</span>
-                </li>
-              </ul>
-              <dl class="home-device-info">
-                <div><dt>端末名</dt><dd>Pixel 8 QA-01</dd></div>
-                <div><dt>サーバー</dt><dd>distribution.example.test</dd></div>
-                <div><dt>アプリバージョン</dt><dd>1.0.0</dd></div>
-              </dl>
+                  <span slot="trailing-supporting-text" class="policy-app-chip policy-app-chip--required">必須</span>
+                </md-list-item>
+                <md-list-item type="button">
+                  <div slot="headline">棚卸サポート</div>
+                  <div slot="supporting-text">version 1.1</div>
+                </md-list-item>
+                <md-list-item type="button">
+                  <div slot="headline">配達ナビ</div>
+                  <div slot="supporting-text">version 1.0.5</div>
+                </md-list-item>
+                <md-list-item type="button">
+                  <div slot="headline">来客受付</div>
+                  <div slot="supporting-text">version 2.1.3</div>
+                  <span slot="trailing-supporting-text" class="policy-app-chip policy-app-chip--required">必須</span>
+                </md-list-item>
+              </md-list>
+              <div class="home-section-label">現在のデバイス</div>
+              <md-list class="home-device-info-list" aria-label="現在のデバイス">
+                <md-list-item>
+                  <div slot="headline">デバイス情報</div>
+                  <div slot="supporting-text">Pixel 8 QA-01</div>
+                </md-list-item>
+                <md-list-item>
+                  <div slot="headline">サーバー情報</div>
+                  <div slot="supporting-text">distribution.example.test</div>
+                </md-list-item>
+                <md-list-item>
+                  <div slot="headline">アプリ情報</div>
+                  <div slot="supporting-text">1.0.0</div>
+                </md-list-item>
+              </md-list>
             </main>
           </div>
         </div>
         <div class="screen-notes">
           <h3 id="screen-home-list">ホーム — アプリ一覧</h3>
-          <p>ポリシーで指定された全アプリを 1 リストで表示する画面。必須・任意でセクションを分けず、行末の「必須」チップで識別する。「状態」見出しや件数サマリは置かず、行の背景色だけで「今この行に対応が必要か」を表現する。</p>
+          <p>ポリシーで指定された全アプリを 1 リストで表示する画面。必須・任意でセクションを分けず、行末の「必須」チップで識別する。対応要否は通知一覧とOS通知で扱うため、ホームの行には出さない。</p>
           <dl class="key-value-list screen-meta">
-            <div><dt>行のレイアウト</dt><dd>左に「アプリ名 / version x.y」を 2 行で配置し、垂直方向中央揃え。右端に「必須」チップ（任意アプリでは非表示）。</dd></div>
-            <div><dt>行の背景</dt><dd>未インストール / 更新可能 / 失敗回復 / インストール許可待ちなど「対応が必要」な行は<strong>白背景</strong>。最新で何もすることがない行は<strong>グレー背景</strong>。</dd></div>
+            <div><dt>行のレイアウト</dt><dd>左にアプリ名を置き、補助情報はパッケージ名、version、進行状態を縦に並べる。右端に「必須」チップ（任意アプリでは非表示）。</dd></div>
+            <div><dt>行の状態表示</dt><dd>行背景やチップでは対応要否を示さない。ホームの行はアプリ名、配信バージョン、必須指定だけを表示し、対応が必要なものは通知一覧とOS通知に並べる。</dd></div>
             <div><dt>主な操作</dt><dd>行タップで「アプリ詳細」へ。右上ベルで「通知一覧」へ。下に引っ張って手動同期。</dd></div>
-            <div><dt>下部情報</dt><dd>端末登録名、サーバーの向き先 (<code>server_base_url</code> のホスト)、このアプリ自体のバージョン。独立した「設定」画面は持たない。</dd></div>
-            <div><dt>議論ポイント</dt><dd>「対応が必要」の判定（更新可能の自動判定はサーバー側 latest と version_code を比較するのか、ローカルで保持するか）。行内に進捗を出すか、詳細画面に閉じ込めるか。</dd></div>
+            <div><dt>下部情報</dt><dd>「現在のデバイス」ラベルの下に、デバイス情報、サーバー情報、このアプリ自体のバージョンを Material List として表示する。独立した「設定」画面は持たない。</dd></div>
+            <div><dt>議論ポイント</dt><dd>行内にダウンロード進捗を出すか、詳細画面と通知に閉じ込めるか。</dd></div>
           </dl>
         </div>
       </article>
@@ -318,24 +335,24 @@ const notificationFlow = `flowchart TB
               <span class="app-bar-icon" aria-hidden="true">←</span>
               <span class="app-bar-title">通知</span>
             </header>
-            <main class="app-body app-body--list">
-              <md-list>
+            <main class="app-body app-body--list app-body--notification-list">
+              <md-list class="notification-list">
                 <md-list-item type="button">
-                  <div slot="headline">勤怠アプリ をインストールしてください</div>
-                  <div slot="supporting-text">必須アプリのインストール許可待ち</div>
+                  <div slot="headline">必須アプリのインストールが必要です</div>
+                  <div slot="supporting-text">勤怠アプリ をインストールしてください</div>
                 </md-list-item>
                 <md-list-item type="button">
-                  <div slot="headline">配達ナビ のダウンロードを再試行できます</div>
-                  <div slot="supporting-text">通信できる場所で再試行してください</div>
+                  <div slot="headline">同期を再試行できます</div>
+                  <div slot="supporting-text">通信できる場所で、棚卸サポートの取得をやり直してください。</div>
                 </md-list-item>
               </md-list>
-              <p class="screen-copy screen-meta-line">対応が完了した通知は自動的に消えます。</p>
+              <p class="screen-copy screen-meta-line notification-list-caption">対応が完了した通知は自動的に消えます。</p>
             </main>
           </div>
         </div>
         <div class="screen-notes">
           <h3 id="screen-notifications">通知一覧</h3>
-          <p>ホーム右上のベルから開くアプリ内インボックス。<strong>OS 通知で sticky 表示している項目</strong>と同じ集合をアプリ内でも確認できるようにする。条件が解消された通知はサーバー側で消え、次回 GET 時に一覧から自動で外れる。利用者が手で消すスワイプ削除は提供しない。</p>
+          <p>ホーム右上のベルから開くアプリ内インボックス。<strong>OS 通知で sticky 表示している項目</strong>と同じ集合を、外枠のない Material List で確認できるようにする。条件が解消された通知はサーバー側で消え、次回 GET 時に一覧から自動で外れる。利用者が手で消すスワイプ削除は提供しない。</p>
           <dl class="key-value-list screen-meta">
             <div><dt>取得元</dt><dd><code>GET /api/notifications</code> の <code>notifications</code> 配列。同期完了や WorkManager の進行を反映するため、ホームを開いたタイミングとプル更新時に取得し直す。</dd></div>
             <div><dt>主な操作</dt><dd>行タップで対象「アプリ詳細」へ遷移して対応する。</dd></div>
@@ -355,7 +372,7 @@ const notificationFlow = `flowchart TB
                 <span>いま</span>
               </div>
               <div class="os-notification">
-                <div class="notification-app-line"><span class="tiny-app-icon"></span>APK Remote Distribution</div>
+                <div class="notification-app-line"><span class="tiny-app-icon"></span>APK Instant Deploy</div>
                 <strong>必須アプリのインストールが必要です</strong>
                 <p>勤怠アプリをインストールしてください。</p>
                 <div class="notification-action-row">
@@ -386,7 +403,7 @@ const notificationFlow = `flowchart TB
                 <span>10:28</span>
               </div>
               <div class="os-notification os-notification--warn">
-                <div class="notification-app-line"><span class="tiny-app-icon tiny-app-icon--warn"></span>APK Remote Distribution</div>
+                <div class="notification-app-line"><span class="tiny-app-icon tiny-app-icon--warn"></span>APK Instant Deploy</div>
                 <strong>同期を再試行できます</strong>
                 <p>通信できる場所で、棚卸サポートの取得をやり直してください。</p>
                 <div class="notification-action-row">
@@ -420,7 +437,10 @@ const notificationFlow = `flowchart TB
                 <div class="app-icon">棚</div>
                 <div>
                   <h3>棚卸サポート</h3>
-                  <p class="app-detail-meta">version 1.4.0</p>
+                  <p class="app-detail-meta">
+                    <span>com.example.inventory.support</span>
+                    <span>version 1.4.0</span>
+                  </p>
                 </div>
               </div>
               <div class="app-detail-actions app-detail-actions--single">
@@ -454,7 +474,11 @@ const notificationFlow = `flowchart TB
                 <div class="app-icon">来</div>
                 <div>
                   <h3>来客受付</h3>
-                  <p class="app-detail-meta">version 2.1.3 ・ インストール済み</p>
+                  <p class="app-detail-meta">
+                    <span>com.example.reception</span>
+                    <span>version 2.1.3</span>
+                    <span>インストール済み</span>
+                  </p>
                 </div>
               </div>
               <div class="app-detail-actions app-detail-actions--single">
@@ -469,7 +493,7 @@ const notificationFlow = `flowchart TB
           <p>最新版が入っている任意アプリ。利用者が辞めたいときのアンインストールだけが残るので、それをセカンダリで 1 つ置く。</p>
           <dl class="key-value-list screen-meta">
             <div><dt>主CTA</dt><dd>「アンインストール」（セカンダリ・横幅 100%）。</dd></div>
-            <div><dt>出すタイミング</dt><dd>install_mode = AVAILABLE で installed version_code ≧ 配信 version_code。</dd></div>
+            <div><dt>出すタイミング</dt><dd>install_mode = AVAILABLE で installed version_code が配信 version_code 以上、かつ同じ version_code の場合は APK checksum も一致している。</dd></div>
             <div><dt>置かないもの</dt><dd>「開く」CTA（業務アプリを本アプリから launch する責務は持たない）。</dd></div>
           </dl>
         </div>
@@ -488,7 +512,10 @@ const notificationFlow = `flowchart TB
                 <div class="app-icon">配</div>
                 <div>
                   <h3>配達ナビ</h3>
-                  <p class="app-detail-meta">version 1.0.5 → 1.1.0</p>
+                  <p class="app-detail-meta">
+                    <span>com.example.delivery.nav</span>
+                    <span>version 1.0.5 → 1.1.0</span>
+                  </p>
                 </div>
               </div>
               <div class="app-detail-actions app-detail-actions--pair">
@@ -504,7 +531,7 @@ const notificationFlow = `flowchart TB
           <p>新しいリリースが利用可能なときの並び。Google Play 同様、左に「アンインストール」（セカンダリ）、右に「アップデート」（プライマリ）を横並びで配置する。</p>
           <dl class="key-value-list screen-meta">
             <div><dt>主CTA</dt><dd>「アップデート」（プライマリ・右）。「アンインストール」（セカンダリ・左）。</dd></div>
-            <div><dt>出すタイミング</dt><dd>install_mode = AVAILABLE で installed version_code &lt; 配信 version_code。</dd></div>
+            <div><dt>出すタイミング</dt><dd>install_mode = AVAILABLE で installed version_code &lt; 配信 version_code、または同じ version_code で APK checksum が異なる。</dd></div>
             <div><dt>ボタン比率</dt><dd>等幅 1:1 を基本とし、押し間違い防止のためボタン間にギャップを取る。</dd></div>
           </dl>
         </div>
@@ -523,7 +550,11 @@ const notificationFlow = `flowchart TB
                 <div class="app-icon">勤</div>
                 <div>
                   <h3>勤怠アプリ</h3>
-                  <p class="app-detail-meta">version 2.2 → 2.3 ・ 必須</p>
+                  <p class="app-detail-meta">
+                    <span>com.example.unitname.company12345</span>
+                    <span>version 13.4444444.2</span>
+                    <span>インストール準備中</span>
+                  </p>
                 </div>
               </div>
               <div class="app-detail-actions app-detail-actions--single">
@@ -574,12 +605,12 @@ const notificationFlow = `flowchart TB
           <tr>
             <th scope="row">設定画面</th>
             <td>独立画面としては作らない</td>
-            <td>表示名・サーバーの向き先・アプリバージョンといった状態表示しかないため、ホーム下部の情報ブロックに畳む。端末利用者による登録解除は提供しない。</td>
+            <td>表示名・サーバーの向き先・アプリバージョンといった状態表示しかないため、ホーム下部の「現在のデバイス」リストに畳む。端末利用者による登録解除は提供しない。</td>
           </tr>
           <tr>
             <th scope="row">ホーム「最新です / やることがあります / 更新中 / オフライン」の状態切替、必要な対応、エラーと再試行、任意アプリ一覧</th>
             <td>独立画面 / 独立状態としては作らない</td>
-            <td>ホームを「ポリシーで指定された全アプリの一覧」に統一し、各行の背景色（対応要 = 白 / 不要 = グレー）で状況を伝える。複数アプリへの一括操作画面は持たず、行タップ → アプリ詳細で個別に対応する。配信設定取得や同期中のフィードバックはスナックバーで吸収する。</td>
+            <td>ホームを「ポリシーで指定された全アプリの一覧」に統一し、対応要否は通知一覧とOS通知で伝える。複数アプリへの一括操作画面は持たず、行タップ → アプリ詳細で個別に対応する。配信設定取得や同期中のフィードバックはスナックバーで吸収する。</td>
           </tr>
           <tr>
             <th scope="row">Android PackageInstaller確認画面</th>
@@ -625,7 +656,7 @@ const notificationFlow = `flowchart TB
                 <li>通知許可が未付与でユーザー操作が必要</li>
               </ul>
             </td>
-            <td>該当アプリの行を白背景にして「対応が必要」と示し、通知一覧 (ベル) と OS 通知に sticky で並べる。利用者は行タップでアプリ詳細に入り、「再試行」「アップデート」「インストール」のいずれかで進める。</td>
+            <td>通知一覧 (ベル) と OS 通知に sticky で並べる。ホーム行の背景色や状態チップでは示さない。利用者は通知またはホーム行からアプリ詳細に入り、「再試行」「アップデート」「インストール」のいずれかで進める。</td>
           </tr>
           <tr>
             <th scope="row">そうではない失敗（再試行で解決しない）</th>
@@ -651,8 +682,8 @@ const notificationFlow = `flowchart TB
     <h2 id="discussion">判断指針</h2>
     <ul class="usa-list">
       <li><strong>登録は1画面で終える。</strong> 表示名入力と登録ボタンだけで構成し、通知トークン取得待ちはボタンのdisabledで吸収する。初回同期や配信説明を登録完了画面へ足さない。</li>
-      <li><strong>ホームは「ポリシーで指定された全アプリの一覧」。</strong> 必須・任意を行で区別せず、行末の「必須」チップだけで識別する。「今この行に対応が必要か」は行の背景色（要 = 白 / 不要 = グレー）で表す。状態見出しや件数サマリは持たない。</li>
-      <li><strong>端末名・サーバーの向き先・アプリバージョンはホーム下部に畳む。</strong> 独立した「設定」画面は持たない。サーバーの向き先はホストだけを表示し、トークンや revision のような内部値は出さない。</li>
+      <li><strong>ホームは「ポリシーで指定された全アプリの一覧」。</strong> 必須・任意を行で区別せず、行末の「必須」チップだけで識別する。「今この行に対応が必要か」は通知一覧とOS通知で表す。ホームには状態見出しや件数サマリを持たない。</li>
+      <li><strong>デバイス情報・サーバー情報・アプリ情報はホーム下部の List に畳む。</strong> 独立した「設定」画面は持たない。サーバーの向き先はホストだけを表示し、トークンや revision のような内部値は出さない。</li>
       <li><strong>個別アプリの操作はアプリ詳細に閉じる。</strong> 一括操作画面（旧「必要な対応」「エラーと再試行」）は作らず、行タップで詳細に入って 1 アプリずつ進める。アプリ詳細の CTA は Google Play と同じ並び（任意・更新あり = 「アンインストール」セカンダリ + 「アップデート」プライマリ、必須 = 「アンインストール」非表示）。</li>
       <li><strong>ダウンロード中は同じ操作を無効化する。</strong> WorkManager の unique work とローカル download state を反映し、同じ release の二重ダウンロードを UI から起こせないようにする。詳細画面の CTA も「ダウンロード中」表示に切り替える。</li>
       <li><strong>通知は1集合・2窓口。</strong> 「OS 通知 (sticky)」と「アプリ内 通知一覧 (ベル)」は同じ <code>GET /api/notifications</code> の集合を表示する別窓口。条件が解消したら両方から自動で消える。利用者側の「ミュート」「次から表示しない」は提供しない。</li>
@@ -838,69 +869,88 @@ const notificationFlow = `flowchart TB
     padding: 0.75rem 0.75rem 1.1rem;
   }
 
+  .app-body--home-list {
+    gap: 0;
+    padding: 0 0 1.1rem;
+  }
+
+  .app-body--notification-list {
+    gap: 0;
+    padding: 0.75rem 0 1.1rem;
+  }
+
+  .home-section-label {
+    color: #565c65;
+    font-size: 0.78rem;
+    font-weight: 700;
+    line-height: 1.25;
+    padding: 0.7rem 1.1rem 0.4rem;
+  }
+
+  .home-section-label--inline {
+    padding: 0.2rem 0 0.1rem;
+    text-align: left;
+  }
+
   .policy-app-list {
-    border: 1px solid #dde3ee;
-    border-radius: 12px;
-    display: flex;
-    flex-direction: column;
-    list-style: none;
-    margin: 0;
-    overflow: hidden;
+    --md-list-container-color: #fff;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
     padding: 0;
   }
 
-  .policy-app-row {
-    align-items: center;
-    border-bottom: 1px solid #dde3ee;
-    display: flex;
-    gap: 0.75rem;
-    justify-content: space-between;
-    min-height: 4rem;
-    padding: 0.85rem 1rem;
-  }
-
-  .policy-app-row:last-child {
-    border-bottom: none;
-  }
-
-  .policy-app-row--action {
-    background: #fff;
-  }
-
-  .policy-app-row--idle {
-    background: #eef0f4;
-  }
-
-  .policy-app-main {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    min-width: 0;
-  }
-
-  .policy-app-main strong {
-    font-size: 0.98rem;
-    font-weight: 700;
-  }
-
-  .policy-app-main span {
-    color: #565c65;
-    font-size: 0.82rem;
+  .policy-app-list md-list-item + md-list-item,
+  .home-device-info-list md-list-item + md-list-item {
+    border-top: 1px solid #dde3ee;
   }
 
   .policy-app-chip {
-    background: #fff7e0;
-    border: 1px solid #f2c84b;
-    border-radius: 999px;
-    color: #6b3f00;
+    border-radius: 8px;
     font-size: 0.72rem;
     font-weight: 700;
-    padding: 0.15rem 0.55rem;
+    padding: 0.18rem 0.55rem;
     white-space: nowrap;
   }
 
+  .policy-app-chip--required {
+    background: #ecf3ec;
+    color: #2e7044;
+  }
+
+  .policy-app-meta {
+    display: grid;
+    gap: 0.1rem;
+    overflow-wrap: anywhere;
+  }
+
   .home-device-info--standalone {
-    margin-top: 1.5rem;
+    margin-top: 0;
+  }
+
+  .home-device-info-list {
+    --md-list-container-color: #fff;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    padding: 0;
+    text-align: left;
+  }
+
+  .notification-list {
+    --md-list-container-color: #fff;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .notification-list md-list-item + md-list-item {
+    border-top: 1px solid #dde3ee;
+  }
+
+  .notification-list-caption {
+    padding: 0.75rem 1.1rem 0;
   }
 
   .app-detail-header {
@@ -918,6 +968,11 @@ const notificationFlow = `flowchart TB
     color: #565c65;
     font-size: 0.86rem;
     margin: 0.2rem 0 0;
+    overflow-wrap: anywhere;
+  }
+
+  .app-detail-meta span {
+    display: block;
   }
 
   .app-detail-actions {
@@ -1180,32 +1235,6 @@ const notificationFlow = `flowchart TB
 
   .version-row span {
     color: #565c65;
-  }
-
-  .home-device-info {
-    border-top: 1px solid #dde3ee;
-    display: grid;
-    gap: 0.3rem;
-    margin: 0.5rem 0 0;
-    padding-top: 0.7rem;
-  }
-
-  .home-device-info > div {
-    align-items: baseline;
-    display: flex;
-    font-size: 0.78rem;
-    justify-content: space-between;
-  }
-
-  .home-device-info dt {
-    color: #565c65;
-    margin: 0;
-  }
-
-  .home-device-info dd {
-    color: #1b1b1b;
-    font-weight: 600;
-    margin: 0;
   }
 
   .screen-notes {

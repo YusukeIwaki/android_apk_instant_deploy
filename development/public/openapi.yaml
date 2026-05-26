@@ -27,9 +27,10 @@ info:
     APK upload is a single multipart/form-data request to POST /admin/artifacts.
     There is no separate pre-upload URL endpoint, no multipart cache, and no
     intermediate cache storage; the server parses, validates, and stores the APK
-    in one shot. Releases are append-only: re-uploading the same (app,
-    version_code) is rejected, and release / app rows are removed only by
-    explicit admin DELETE.
+    in one shot. Releases are append-only: re-uploading identical APK bytes is
+    rejected by artifact sha256, while the same (app, version_code) is accepted
+    when the checksum differs. Release / app rows are removed only by explicit
+    admin DELETE.
 
     DevicePolicy entries reference apps (by `app.id`) — not specific releases.
     The release to install for each entry is resolved by the server on every
@@ -103,12 +104,12 @@ paths:
                     error:
                       code: SIGNING_CERT_MISMATCH
                       message: Signing certificate differs from the previously registered release for this package.
-                version_already_exists:
-                  summary: A release with the same (app, version_code) already exists
+                artifact_already_exists:
+                  summary: The exact same APK artifact was already uploaded
                   value:
                     error:
-                      code: VERSION_ALREADY_EXISTS
-                      message: A release with the same package_name and version_code already exists. Bump version_code in the APK and re-upload.
+                      code: ARTIFACT_ALREADY_EXISTS
+                      message: The exact same APK artifact has already been uploaded. Re-uploading the same package_name and version_code is allowed only when the APK checksum differs.
                 file_required:
                   summary: Missing or duplicated "file" multipart field
                   value:
@@ -357,6 +358,47 @@ paths:
                     error:
                       code: REGISTRATION_TOKEN_NOT_FOUND
                       message: Registration link is expired, already used, or the secret is incorrect.
+
+  /api/devices/me/fcm_push_token:
+    put:
+      tags:
+        - Android App API
+      operationId: updateDeviceFcmPushToken
+      summary: Update the authenticated device's FCM push token
+      description: |
+        Updates the encrypted `fcm_push_tokens` record for the authenticated
+        device when Firebase Messaging rotates the device token. This endpoint
+        does not change device identity, profile, credentials, policy, or sync
+        records.
+      security:
+        - DeviceBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FcmPushTokenUpdateRequest"
+            examples:
+              default:
+                value:
+                  fcm_push_token: fcm:APA91b...
+      responses:
+        "200":
+          $ref: "#/components/responses/FcmPushTokenUpdateResponse"
+        "400":
+          description: Request body was rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                fcm_push_token_required:
+                  value:
+                    error:
+                      code: FCM_PUSH_TOKEN_REQUIRED
+                      message: fcm_push_token is required.
+        "401":
+          $ref: "#/components/responses/DeviceUnauthorizedError"
 
   /admin/devices/{identifier}:
     delete:
@@ -740,9 +782,10 @@ components:
         only the artifact's metadata. The same transaction also creates an app row
         (if new package_name) and a new release row, but those changes are not
         reflected in this response; clients confirm them through GET /admin/apps.
-        Releases are append-only: re-uploading an APK with the same (app,
-        version_code) is rejected (400 VERSION_ALREADY_EXISTS), and existing
-        releases are only removed by an explicit DELETE.
+        Releases are append-only: re-uploading identical APK bytes is rejected
+        (400 ARTIFACT_ALREADY_EXISTS), while the same (app, version_code) may
+        create another release when artifact sha256 differs. Existing releases
+        are only removed by an explicit DELETE.
       content:
         application/json:
           schema:
@@ -770,7 +813,8 @@ components:
       description: |
         Catalog of apps registered on this server, with each app's releases listed
         inline. Order: apps sorted by latest activity first; releases within each
-        app sorted by version_code descending.
+        app sorted by version_code descending, then release id descending for
+        repeated version_code uploads.
       content:
         application/json:
           schema:
@@ -810,9 +854,9 @@ components:
       description: |
         Current device policy for the authenticated device. Each entry has the
         resolved latest release attached as `install` (release.id, version_code,
-        version_name). All entries reference apps that currently exist; deleted
-        apps cannot remain as entries because they are FK-cascaded out at delete
-        time.
+        version_name, artifact_sha256). All entries reference apps that
+        currently exist; deleted apps cannot remain as entries because they are
+        FK-cascaded out at delete time.
       content:
         application/json:
           schema:
@@ -828,21 +872,25 @@ components:
                   - app:
                       id: 12
                       package_name: com.example.appa
+                      display_name: 勤怠アプリ
                     install_mode: FORCE_INSTALLED
                     install:
                       release:
                         id: 301
                       version_code: 42
                       version_name: 2.4.0-qa
+                      artifact_sha256: 58f7d4...
                   - app:
                       id: 15
                       package_name: com.example.appd
+                      display_name: 社内ポータル
                     install_mode: AVAILABLE
                     install:
                       release:
                         id: 612
                       version_code: 3
                       version_name: 0.3.1
+                      artifact_sha256: 66ad22...
     AdminDevicePolicyResponse:
       description: |
         Current device policy for the admin UI. All entries reference apps that
@@ -864,18 +912,31 @@ components:
                     - app:
                         id: 12
                         package_name: com.example.appa
+                        display_name: 勤怠アプリ
                       install_mode: FORCE_INSTALLED
                       install:
                         release:
                           id: 301
                         version_code: 42
                         version_name: 2.4.0-qa
+                        artifact_sha256: 58f7d4...
     DeviceRegistrationTokenDetailResponse:
       description: Device registration link was created.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/DeviceRegistrationTokenDetailResponse"
+    FcmPushTokenUpdateResponse:
+      description: FCM push token was updated for the authenticated device.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/FcmPushTokenUpdateResponse"
+          examples:
+            default:
+              value:
+                fcm_push_token:
+                  registered_at: "2026-05-26T12:34:56+09:00"
     PolicySyncResultDetailResponse:
       description: Policy sync result was recorded.
       content:
@@ -1176,6 +1237,7 @@ components:
       required:
         - id
         - package_name
+        - display_name
       properties:
         id:
           type: integer
@@ -1183,6 +1245,10 @@ components:
         package_name:
           type: string
           example: com.example.appa
+        display_name:
+          type: string
+          minLength: 1
+          example: 勤怠アプリ
 
     PolicyInstallTarget:
       type: object
@@ -1194,6 +1260,7 @@ components:
         - release
         - version_code
         - version_name
+        - artifact_sha256
       properties:
         release:
           $ref: "#/components/schemas/ReleaseReference"
@@ -1203,6 +1270,10 @@ components:
         version_name:
           type: string
           example: 2.4.0-qa
+        artifact_sha256:
+          type: string
+          description: SHA-256 checksum of the APK bytes for the resolved release.
+          example: 58f7d4...
 
     DevicePolicyEntry:
       type: object
@@ -1229,6 +1300,7 @@ components:
       required:
         - id
         - package_name
+        - display_name
       properties:
         id:
           type: integer
@@ -1236,6 +1308,10 @@ components:
         package_name:
           type: string
           example: com.example.appa
+        display_name:
+          type: string
+          minLength: 1
+          example: 勤怠アプリ
 
     DevicePolicyFetchResponse:
       type: object
@@ -1390,6 +1466,36 @@ components:
           type: string
           description: Human-readable error message in English.
           example: file must be a parseable APK.
+
+    FcmPushTokenUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - fcm_push_token
+      properties:
+        fcm_push_token:
+          type: string
+          minLength: 1
+          example: fcm:APA91b...
+
+    FcmPushTokenUpdateResult:
+      type: object
+      additionalProperties: false
+      required:
+        - registered_at
+      properties:
+        registered_at:
+          type: string
+          format: date-time
+
+    FcmPushTokenUpdateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - fcm_push_token
+      properties:
+        fcm_push_token:
+          $ref: "#/components/schemas/FcmPushTokenUpdateResult"
 
     InstallAction:
       type: string
