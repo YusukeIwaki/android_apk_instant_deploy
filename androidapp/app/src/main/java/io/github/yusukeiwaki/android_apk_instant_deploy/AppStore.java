@@ -24,7 +24,12 @@ final class AppStore {
     }
 
     void setServerBaseUrl(String value) {
-        preferences.edit().putString(KEY_SERVER_BASE_URL, trimTrailingSlash(value)).apply();
+        String next = trimTrailingSlash(value);
+        SharedPreferences.Editor editor = preferences.edit().putString(KEY_SERVER_BASE_URL, next);
+        if (!next.equals(serverBaseUrl())) {
+            editor.remove(KEY_FETCHED_POLICY_JSON).putBoolean(KEY_PENDING_POLICY_FETCH, true);
+        }
+        editor.apply();
     }
 
     boolean isRegistered() {
@@ -45,6 +50,10 @@ final class AppStore {
 
     String fcmToken() {
         return preferences.getString(KEY_FCM_TOKEN, "");
+    }
+
+    void saveFcmToken(String token) {
+        preferences.edit().putString(KEY_FCM_TOKEN, token).apply();
     }
 
     boolean pendingPolicyFetch() {
@@ -83,4 +92,5 @@ final class AppStore {
         }
         return result.isEmpty() ? "http://10.0.2.2:4567" : result;
     }
+
 }

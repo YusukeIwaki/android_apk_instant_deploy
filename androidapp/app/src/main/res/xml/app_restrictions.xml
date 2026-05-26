@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<restrictions xmlns:android="http://schemas.android.com/apk/res/android">
+    <restriction
+        android:key="server_base_url"
+        android:title="@string/mc_server_base_url_title"
+        android:restrictionType="string" />
+    <restriction
+        android:key="device_registration_identifier"
+        android:title="@string/mc_identifier_title"
+        android:restrictionType="string" />
+    <restriction
+        android:key="device_registration_secret"
+        android:title="@string/mc_secret_title"
+        android:restrictionType="string" />
+    <restriction
+        android:key="display_name"
+        android:title="@string/mc_display_name_title"
+        android:restrictionType="string" />
+</restrictions>

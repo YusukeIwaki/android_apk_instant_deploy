@@ -71,6 +71,40 @@ final class ApiClient {
         return parsePolicy(raw);
     }
 
+    void updateFcmPushToken(String fcmToken) throws IOException, JSONException {
+        JSONObject body = new JSONObject().put("fcm_push_token", fcmToken);
+        requestJson("PUT", "/api/devices/me/fcm_push_token", body, deviceAuthToken);
+    }
+
+    List<DeviceNotification> fetchNotifications() throws IOException, JSONException {
+        JSONObject response = requestJson("GET", "/api/notifications", null, deviceAuthToken);
+        List<DeviceNotification> notifications = new ArrayList<>();
+        JSONArray items = response.getJSONArray("notifications");
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.getJSONObject(index);
+            JSONObject app = item.optJSONObject("app");
+            int appId = -1;
+            String packageName = "";
+            String displayName = "";
+            if (app != null) {
+                appId = app.optInt("id", -1);
+                packageName = app.optString("package_name", "");
+                displayName = appDisplayName(app, packageName);
+            }
+            notifications.add(new DeviceNotification(
+                    item.getInt("id"),
+                    item.getString("kind"),
+                    item.getString("title"),
+                    item.getString("body"),
+                    item.getString("created_at"),
+                    appId,
+                    packageName,
+                    displayName
+            ));
+        }
+        return notifications;
+    }
+
     static PolicySnapshot parsePolicy(String raw) throws JSONException {
         JSONObject response = new JSONObject(raw);
         List<PolicyEntry> entries = new ArrayList<>();
@@ -80,13 +114,16 @@ final class ApiClient {
             JSONObject app = item.getJSONObject("app");
             JSONObject install = item.getJSONObject("install");
             JSONObject release = install.getJSONObject("release");
+            String packageName = app.getString("package_name");
             entries.add(new PolicyEntry(
                     app.getInt("id"),
-                    app.getString("package_name"),
+                    packageName,
+                    appDisplayName(app, packageName),
                     item.getString("install_mode"),
                     release.getInt("id"),
                     install.getInt("version_code"),
-                    install.optString("version_name", "")
+                    install.optString("version_name", ""),
+                    install.optString("artifact_sha256", "")
             ));
         }
         return new PolicySnapshot(
@@ -95,6 +132,11 @@ final class ApiClient {
                 raw,
                 entries
         );
+    }
+
+    private static String appDisplayName(JSONObject app, String packageName) {
+        String displayName = app.optString("display_name", "").trim();
+        return displayName.isEmpty() ? packageName : displayName;
     }
 
     ArtifactUrl getArtifactUrl(int releaseId) throws IOException, JSONException {
@@ -172,18 +214,22 @@ final class ApiClient {
     static final class PolicyEntry {
         final int appId;
         final String packageName;
+        final String displayName;
         final String installMode;
         final int releaseId;
         final int versionCode;
         final String versionName;
+        final String artifactSha256;
 
-        PolicyEntry(int appId, String packageName, String installMode, int releaseId, int versionCode, String versionName) {
+        PolicyEntry(int appId, String packageName, String displayName, String installMode, int releaseId, int versionCode, String versionName, String artifactSha256) {
             this.appId = appId;
             this.packageName = packageName;
+            this.displayName = displayName == null || displayName.isEmpty() ? packageName : displayName;
             this.installMode = installMode;
             this.releaseId = releaseId;
             this.versionCode = versionCode;
             this.versionName = versionName;
+            this.artifactSha256 = artifactSha256;
         }
 
         boolean isAvailable() {
@@ -192,6 +238,32 @@ final class ApiClient {
 
         boolean isForceInstalled() {
             return "FORCE_INSTALLED".equals(installMode);
+        }
+    }
+
+    static final class DeviceNotification {
+        final int id;
+        final String kind;
+        final String title;
+        final String body;
+        final String createdAt;
+        final int appId;
+        final String packageName;
+        final String displayName;
+
+        DeviceNotification(int id, String kind, String title, String body, String createdAt, int appId, String packageName, String displayName) {
+            this.id = id;
+            this.kind = kind;
+            this.title = title;
+            this.body = body;
+            this.createdAt = createdAt;
+            this.appId = appId;
+            this.packageName = packageName;
+            this.displayName = displayName == null || displayName.isEmpty() ? packageName : displayName;
+        }
+
+        boolean hasApp() {
+            return appId > 0 || !packageName.isEmpty();
         }
     }
 

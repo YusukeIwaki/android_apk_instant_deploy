@@ -8,13 +8,15 @@ import android.widget.Toast;
 
 public final class InstallNotificationReceiver extends BroadcastReceiver {
     static final String ACTION_INSTALL_COMMITTED = "io.github.yusukeiwaki.android_apk_instant_deploy.INSTALL_COMMITTED";
+    static final String ACTION_UNINSTALL_COMMITTED = "io.github.yusukeiwaki.android_apk_instant_deploy.UNINSTALL_COMMITTED";
     static final String EXTRA_PACKAGE_NAME = "package_name";
     static final String EXTRA_RELEASE_ID = "release_id";
     static final String EXTRA_VERSION_CODE = "version_code";
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (!ACTION_INSTALL_COMMITTED.equals(intent.getAction())) {
+        boolean uninstall = ACTION_UNINSTALL_COMMITTED.equals(intent.getAction());
+        if (!ACTION_INSTALL_COMMITTED.equals(intent.getAction()) && !uninstall) {
             return;
         }
 
@@ -30,12 +32,21 @@ public final class InstallNotificationReceiver extends BroadcastReceiver {
         }
 
         if (status == PackageInstaller.STATUS_SUCCESS) {
-            cleanupDownload(context, intent);
-            Toast.makeText(context, packageName + " をインストールしました", Toast.LENGTH_LONG).show();
+            if (!uninstall) {
+                cleanupDownload(context, intent);
+                RequiredAppNotificationReceiver.cancelRequiredInstallNotification(
+                        context,
+                        packageName,
+                        intent.getIntExtra(EXTRA_VERSION_CODE, -1)
+                );
+            }
+            Toast.makeText(context, packageName + (uninstall ? " をアンインストールしました" : " をインストールしました"), Toast.LENGTH_LONG).show();
         } else {
-            cleanupDownload(context, intent);
+            if (!uninstall) {
+                cleanupDownload(context, intent);
+            }
             String message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
-            Toast.makeText(context, "インストールできませんでした: " + (message == null ? "" : message), Toast.LENGTH_LONG).show();
+            Toast.makeText(context, (uninstall ? "アンインストール" : "インストール") + "できませんでした: " + (message == null ? "" : message), Toast.LENGTH_LONG).show();
         }
     }
 
