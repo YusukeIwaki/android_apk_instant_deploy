@@ -68,13 +68,16 @@ const componentSequence = `sequenceDiagram
     alt 既に target version / AVAILABLE / blacklist にヒット
       Engine->>Engine: terminal として扱う (action なし)
     else DOWNLOAD が必要
-      Engine->>Dl: install.release.id で artifact_url 取得 → 保存
+      Engine->>Dl: release.id + version_code で WorkManager unique work を enqueue
+      Dl->>Store: active_download_jobs に登録
       alt sha256 OK
+        Dl->>Store: active_download_jobs を installing に更新
         Dl->>Store: downloaded_artifact_index に登録
       else リカバリ不能 (404 / sha256 不一致)
+        Dl->>Store: active_download_jobs を削除
         Dl->>Store: failed_artifacts_blacklist に追記
       else リカバリ可能 (TLS / 5xx / URL期限切れ)
-        Note over Dl: この work item は deferred<br/>(状態は永続化しない)
+        Note over Dl,Store: 同じ WorkManager job を retry<br/>次回 artifact_url を取り直す
       end
     end
     opt INSTALL / UNINSTALL が必要
@@ -142,6 +145,7 @@ const componentBlocks = `flowchart LR
     Plan["Sync Engine<br/>毎反復で work list を計算"]
     Dl["Download Worker"]
     Inst["Install Worker"]
+    DlObs["Download Scheduler<br/>WorkManager + OkHttp"]
     Rep["Result Reporter"]
   end
   subgraph Side["副作用ハンドラ"]
@@ -156,6 +160,7 @@ const componentBlocks = `flowchart LR
     Applied["applied_policy_snapshot"]
     Index["installed_package_index"]
     Dlx["downloaded_artifact_index"]
+    ActiveDl["active_download_jobs"]
     Black["failed_artifacts_blacklist"]
     Payload["pending_report_payload"]
   end
@@ -164,7 +169,10 @@ const componentBlocks = `flowchart LR
   Fetch --> Fetched
   Fetch --> Plan
   Plan --> Dl
+  DlObs --> ActiveDl
+  DlObs --> Dlx
   Plan --> Inst
+  Dl --> ActiveDl
   Dl --> Dlx
   Dl --> Black
   Inst --> Index
@@ -269,8 +277,14 @@ const componentBlocks = `flowchart LR
           <tr>
             <th scope="row">Download Worker</th>
             <td>Sync Engine からの要求 (work item 単位)</td>
-            <td>artifact_url を取得 → ダウンロード → sha256 検証。成功で downloaded_artifact_index に登録。リカバリ不能失敗で failed_artifacts_blacklist に追記。リカバリ可能失敗は <em>何も永続化しない</em> (= 次回 work list 再計算で同じ work item として現れる)。</td>
-            <td>downloaded_artifact_index, failed_artifacts_blacklist</td>
+            <td>WorkManager unique work を release.id + version_code で enqueue し、worker 内で artifact_url を取得する。active_download_jobs には work_name、release.id、version_code、local_path を保持し、同じ artifact を重複 enqueue しない。worker は OkHttp で app-private files に streaming し、成功で downloaded_artifact_index に登録して PackageInstaller へ渡す。リカバリ不能失敗で failed_artifacts_blacklist に追記。リカバリ可能失敗では同じ work を retry し、PackageInstaller 引き渡しの終端で active_download_jobs を消す。</td>
+            <td>active_download_jobs, downloaded_artifact_index, failed_artifacts_blacklist</td>
+          </tr>
+          <tr>
+            <th scope="row">Download Scheduler</th>
+            <td>WorkManager progress / ローカル download state</td>
+            <td>worker の進行状況をローカルストアに反映し、進行中/待機中/インストール準備中を UI に表示する。active_download_jobs がある間は該当 release のインストール操作を無効化する。非リトライ失敗・キャンセル、またはダウンロード完了後の PackageInstaller 引き渡しが終端した時点で active_download_jobs を消す。完了後は APK を PackageInstaller へ渡す前に検証する。</td>
+            <td>active_download_jobs, downloaded_artifact_index, failed_artifacts_blacklist</td>
           </tr>
           <tr>
             <th scope="row">Install Worker</th>
@@ -341,6 +355,12 @@ const componentBlocks = `flowchart LR
             <td>PACKAGE_REMOVED broadcast (自分が入れた package のみ受信) / アプリデータ初期化 / 再インストール</td>
           </tr>
           <tr>
+            <th scope="row">active_download_jobs</th>
+            <td>{`{ work_name, release_id, version_code, package_name, local_path }[]`}。WorkManager に投入済みの進行中ジョブ</td>
+            <td>Download Worker が enqueue に成功した時</td>
+            <td>worker が非リトライ失敗 / キャンセルを返した時、または成功後の sha256 検証と PackageInstaller 引き渡しが終端した時。成功後は downloaded_artifact_index、恒久失敗なら failed_artifacts_blacklist に移す</td>
+          </tr>
+          <tr>
             <th scope="row">downloaded_artifact_index</th>
             <td>{`{ release_id, version_code, local_path, sha256 }[]`}。同じ artifact を再 DL しないためのキャッシュ</td>
             <td>Download Worker で sha256 検証 OK のとき登録</td>
@@ -369,8 +389,9 @@ const componentBlocks = `flowchart LR
     </div>
     <h3>不変条件</h3>
     <ul class="usa-list">
-      <li><code>fetched.updated_at == applied.updated_at</code> ⇒ ホーム表示は「最新です」。それ以外は「更新中 / やることがある / エラー」のいずれか (定義は <a href="#work-loop">差分処理サイクル</a> 参照)。</li>
+      <li><code>fetched.updated_at == applied.updated_at</code> ⇒ ホームの全行がグレー背景 (対応不要) で、<code>GET /api/notifications</code> も空になる。それ以外は「更新中 / やることがある / エラー」のいずれかの<em>内部分類</em>で扱う (定義は <a href="#work-loop">差分処理サイクル</a> 参照)。</li>
       <li><code>pending_report_payload != null</code> ⇒ Sync Engine は新しい work list 計算による DOWNLOAD/INSTALL を再開しない。まず再送を試みる。</li>
+      <li>同じ <code>(release.id, version_code)</code> に対する active_download_jobs は同時に1件だけ。UI はローカル download state を表示し、同じ entry のインストール操作を無効化する。</li>
       <li>同じ <code>(package_name, 期待 version_code)</code> に対する Sticky 通知は同時に1個だけ。重複出現は Notification Controller が抑止する。</li>
       <li>failed_artifacts_blacklist にあるエントリと同じ <code>(release.id, version_code)</code> は、DOWNLOAD/INSTALL を試みず、報告 payload では <strong>FAILED</strong> として組み立てる。</li>
     </ul>
@@ -444,7 +465,7 @@ const componentBlocks = `flowchart LR
       <li><strong>pending_report_payload があるか</strong> → あれば最初に再送を試みる (新しい fetch・新しい差分処理より優先)。</li>
       <li><strong>pending_policy_fetch が立っているか</strong> → 立っていれば fetch を試みる。</li>
       <li><strong>fetched_policy_snapshot &gt; applied_policy_snapshot か</strong> → 差分があれば Sync Engine を起動 (work list を再計算)。</li>
-      <li>いずれでもなければ「最新です」状態。</li>
+      <li>いずれでもなければ「最新」状態 (ホームの全行がグレー、通知一覧は空)。</li>
     </ol>
   </section>
 
@@ -460,26 +481,27 @@ const componentBlocks = `flowchart LR
       <li><strong>AVAILABLE entry</strong> → <code>already_satisfied</code> (同期 attempt の対象外、報告でも常に skip)。</li>
       <li><strong>同 release.id + version_code が failed_artifacts_blacklist にある</strong> → <code>blacklisted_skip</code> (action なし、報告では FAILED として組み立てる)。</li>
       <li><strong>installed_package_index に同 package_name + 期待 version_code がある</strong> → <code>already_satisfied</code>。</li>
+      <li><strong>FORCE_INSTALLED で active_download_jobs に同 release.id + version_code がある</strong> → ローカル download state を監視し、新しい download は enqueue しない。</li>
       <li><strong>FORCE_INSTALLED で artifact が downloaded_artifact_index にない</strong> → <code>downloading</code> から開始。</li>
       <li><strong>FORCE_INSTALLED で artifact が downloaded_artifact_index にある</strong> → <code>installing</code> から開始 (DOWNLOAD スキップ)。</li>
     </ol>
     <p>さらに、<strong>Policy に存在しない installed_package_index のエントリ</strong> で <code>installed_by_companion=true</code> のものは UNINSTALL 対象の work item として追加します。</p>
 
-    <h3>表示状態の定義 (1反復の結果から導出)</h3>
-    <p>UI の「最新です / 更新中 / やることがある / エラーで止まっている」は、永続データを毎回 derive します。</p>
+    <h3>派生状態の定義 (1反復の結果から導出)</h3>
+    <p>内部分類「最新 / 更新中 / やることがある / エラーで止まっている」は永続データを毎回 derive し、画面表現とサーバー側の通知に流し込みます。状態名は UI に直接出さず、ホーム行の背景色 (対応要 = 白 / 不要 = グレー)、アプリ詳細の CTA 切替、<code>GET /api/notifications</code> の集合の出し分けに使います。</p>
     <ul class="usa-list">
-      <li><strong>最新です</strong>: <code>fetched.updated_at == applied.updated_at</code>。</li>
-      <li><strong>やることがある</strong>: 直近の試行で <em>権限待ち / ユーザー操作待ちで deferred</em> になった work item があった、または failed_artifacts_blacklist にユーザー対応が意味を持つ entry がある。</li>
-      <li><strong>更新中</strong>: 上記以外で <code>fetched &gt; applied</code>、かつ DOWNLOAD / INSTALL の試行が実行中。</li>
-      <li><strong>エラーで止まっている</strong>: blacklist にエントリがあり、ユーザー操作で解消できない種別 (署名不一致など)。管理者対応待ちであることを表示する。</li>
+      <li><strong>最新</strong>: <code>fetched.updated_at == applied.updated_at</code>。該当 entry の行は<em>グレー背景</em>。通知は生成しない。</li>
+      <li><strong>やることがある</strong>: 直近の試行で <em>権限待ち / ユーザー操作待ちで deferred</em> になった work item があった、または failed_artifacts_blacklist にユーザー対応が意味を持つ entry がある。該当 entry の行は<em>白背景</em>。サーバーは対応する <code>Notification</code> を sticky で生成する (INSTALL_PERMISSION_REQUIRED / DOWNLOAD_RETRY_AVAILABLE)。</li>
+      <li><strong>更新中</strong>: 上記以外で <code>fetched &gt; applied</code>、かつ DOWNLOAD / INSTALL の試行が実行中。該当 entry の行は<em>白背景</em>、アプリ詳細の CTA は disabled の進捗表示に切り替える。通知は生成しない (進捗のみで利用者の追加操作は不要なため)。</li>
+      <li><strong>エラーで止まっている</strong>: blacklist にエントリがあり、ユーザー操作で解消できない種別 (署名不一致など)。該当 entry の行は<em>白背景</em>。利用者向けの通知は生成せず、管理者対応待ちとして扱う。</li>
     </ul>
-    <p>同じ状態を別の場所で重複定義しないよう、画面表示はすべてここからの derive で表現します。</p>
+    <p>同じ状態を別の場所で重複定義しないよう、画面の背景色・CTA・通知集合はすべてここからの derive で表現します。</p>
   </section>
 
   <section aria-labelledby="recovery">
     <p class="section-kicker">Recovery classification</p>
     <h2 id="recovery">リカバリ可能 / 不能の判定基準</h2>
-    <p>原則: <strong>「同じ条件で再試行すれば結果が変わりうるか」</strong>。変わりうれば <em>リカバリ可能</em> (何も永続化しない = 次のトリガで work item が再生成される)、変わらなければ <em>リカバリ不能</em> (<code>failed_artifacts_blacklist</code> に追記)。</p>
+    <p>原則: <strong>「同じ条件で再試行すれば結果が変わりうるか」</strong>。変わりうれば <em>リカバリ可能</em> (DOWNLOAD は同じ active_download_jobs を retry 対象として維持し、INSTALL は同期完了や失敗確定の永続状態を作らない)、変わらなければ <em>リカバリ不能</em> (<code>failed_artifacts_blacklist</code> に追記)。</p>
 
     <h3 id="recovery-fetch">Policy fetch フェーズ</h3>
     <div class="table-wrap">
@@ -503,10 +525,10 @@ const componentBlocks = `flowchart LR
           <tr><th>状況</th><th>判定</th><th>対応</th></tr>
         </thead>
         <tbody>
-          <tr><td>artifact_url の TTL 切れ (S3 が 403 SignatureDoesNotMatch / AccessDenied 等)</td><td>リカバリ可能</td><td>永続化しない (deferred)。次のトリガで artifact_url を再取得して同じ release.id で再 DL。</td></tr>
+          <tr><td>artifact_url の TTL 切れ (S3 が 403 SignatureDoesNotMatch / AccessDenied 等)</td><td>リカバリ可能</td><td>同じ WorkManager work を retry。次回実行で artifact_url を再取得して同じ release.id で再 DL。</td></tr>
           <tr><td>S3 / CDN 一時障害 (5xx, タイムアウト, TLS失敗)</td><td>リカバリ可能</td><td>同上。</td></tr>
-          <tr><td>端末ストレージ一時不足</td><td>リカバリ可能</td><td>永続化しない。容量回復後の次のトリガで再試行。継続的不足は通知で利用者に促す (永続データには触らない)。</td></tr>
-          <tr><td>ダウンロード途中で切断 (部分 DL)</td><td>リカバリ可能</td><td>部分ファイルを破棄。Range/resume は採用しない。</td></tr>
+          <tr><td>端末ストレージ一時不足</td><td>リカバリ可能</td><td>同じ WorkManager work を retry。容量回復後の次の実行で再試行。継続的不足は通知で利用者に促す。</td></tr>
+          <tr><td>ダウンロード途中で切断 (部分 DL)</td><td>リカバリ可能</td><td>WorkManager が同じ work を retry し、worker は artifact_url を取り直して app-private files の部分ファイルから再開を試みる。HTTP Range が使えない場合は最初から再DL。</td></tr>
           <tr><td>404 ARTIFACT_GONE (release 削除直後で恒久的に欠落)</td><td>リカバリ不能</td><td>failed_artifacts_blacklist に追記 (phase=DOWNLOAD, code=ARTIFACT_GONE)。次の fetch で release.id が変わったら blacklist エントリは自動的にヒットしなくなる。</td></tr>
           <tr><td>sha256 不一致</td><td>リカバリ不能</td><td>blacklist 追記 (code=ARTIFACT_CORRUPTED)。</td></tr>
         </tbody>
@@ -552,7 +574,7 @@ const componentBlocks = `flowchart LR
   <section aria-labelledby="scheduler">
     <p class="section-kicker">Scheduler</p>
     <h2 id="scheduler">再試行スケジューラの責務境界</h2>
-    <p>個別ライブラリ (WorkManager / JobScheduler / Foreground service) の選定はこのページでは行わず、各責務に求める要件のみ示します。</p>
+    <p>DOWNLOAD は WorkManager + OkHttp を前提にし、それ以外のスケジューリングや foreground 化は各責務に求める要件として整理します。</p>
     <div class="table-wrap">
       <table class="usa-table">
         <thead>
@@ -574,12 +596,12 @@ const componentBlocks = `flowchart LR
             <td>FCM を取りこぼした端末の保険。常時の周期 fetch は前提にせず、利用者が明示的に開いたときに復旧できればよい。</td>
           </tr>
           <tr>
-            <th scope="row">Foreground service (DOWNLOAD / INSTALL の窓)</th>
+            <th scope="row">WorkManager download worker (DOWNLOAD の窓)</th>
             <td>大きな APK の DOWNLOAD 中 / INSTALL Session 実行中 / ユーザーが任意アプリ画面で待っている時間帯</td>
-            <td>通知必須 (Android 8+)、Android 14+ では <code>dataSync</code> foregroundServiceType を指定。<strong>常時起動はしない</strong>。DOWNLOAD と INSTALL の進行中の窓のみ Foreground service として走らせ、それ以外の処理 (fetch / 報告 / 状態判定 / blacklist追記等) は WorkManager に委ねる。</td>
+            <td>DOWNLOAD は WorkManager の制約・retry と OkHttp streaming に乗せる。アプリはローカル download state で進行中状態を UI に反映し、同じ artifact の重複 enqueue を防ぐ。worker は retry ごとに artifact_url を取り直し、app-private files の部分ファイルから再開を試みる。INSTALL Session 実行中に長時間処理が必要な場合だけ Foreground service / JobScheduler を検討する。</td>
           </tr>
           <tr>
-            <th scope="row">WorkManager (DOWNLOAD / INSTALL 以外)</th>
+            <th scope="row">WorkManager (その他の background work)</th>
             <td>Policy fetch、報告 (policy_sync_results)、起動後の状態判定 / work list 計算、blacklist cleanup など。</td>
             <td>OS のジョブスケジューラに委ねる。Foreground 化は不要。expedited work が必要な場面はFCM受信→即fetch程度に留め、過剰な expedited 利用は避ける。</td>
           </tr>
@@ -645,7 +667,7 @@ const componentBlocks = `flowchart LR
           </tr>
           <tr>
             <th scope="row">ダウンロード保存先</th>
-            <td>downloaded_artifact_index の local_path。アプリ専用ストレージ (app-specific cache or files dir) を想定。</td>
+            <td>WorkManager download worker が OkHttp で保存した app-specific cache/files の local_path。進行中は active_download_jobs の work_name と local_path で参照する。</td>
             <td>容量逼迫時の cleanup ポリシー (applied 済み / blacklist にあるものから削除) は本ページの「状態モデル」で前提化済み。</td>
           </tr>
           <tr>
@@ -655,7 +677,7 @@ const componentBlocks = `flowchart LR
           </tr>
           <tr>
             <th scope="row">永続ストアのバックエンド</th>
-            <td><code>pending_policy_fetch</code> / <code>fetched_policy_snapshot</code> / <code>applied_policy_snapshot</code> / <code>downloaded_artifact_index</code> / <code>failed_artifacts_blacklist</code> / <code>pending_report_payload</code> / <code>installed_package_index</code> / <code>device_auth_token</code> を端末側で永続化する箱。</td>
+            <td><code>pending_policy_fetch</code> / <code>fetched_policy_snapshot</code> / <code>applied_policy_snapshot</code> / <code>active_download_jobs</code> / <code>downloaded_artifact_index</code> / <code>failed_artifacts_blacklist</code> / <code>pending_report_payload</code> / <code>installed_package_index</code> / <code>device_auth_token</code> を端末側で永続化する箱。</td>
             <td><strong>DataStore (Preferences DataStore + Proto DataStore) を採用</strong>。Room まで使うほどのリレーショナル要件はなく、状態モデル各オブジェクトを Proto で表現して原子的に書き換える。複合の更新は単一 Proto 内に閉じる。SQLite (Room) は使わない。</td>
           </tr>
           <tr>
@@ -703,7 +725,7 @@ const componentBlocks = `flowchart LR
           <tr><td>Fetch</td><td>5xx / IO / TLS</td><td>pending_policy_fetch=true のまま (他は触らない)</td><td>FCM / 明示起動 / 手動更新 / ネット復帰</td></tr>
           <tr><td>Fetch</td><td>401</td><td>auth=invalid に切替。pending_policy_fetch は維持。</td><td>再登録完了</td></tr>
           <tr><td>Fetch</td><td>400/404 (恒久)</td><td>pending_policy_fetch=false に下げる。</td><td>クライアント更新</td></tr>
-          <tr><td>Download</td><td>artifact_url 期限切れ / 5xx / IO / 部分DL / 容量一時不足</td><td>何も書かない</td><td>次のトリガで work list 再計算 → 同じ work item として再現</td></tr>
+          <tr><td>Download</td><td>artifact_url 期限切れ / 5xx / IO / 部分DL / 容量一時不足</td><td>active_download_jobs を retry 対象として維持</td><td>WorkManager が同じ work を retry。worker は次回実行で artifact_url を取り直し、同じ work item として再現</td></tr>
           <tr><td>Download</td><td>404 / sha256 不一致</td><td>failed_artifacts_blacklist に追記</td><td>次の fetch で release.id か version_code が変わるまで再試行しない</td></tr>
           <tr><td>Install</td><td><code>PACKAGE_INSTALLER</code> 経路で必須未達 / 1回キャンセル / <code>AMAPI_CUSTOM_APP</code> 経路のSession一時失敗 / 容量一時不足</td><td>何も書かない (通知は Notification Controller が管理)</td><td>ユーザー操作 / 次のトリガ</td></tr>
           <tr><td>Install</td><td>署名不一致 / 非互換 / VERSION_DOWNGRADE / UNINSTALL 拒否</td><td>failed_artifacts_blacklist に追記、通知は解除</td><td>次の fetch で release.id が変わるまで再試行しない</td></tr>
@@ -719,8 +741,9 @@ const componentBlocks = `flowchart LR
     <p class="section-kicker">Out-of-spec guidance</p>
     <h2 id="guidance">不足ケースに遭遇したときの判断指針</h2>
     <ol>
-      <li><strong>「リトライしてよいか?」は「同じ条件で結果が変わりうるか?」で判定する。</strong> 変わりうればリカバリ可能 (何も永続化しない)、変わらなければリカバリ不能 (blacklist に追記)。新しいエラーが出てきたらまずこの2分類に当てはめる。</li>
+      <li><strong>「リトライしてよいか?」は「同じ条件で結果が変わりうるか?」で判定する。</strong> 変わりうればリカバリ可能 (DOWNLOAD は同じ active job を retry、INSTALL は同期完了や失敗確定の永続状態を作らない)、変わらなければリカバリ不能 (blacklist に追記)。新しいエラーが出てきたらまずこの2分類に当てはめる。</li>
       <li><strong>永続するのは「target / observed current / 不変の失敗事実 / 未送信報告」の4種。</strong> 進行中の work item の状態は永続化しない。差分から導けるものは毎反復で計算する。</li>
+      <li><strong>WorkManager の active job は一時参照として持つ。</strong> これは同じ APK を二重にダウンロードしないための scheduler 参照であり、同期完了や失敗確定を表す domain state ではない。</li>
       <li><strong>サーバー報告は「installed = INSTALLED」「blacklist = FAILED」だけ。</strong> リカバリ可能で deferred になった work item は報告に含めない (= 端末がリトライ継続中)。サーバーに「同じエラーが何度も来る」が観測されたら、それは判定区分の見直しサイン。</li>
       <li><strong>FCM は「再取得の合図」だけ。</strong> Policy 本文を data に載せない。届かない端末は、利用者がアプリを明示起動するか手動更新したときに復旧できればよい。</li>
       <li><strong>Foreground service は常時起動しない。</strong> DOWNLOAD/INSTALL の窓だけ。アイドル時は通常の Background work に戻す。</li>

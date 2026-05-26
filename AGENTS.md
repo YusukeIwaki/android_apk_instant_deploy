@@ -1,5 +1,11 @@
 # Project Design Rules
 
+## Implementation Architecture Notes
+
+- Server-side implementation guidance is maintained in `AGENTS/server-architecture-note.md`. Read it before changing `server/`, especially API behavior, database schema, object storage, authentication, or Docker Compose wiring.
+- Android companion app implementation guidance is maintained in `AGENTS/androidapp-architecture-note.md`. Read it before changing `androidapp/`, especially registration deep links, local persistence, policy sync, APK installation, permissions, or FCM behavior.
+- Before building `androidapp/`, load `androidapp/.envrc` or otherwise export its `JAVA_HOME` so Gradle uses Java 17; missing this commonly causes local Android builds to fail.
+
 ## Documentation Goals
 
 - The Astro documentation under `development/` should explain use-case processing flows at the product and data-design level.

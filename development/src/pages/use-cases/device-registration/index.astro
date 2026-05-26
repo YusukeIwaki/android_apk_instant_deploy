@@ -17,11 +17,11 @@ const createTokenResponse = `HTTP/1.1 201 Created
     "registration_secret": "drs_4Gk...",
     "issued_at": "2026-05-19T09:41:00+09:00",
     "expires_at": "2026-05-19T10:11:00+09:00",
-    "deep_link": "apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk..."
+    "deep_link": "apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...&server_base_url=https%3A%2F%2Fdistribution.example.test"
   }
 }`;
 
-const deepLinkExample = `apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...`;
+const deepLinkExample = `apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...&server_base_url=https%3A%2F%2Fdistribution.example.test`;
 
 const createDeviceCurl = `curl -X POST https://distribution.example.test/api/devices \\
   -H "Content-Type: application/json" \\

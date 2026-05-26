@@ -529,6 +529,36 @@ paths:
                       code: DEVICE_NOT_FOUND
                       message: Device was not found.
 
+  /api/notifications:
+    get:
+      tags:
+        - Android App API
+      operationId: listDeviceNotifications
+      summary: List sticky notifications for the authenticated device
+      description: |
+        Returns the set of sticky notifications the authenticated device should
+        currently show. The same set backs both the OS-level sticky notifications
+        and the in-app notification inbox (the bell icon on the home screen);
+        callers do not maintain a separate inbox state.
+
+        Each notification represents an outstanding condition that requires user
+        attention (for example: a FORCE_INSTALLED app whose install requires
+        PACKAGE_INSTALLER confirmation, or a recoverable download failure that
+        needs a user-driven retry). When the condition is resolved, the
+        notification disappears from this list on the next fetch; clients do not
+        DELETE individual notifications and there is no user-side mute or
+        snooze. The server is the single source of truth for what is sticky.
+
+        Order: newest `created_at` first. Clients re-fetch on app foreground and
+        on pull-to-refresh; FCM may also push a hint to refetch.
+      security:
+        - DeviceBearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/NotificationListResponse"
+        "401":
+          $ref: "#/components/responses/DeviceUnauthorizedError"
+
   /api/devices/me/policy:
     get:
       tags:
@@ -858,6 +888,40 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ReleaseArtifactUrlDetailResponse"
+    NotificationListResponse:
+      description: |
+        Current set of sticky notifications for the authenticated device. The
+        same set is mirrored by the OS notification tray and the in-app inbox
+        (bell icon). Notifications that are no longer applicable do not appear
+        in this response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/NotificationListResponse"
+          examples:
+            default:
+              value:
+                notifications:
+                  - id: 4012
+                    kind: INSTALL_PERMISSION_REQUIRED
+                    title: 勤怠アプリ をインストールしてください
+                    body: 必須アプリのインストール許可が必要です。
+                    app:
+                      id: 12
+                      package_name: com.example.appa
+                    created_at: "2026-05-26T10:11:00+09:00"
+                  - id: 4013
+                    kind: DOWNLOAD_RETRY_AVAILABLE
+                    title: 配達ナビ のダウンロードを再試行できます
+                    body: 通信できる場所で再試行してください。
+                    app:
+                      id: 14
+                      package_name: com.example.appc
+                    created_at: "2026-05-26T10:12:30+09:00"
+            empty:
+              summary: No outstanding notifications
+              value:
+                notifications: []
     AdminUnauthorizedError:
       description: Admin bearer token is missing or invalid.
       content:
@@ -1280,7 +1344,7 @@ components:
         deep_link:
           type: string
           format: uri
-          example: apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...
+          example: apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...&server_base_url=https%3A%2F%2Fdistribution.example.test
 
     DeviceRegistrationTokenCreateRequest:
       type: object
@@ -1358,6 +1422,76 @@ components:
       enum:
         - AMAPI_CUSTOM_APP
         - PACKAGE_INSTALLER
+
+    Notification:
+      type: object
+      additionalProperties: false
+      description: |
+        A sticky notification that the device should currently show. Backs both
+        the OS notification tray entry and the in-app inbox row. Resolved
+        notifications are removed server-side and disappear from subsequent
+        `GET /api/notifications` responses; there is no user-side dismiss.
+      required:
+        - id
+        - kind
+        - title
+        - body
+        - created_at
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        kind:
+          $ref: "#/components/schemas/NotificationKind"
+        title:
+          type: string
+          description: Display title. The companion app shows this verbatim in both the OS notification and the in-app inbox row.
+          example: 勤怠アプリ をインストールしてください
+        body:
+          type: string
+          description: One-line explanation of what the user is being asked to do.
+          example: 必須アプリのインストール許可が必要です。
+        app:
+          description: |
+            Optional reference to the policy app this notification is about.
+            Present whenever the notification is anchored to a specific app
+            (install permission required, download retry available, etc.); absent
+            for device-level notifications.
+          $ref: "#/components/schemas/DevicePolicyAppRef"
+        created_at:
+          type: string
+          format: date-time
+          description: |
+            When the notification first became active. Stable across re-fetches
+            so the inbox can sort by creation time. If a condition disappears and
+            later reappears, the server issues a new notification row with a new
+            `id` and `created_at`.
+
+    NotificationKind:
+      type: string
+      description: |
+        Machine-readable category of the notification. The companion app uses
+        this to choose the OS notification channel and the deep-link target, but
+        all rendering text comes from `title` / `body`.
+
+        - `INSTALL_PERMISSION_REQUIRED`: a FORCE_INSTALLED app needs
+          PACKAGE_INSTALLER confirmation that has not been granted yet.
+        - `DOWNLOAD_RETRY_AVAILABLE`: a recoverable download failure is
+          outstanding and a user-driven retry can move it forward.
+      enum:
+        - INSTALL_PERMISSION_REQUIRED
+        - DOWNLOAD_RETRY_AVAILABLE
+
+    NotificationListResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - notifications
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/Notification"
 
     PolicySyncAction:
       type: object

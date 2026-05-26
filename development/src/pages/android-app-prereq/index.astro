@@ -73,7 +73,7 @@ adb install -r companion-release.apk
 # インストール後、管理者が発行した登録リンクを開く
 adb shell am start \\
   -a android.intent.action.VIEW \\
-  -d "apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk..."`;
+  -d "apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...&server_base_url=https%3A%2F%2Fdistribution.example.test"`;
 
 const sequence = `sequenceDiagram
   autonumber

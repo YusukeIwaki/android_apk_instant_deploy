@@ -5,12 +5,10 @@ import BaseLayout from "../../../layouts/BaseLayout.astro";
 const normalLaunchFlow = `flowchart TB
   Launcher["ホームアイコンから起動"] --> HasCredential{"登録済み?"}
   HasCredential -- "いいえ" --> LinkRequired["登録リンク待ち"]
-  HasCredential -- "はい" --> Home["ホーム (状態に応じた表示)"]
-  Home --> Action["必要な対応"]
-  Home --> Errors["エラーと再試行"]
-  Home --> Catalog["任意アプリ一覧"]
-  Catalog --> Detail["任意アプリ詳細"]
-  Home --> Settings["設定"]`;
+  HasCredential -- "はい" --> Home["ホーム (ポリシーのアプリ一覧)"]
+  Home -- "ベル" --> Inbox["通知一覧"]
+  Home -- "行タップ" --> Detail["アプリ詳細"]
+  Inbox -- "本文タップ" --> Detail`;
 
 const deepLinkFlow = `flowchart TB
   Link["登録リンク / QR"] --> Status{"端末とリンクの状態"}
@@ -22,9 +20,10 @@ const deepLinkFlow = `flowchart TB
   RegDone --> Home["ホーム"]`;
 
 const notificationFlow = `flowchart TB
-  Notice["OS通知を表示"] --> UserAction{"利用者の操作"}
-  UserAction -- "本文タップ" --> Home["ホーム (状態に応じて 必要な対応 / エラー)"]
-  UserAction -- "アクションボタン" --> Background["アプリ画面を開かず処理再開"]`;
+  Notice["OS通知 (sticky)"] --> UserAction{"利用者の操作"}
+  UserAction -- "本文タップ" --> Detail["アプリ詳細"]
+  UserAction -- "アクションボタン" --> Background["アプリ画面を開かず処理再開"]
+  Mirror["アプリ内 通知一覧 (ベル)"] --- Notice`;
 ---
 
 <BaseLayout
@@ -35,7 +34,7 @@ const notificationFlow = `flowchart TB
 >
   <p class="lede">
     Androidコンパニオンアプリに必要な画面の「過不足」と「ユーザ体験の筋」を議論するためのページです。
-    画面遷移の全体像を示したうえで、登録、ホーム（状態別表示）、通知、任意アプリ、復旧、設定の各画面を並べます。
+    画面遷移の全体像を示したうえで、登録、ホーム（状態別表示）、通知、任意アプリ、復旧の各画面を並べます。
     同期機構の内部状態、API、PackageInstaller、ストレージなどの実装詳細は別資料に切り出します。
     モックは <code>material-components/material-web</code> のWeb Componentsで作った議論用の画面案で、Android実装ではMaterial 3の同等コンポーネントに置き換える前提です。
   </p>
@@ -65,8 +64,8 @@ const notificationFlow = `flowchart TB
         <tbody>
           <tr>
             <th scope="row">通常起動</th>
-            <td>端末が登録済みかどうか。</td>
-            <td>未登録なら「登録リンク待ち」。登録済みなら「ホーム」で現在の状態（最新です / やることがあります / 更新中 / オフライン / エラー）を表示する。</td>
+            <td>端末が登録済みか、ポリシーが指定されているか。</td>
+            <td>未登録なら「登録リンク待ち」。登録済みでポリシー未指定なら「ホーム — ポリシー未指定」。ポリシーが指定済みなら「ホーム — アプリ一覧」を表示する。</td>
           </tr>
           <tr>
             <th scope="row">ディープリンク起動</th>
@@ -76,7 +75,7 @@ const notificationFlow = `flowchart TB
           <tr>
             <th scope="row">OS通知起動</th>
             <td>本文タップかアクションボタンか。</td>
-            <td>本文タップは「ホーム」に着地し、ホームの状態（やることがあります / エラー）から「必要な対応」や「エラーと再試行」へ進める。アクションボタンはアプリ画面を開かず処理を再開する。</td>
+            <td>本文タップは対応すべき対象の「アプリ詳細」に着地する。アクションボタンはアプリ画面を開かず処理を再開する。同じ内容はアプリ内の「通知一覧」(ベル) からもいつでも見える。</td>
           </tr>
         </tbody>
       </table>
@@ -96,6 +95,9 @@ const notificationFlow = `flowchart TB
         <div class="phone-shell" aria-label="登録リンク待ち画面">
           <div class="phone-screen">
             <div class="phone-status"><span>9:40</span><span>5G 100%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-title">APK Remote Distribution</span>
+            </header>
             <main class="app-body app-body--center">
               <div class="warning-mark">!</div>
               <h3>登録リンクが必要です</h3>
@@ -119,6 +121,9 @@ const notificationFlow = `flowchart TB
         <div class="phone-shell phone-shell--pulse" aria-label="登録画面">
           <div class="phone-screen">
             <div class="phone-status"><span>9:41</span><span>5G 100%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-title">APK Remote Distribution</span>
+            </header>
             <main class="app-body">
               <p class="screen-eyebrow">端末登録</p>
               <h3>表示名を入力してください</h3>
@@ -170,17 +175,21 @@ const notificationFlow = `flowchart TB
               <h3>この端末は既に登録済みです</h3>
               <p class="screen-copy">アプリを開いて配信状況を確認できます。</p>
               <md-filled-button>アプリを開く</md-filled-button>
-              <md-outlined-button>閉じる</md-outlined-button>
+              <p class="screen-copy">このリンクは別のサーバー (<code>https://new.example.com</code>) を指しています。</p>
+              <md-outlined-button>サーバーの向き先を変更する</md-outlined-button>
             </main>
           </div>
         </div>
         <div class="screen-notes">
           <h3 id="screen-already-registered">既に登録済みの案内</h3>
-          <p>同じ端末が再度有効な登録リンクを踏んだ場合の画面。「使えません」エラーと混同しないように分ける。</p>
+          <p>同じ端末が再度有効な登録リンクを踏んだ場合の画面。「使えません」エラーと混同しないように分ける。リンクに含まれる <code>server_base_url</code> が端末側に保持されているものと一致しないときに限り、「アプリを開く」の下に「サーバーの向き先を変更する」を追加表示する。一致する場合は「アプリを開く」のみ。</p>
           <dl class="key-value-list screen-meta">
             <div><dt>出すタイミング</dt><dd>登録済み端末で再度有効な登録リンクを踏んだ場合。</dd></div>
-            <div><dt>主な操作</dt><dd>「アプリを開く」でホーム / 「閉じる」でアプリ終了。</dd></div>
-            <div><dt>議論ポイント</dt><dd>「アプリを開く」を明示するか、通常起動へ自動誘導するか。</dd></div>
+            <div><dt>主な操作</dt><dd>「アプリを開く」でホームへ。</dd></div>
+            <div><dt>切替ボタンの出現条件</dt><dd>端末に保存された <code>server_base_url</code> ≠ ディープリンクの <code>server_base_url</code> のときだけ表示する。直前の説明文「このリンクは別のサーバー (<code>https://new.example.com</code>) を指しています。」もボタンとセットで出し入れする対象であり、URL が一致する場合はボタンと説明文の両方を非表示にする。</dd></div>
+            <div><dt>切替の効果</dt><dd>端末側の <code>server_base_url</code> をディープリンクの値で上書きする。直後の再評価では新旧の URL が一致するため、ボタン自体は自動的に消える（以降は新サーバー向けの登録フローに合流する）。</dd></div>
+            <div><dt>置かないもの</dt><dd>「閉じる」ボタン。明示的なアプリ終了動線は持たない（OS の戻る操作に任せる）。</dd></div>
+            <div><dt>議論ポイント</dt><dd>切替時に旧サーバーの登録情報をどこまで破棄するか（端末トークン・キャッシュ済み配信設定・ダウンロード中のWorkManagerジョブ）。新旧 <code>server_base_url</code> を画面上にどこまで露出するか。</dd></div>
           </dl>
         </div>
       </article>
@@ -208,172 +217,130 @@ const notificationFlow = `flowchart TB
         </div>
       </article>
 
-      <article class="android-screen-card" aria-labelledby="screen-home-clean">
-        <div class="phone-shell" aria-label="ホーム — 最新です">
+      <article class="android-screen-card" aria-labelledby="screen-home-unassigned">
+        <div class="phone-shell" aria-label="ホーム — ポリシー未指定">
           <div class="phone-screen">
-            <div class="phone-status"><span>10:12</span><span>5G 100%</span></div>
-            <header class="app-bar">
+            <div class="phone-status"><span>10:10</span><span>5G 100%</span></div>
+            <header class="app-bar app-bar--with-actions">
               <span class="app-bar-title">APK Remote Distribution</span>
-              <span class="app-bar-icon" aria-label="設定">⚙</span>
+              <button class="app-bar-bell" aria-label="通知一覧を開く">
+                <span class="bell-icon" aria-hidden="true">🔔</span>
+              </button>
             </header>
-            <main class="app-body">
-              <p class="screen-eyebrow">状態</p>
-              <h3>最新です</h3>
-              <md-list>
-                <md-list-item type="button">
-                  <div slot="headline">入れられるアプリを見る</div>
-                  <div slot="supporting-text">3件</div>
-                </md-list-item>
-              </md-list>
-              <p class="screen-copy screen-meta-line">最終確認 10:20</p>
+            <main class="app-body app-body--center">
+              <h3>ポリシーが未指定です</h3>
+              <p class="screen-copy">管理者がこの端末向けのアプリ配信を設定すると、ここに一覧が表示されます。</p>
+              <dl class="home-device-info home-device-info--standalone">
+                <div><dt>端末名</dt><dd>Pixel 8 QA-01</dd></div>
+                <div><dt>サーバー</dt><dd>distribution.example.test</dd></div>
+                <div><dt>アプリバージョン</dt><dd>1.0.0</dd></div>
+              </dl>
             </main>
           </div>
         </div>
         <div class="screen-notes">
-          <h3 id="screen-home-clean">ホーム — 最新です</h3>
-          <p>必須同期完了済み・エラー無し・オンラインの平常時。「何もしなくてよい」と1秒で分かることが目的。</p>
+          <h3 id="screen-home-unassigned">ホーム — ポリシー未指定</h3>
+          <p>端末は登録済みだが、まだ DevicePolicy が割り当てられていない（entries が空）状態。利用者は待つしかないので、状況とこの端末の素性だけを伝える。</p>
           <dl class="key-value-list screen-meta">
-            <div><dt>出すタイミング</dt><dd>登録済み端末の通常起動時、操作不要の場合。</dd></div>
-            <div><dt>主な操作</dt><dd>任意アプリ一覧へ / 設定へ / 下に引っ張って手動更新。</dd></div>
-            <div><dt>置かないもの</dt><dd>端末名の大表示、内部状態（revision等）、件数サマリ、「配信設定を確認」ボタン。</dd></div>
+            <div><dt>出すタイミング</dt><dd><code>GET /api/devices/me/policy</code> が <code>entries: []</code> を返したとき。</dd></div>
+            <div><dt>主な操作</dt><dd>右上ベルで「通知一覧」を確認 / 下に引っ張って手動同期。</dd></div>
+            <div><dt>置かないもの</dt><dd>「管理者に問い合わせる」電話番号などのテナント固有情報。再登録動線。</dd></div>
           </dl>
         </div>
       </article>
 
-      <article class="android-screen-card" aria-labelledby="screen-home-action">
-        <div class="phone-shell" aria-label="ホーム — やることがあります">
+      <article class="android-screen-card" aria-labelledby="screen-home-list">
+        <div class="phone-shell" aria-label="ホーム — アプリ一覧">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:12</span><span>5G 100%</span></div>
+            <header class="app-bar app-bar--with-actions">
+              <span class="app-bar-title">APK Remote Distribution</span>
+              <button class="app-bar-bell app-bar-bell--has-badge" aria-label="通知一覧を開く (2件)">
+                <span class="bell-icon" aria-hidden="true">🔔</span>
+                <span class="bell-badge" aria-hidden="true">2</span>
+              </button>
+            </header>
+            <main class="app-body app-body--list">
+              <ul class="policy-app-list">
+                <li class="policy-app-row policy-app-row--action">
+                  <div class="policy-app-main">
+                    <strong>勤怠アプリ</strong>
+                    <span>version 2.3</span>
+                  </div>
+                  <span class="policy-app-chip">必須</span>
+                </li>
+                <li class="policy-app-row policy-app-row--idle">
+                  <div class="policy-app-main">
+                    <strong>棚卸サポート</strong>
+                    <span>version 1.1</span>
+                  </div>
+                </li>
+                <li class="policy-app-row policy-app-row--action">
+                  <div class="policy-app-main">
+                    <strong>配達ナビ</strong>
+                    <span>version 1.0.5</span>
+                  </div>
+                </li>
+                <li class="policy-app-row policy-app-row--idle">
+                  <div class="policy-app-main">
+                    <strong>来客受付</strong>
+                    <span>version 2.1.3</span>
+                  </div>
+                  <span class="policy-app-chip">必須</span>
+                </li>
+              </ul>
+              <dl class="home-device-info">
+                <div><dt>端末名</dt><dd>Pixel 8 QA-01</dd></div>
+                <div><dt>サーバー</dt><dd>distribution.example.test</dd></div>
+                <div><dt>アプリバージョン</dt><dd>1.0.0</dd></div>
+              </dl>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-home-list">ホーム — アプリ一覧</h3>
+          <p>ポリシーで指定された全アプリを 1 リストで表示する画面。必須・任意でセクションを分けず、行末の「必須」チップで識別する。「状態」見出しや件数サマリは置かず、行の背景色だけで「今この行に対応が必要か」を表現する。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>行のレイアウト</dt><dd>左に「アプリ名 / version x.y」を 2 行で配置し、垂直方向中央揃え。右端に「必須」チップ（任意アプリでは非表示）。</dd></div>
+            <div><dt>行の背景</dt><dd>未インストール / 更新可能 / 失敗回復 / インストール許可待ちなど「対応が必要」な行は<strong>白背景</strong>。最新で何もすることがない行は<strong>グレー背景</strong>。</dd></div>
+            <div><dt>主な操作</dt><dd>行タップで「アプリ詳細」へ。右上ベルで「通知一覧」へ。下に引っ張って手動同期。</dd></div>
+            <div><dt>下部情報</dt><dd>端末登録名、サーバーの向き先 (<code>server_base_url</code> のホスト)、このアプリ自体のバージョン。独立した「設定」画面は持たない。</dd></div>
+            <div><dt>議論ポイント</dt><dd>「対応が必要」の判定（更新可能の自動判定はサーバー側 latest と version_code を比較するのか、ローカルで保持するか）。行内に進捗を出すか、詳細画面に閉じ込めるか。</dd></div>
+          </dl>
+        </div>
+      </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-notifications">
+        <div class="phone-shell" aria-label="通知一覧画面">
           <div class="phone-screen">
             <div class="phone-status"><span>10:13</span><span>5G 100%</span></div>
             <header class="app-bar">
-              <span class="app-bar-title">APK Remote Distribution</span>
-              <span class="app-bar-icon" aria-label="設定">⚙</span>
-            </header>
-            <main class="app-body">
-              <p class="screen-eyebrow">状態</p>
-              <h3>やることがあります</h3>
-              <div class="soft-panel soft-panel--warn">
-                <span class="check-dot check-dot--warn">!</span>
-                <div>
-                  <strong>勤怠アプリ</strong>
-                  <span>インストールを許可してください</span>
-                </div>
-              </div>
-              <md-filled-button>対応する</md-filled-button>
-              <md-list>
-                <md-list-item type="button">
-                  <div slot="headline">入れられるアプリを見る</div>
-                  <div slot="supporting-text">3件</div>
-                </md-list-item>
-              </md-list>
-            </main>
-          </div>
-        </div>
-        <div class="screen-notes">
-          <h3 id="screen-home-action">ホーム — やることがあります</h3>
-          <p>利用者操作が必要なときの主役状態。アクションカードを行動の言葉で並べる。</p>
-          <dl class="key-value-list screen-meta">
-            <div><dt>出すタイミング</dt><dd>必須アプリのインストール許可待ち、リカバリ可能な失敗が残っている、など。</dd></div>
-            <div><dt>主な操作</dt><dd>「対応する」でOS確認画面（1件）または「必要な対応」画面（複数件）へ。</dd></div>
-            <div><dt>議論ポイント</dt><dd>件数によるOS直行と中継画面の使い分け。「あとで」を置くかどうか。</dd></div>
-          </dl>
-        </div>
-      </article>
-
-      <article class="android-screen-card" aria-labelledby="screen-home-syncing">
-        <div class="phone-shell phone-shell--sync" aria-label="ホーム — 更新中">
-          <div class="phone-screen">
-            <div class="phone-status"><span>10:14</span><span>5G 100%</span></div>
-            <header class="app-bar">
-              <span class="app-bar-title">APK Remote Distribution</span>
-              <span class="app-bar-icon" aria-label="設定">⚙</span>
-            </header>
-            <main class="app-body">
-              <p class="screen-eyebrow">状態</p>
-              <h3>更新中</h3>
-              <md-linear-progress indeterminate></md-linear-progress>
-              <md-list>
-                <md-list-item>
-                  <div slot="headline">勤怠アプリ</div>
-                  <div slot="supporting-text">ダウンロード中</div>
-                </md-list-item>
-                <md-list-item>
-                  <div slot="headline">棚卸サポート</div>
-                  <div slot="supporting-text">最新版です</div>
-                </md-list-item>
-              </md-list>
-            </main>
-          </div>
-        </div>
-        <div class="screen-notes">
-          <h3 id="screen-home-syncing">ホーム — 更新中</h3>
-          <p>配信設定の取得や必須アプリ同期が進行中の状態。独立画面ではなくホームの一状態として扱う。</p>
-          <dl class="key-value-list screen-meta">
-            <div><dt>出すタイミング</dt><dd>自動同期処理が進行中。</dd></div>
-            <div><dt>主な操作</dt><dd>基本は何もしない（バックグラウンドで継続）。</dd></div>
-            <div><dt>議論ポイント</dt><dd>更新完了の合図はスナックバーで吸収するか、画面遷移を伴うか。オフライン突入や端末スリープ時の表現。</dd></div>
-          </dl>
-        </div>
-      </article>
-
-      <article class="android-screen-card" aria-labelledby="screen-home-offline">
-        <div class="phone-shell" aria-label="ホーム — オフライン">
-          <div class="phone-screen">
-            <div class="phone-status"><span>9:14</span><span>圏外</span></div>
-            <header class="app-bar">
-              <span class="app-bar-title">APK Remote Distribution</span>
-              <span class="app-bar-icon" aria-label="設定">⚙</span>
-            </header>
-            <main class="app-body">
-              <p class="screen-eyebrow">状態</p>
-              <h3>オフラインで確認できません</h3>
-              <p class="screen-copy">通信できる場所で下に引っ張って更新してください。</p>
-              <p class="screen-copy screen-meta-line">最終確認 昨日 18:30</p>
-            </main>
-          </div>
-        </div>
-        <div class="screen-notes">
-          <h3 id="screen-home-offline">ホーム — オフライン</h3>
-          <p>通信不可で最新かどうか分からない状態。利用者の不安を作らないために明示的に出す。</p>
-          <dl class="key-value-list screen-meta">
-            <div><dt>出すタイミング</dt><dd>通信不可、かつ最終確認から一定時間以上経過。</dd></div>
-            <div><dt>主な操作</dt><dd>通信できる場所への移動 / 引っ張って更新。</dd></div>
-            <div><dt>議論ポイント</dt><dd>「一定時間」をどの程度にするか。短時間のオフラインは「最新です」のままにする。</dd></div>
-          </dl>
-        </div>
-      </article>
-
-      <article class="android-screen-card" aria-labelledby="screen-required-action">
-        <div class="phone-shell" aria-label="必要な対応画面">
-          <div class="phone-screen">
-            <div class="phone-status"><span>10:15</span><span>5G 100%</span></div>
-            <header class="app-bar">
               <span class="app-bar-icon" aria-hidden="true">←</span>
-              <span class="app-bar-title">必要な対応</span>
+              <span class="app-bar-title">通知</span>
             </header>
-            <main class="app-body">
-              <h3>インストールを許可してください</h3>
-              <p class="screen-copy">続行するとAndroidの確認画面が開きます。</p>
+            <main class="app-body app-body--list">
               <md-list>
                 <md-list-item type="button">
-                  <div slot="headline">勤怠アプリ</div>
-                  <div slot="supporting-text">確認画面を開く</div>
+                  <div slot="headline">勤怠アプリ をインストールしてください</div>
+                  <div slot="supporting-text">必須アプリのインストール許可待ち</div>
                 </md-list-item>
                 <md-list-item type="button">
-                  <div slot="headline">棚卸サポート</div>
-                  <div slot="supporting-text">確認画面を開く</div>
+                  <div slot="headline">配達ナビ のダウンロードを再試行できます</div>
+                  <div slot="supporting-text">通信できる場所で再試行してください</div>
                 </md-list-item>
               </md-list>
-              <md-text-button>あとで通知する</md-text-button>
+              <p class="screen-copy screen-meta-line">対応が完了した通知は自動的に消えます。</p>
             </main>
           </div>
         </div>
         <div class="screen-notes">
-          <h3 id="screen-required-action">必要な対応</h3>
-          <p>利用者操作が必要なアプリが複数あるときに見せる中継画面。1件のときはこの画面を飛ばしてOSの確認画面へ直接遷移してよい。</p>
+          <h3 id="screen-notifications">通知一覧</h3>
+          <p>ホーム右上のベルから開くアプリ内インボックス。<strong>OS 通知で sticky 表示している項目</strong>と同じ集合をアプリ内でも確認できるようにする。条件が解消された通知はサーバー側で消え、次回 GET 時に一覧から自動で外れる。利用者が手で消すスワイプ削除は提供しない。</p>
           <dl class="key-value-list screen-meta">
-            <div><dt>出すタイミング</dt><dd>ホームの「対応する」から（2件以上）、または通知の本文タップ経由。</dd></div>
-            <div><dt>主な操作</dt><dd>各行で「確認画面を開く」/ 全体で「あとで通知する」。</dd></div>
-            <div><dt>議論ポイント</dt><dd>「あとで」の再通知タイミングを利用者にどう伝えるか。</dd></div>
+            <div><dt>取得元</dt><dd><code>GET /api/notifications</code> の <code>notifications</code> 配列。同期完了や WorkManager の進行を反映するため、ホームを開いたタイミングとプル更新時に取得し直す。</dd></div>
+            <div><dt>主な操作</dt><dd>行タップで対象「アプリ詳細」へ遷移して対応する。</dd></div>
+            <div><dt>置かないもの</dt><dd>個別の「ミュート」「次から表示しない」スイッチ（管理者配信を利用者側で永続抑止する手段は提供しない）。内部エラーコードやスタックトレース。</dd></div>
+            <div><dt>議論ポイント</dt><dd>空状態の見せ方（行を 0 件にして案内文だけにするか、明示的なエンプティステートを置くか）。同じ <code>kind</code> + <code>app</code> の通知を 1 行に集約するか並べるか。</dd></div>
           </dl>
         </div>
       </article>
@@ -400,9 +367,9 @@ const notificationFlow = `flowchart TB
         </div>
         <div class="screen-notes">
           <h3 id="screen-install-notification">通知 — 必須アプリのインストール</h3>
-          <p>サイレントインストール経路 (AMAPI_CUSTOM_APP) が使えず、ユーザー確認 (PACKAGE_INSTALLER) が必要で必須アプリが未達のときだけ出すsticky通知。<strong>「ユーザーが拒否したら静かに引き下がる」設計ではなく、「なるべくインストールしてもらう」設計</strong>。管理者が配信したアプリは業務上必要であり、利用者の拒否で長期間未インストールに留まる状態は管理者にとって想定外となる。次回の同期トリガで条件 (FORCE_INSTALLED 未達 + 経路が <code>PACKAGE_INSTALLER</code>) が変わっていなければ、通知は再度表示される。</p>
+          <p>サイレントインストール経路 (AMAPI_CUSTOM_APP) が使えず、ユーザー確認 (PACKAGE_INSTALLER) が必要で必須アプリが未達のときだけ出すsticky通知。<strong>「ユーザーが拒否したら静かに引き下がる」設計ではなく、「なるべくインストールしてもらう」設計</strong>。管理者が配信したアプリは業務上必要であり、利用者の拒否で長期間未インストールに留まる状態は管理者にとって想定外となる。次回の同期トリガで条件 (FORCE_INSTALLED 未達 + 経路が <code>PACKAGE_INSTALLER</code>) が変わっていなければ、通知は再度表示される。同じ項目は <code>GET /api/notifications</code> 経由でアプリ内「通知一覧」にも sticky で並ぶ。</p>
           <dl class="key-value-list screen-meta">
-            <div><dt>本文タップ</dt><dd>「ホーム — やることがあります」に着地（→ 必要に応じて「必要な対応」へ進める）。</dd></div>
+            <div><dt>本文タップ</dt><dd>対象アプリの「アプリ詳細」に着地し、そのまま「インストール」または「アップデート」を押せる状態にする。</dd></div>
             <div><dt>アクション</dt><dd>「インストール」はアプリ画面を開かず処理を進める。</dd></div>
             <div><dt>置かないもの</dt><dd>通知本文に内部状態や失敗コード。インストール確定後は通知を下げる。「次から表示しない」「ミュート」のような利用者側の永続抑止オプション。</dd></div>
           </dl>
@@ -431,54 +398,17 @@ const notificationFlow = `flowchart TB
         </div>
         <div class="screen-notes">
           <h3 id="screen-retry-notification">通知 — ダウンロード再試行</h3>
-          <p>リカバリ可能なダウンロード失敗が残っていて、利用者操作で再試行させたい場合の通知。常時出すのではなく、ユーザー操作が必要な局面に限定する。</p>
+          <p>リカバリ可能なダウンロード失敗が残っていて、利用者操作で再試行させたい場合の通知。常時出すのではなく、ユーザー操作が必要な局面に限定する。同じ項目は <code>GET /api/notifications</code> 経由でアプリ内「通知一覧」にも sticky で並ぶ。</p>
           <dl class="key-value-list screen-meta">
-            <div><dt>本文タップ</dt><dd>「ホーム — エラー」に着地（→「エラーと再試行」へ進める）。</dd></div>
+            <div><dt>本文タップ</dt><dd>対象アプリの「アプリ詳細」に着地し、そのまま「アップデート」または「再試行」が押せる状態にする。</dd></div>
             <div><dt>アクション</dt><dd>「再試行」はアプリ画面を開かず処理を再開する。</dd></div>
             <div><dt>置かないもの</dt><dd>同じ条件で結果が変わらないリカバリ不能失敗には出さない。</dd></div>
           </dl>
         </div>
       </article>
 
-      <article class="android-screen-card" aria-labelledby="screen-catalog">
-        <div class="phone-shell" aria-label="任意アプリ一覧画面">
-          <div class="phone-screen">
-            <div class="phone-status"><span>10:20</span><span>5G 100%</span></div>
-            <header class="app-bar">
-              <span class="app-bar-icon" aria-hidden="true">←</span>
-              <span class="app-bar-title">入れられるアプリ</span>
-            </header>
-            <main class="app-body">
-              <md-list>
-                <md-list-item type="button">
-                  <div slot="headline">棚卸サポート</div>
-                  <div slot="supporting-text">v1.4.0 ・ 未インストール</div>
-                </md-list-item>
-                <md-list-item type="button">
-                  <div slot="headline">来客受付</div>
-                  <div slot="supporting-text">v2.1.3 ・ インストール済み</div>
-                </md-list-item>
-                <md-list-item type="button">
-                  <div slot="headline">配達ナビ</div>
-                  <div slot="supporting-text">v1.0.5 ・ 更新あり</div>
-                </md-list-item>
-              </md-list>
-            </main>
-          </div>
-        </div>
-        <div class="screen-notes">
-          <h3 id="screen-catalog">任意アプリ一覧</h3>
-          <p>利用者が自分で選んで入れられるアプリの一覧。必要・任意のタブ分けはせず、任意のみを並べる。</p>
-          <dl class="key-value-list screen-meta">
-            <div><dt>出すタイミング</dt><dd>ホームの「入れられるアプリを見る」から。</dd></div>
-            <div><dt>主な操作</dt><dd>行タップで詳細へ。</dd></div>
-            <div><dt>議論ポイント</dt><dd>状態バッジ（未インストール / インストール済み / 更新あり / 取得失敗）の出し方。絞り込みフィルタの要否。新着アプリの気づかせ方。</dd></div>
-          </dl>
-        </div>
-      </article>
-
-      <article class="android-screen-card" aria-labelledby="screen-detail">
-        <div class="phone-shell" aria-label="アプリ詳細画面">
+      <article class="android-screen-card" aria-labelledby="screen-detail-optional-install">
+        <div class="phone-shell" aria-label="アプリ詳細 — 任意 (未インストール)">
           <div class="phone-screen">
             <div class="phone-status"><span>10:21</span><span>5G 100%</span></div>
             <header class="app-bar">
@@ -486,91 +416,135 @@ const notificationFlow = `flowchart TB
               <span class="app-bar-title"></span>
             </header>
             <main class="app-body">
-              <p class="screen-eyebrow">任意アプリ</p>
-              <div class="app-icon">棚</div>
-              <h3>棚卸サポート</h3>
+              <div class="app-detail-header">
+                <div class="app-icon">棚</div>
+                <div>
+                  <h3>棚卸サポート</h3>
+                  <p class="app-detail-meta">version 1.4.0</p>
+                </div>
+              </div>
+              <div class="app-detail-actions app-detail-actions--single">
+                <md-filled-button>インストール</md-filled-button>
+              </div>
               <p class="screen-copy">棚卸作業を補助する社内アプリです。</p>
-              <div class="version-row"><span>配信バージョン</span><strong>v1.4.0</strong></div>
-              <md-filled-button>インストール</md-filled-button>
-              <md-text-button>一覧へ戻る</md-text-button>
             </main>
           </div>
         </div>
         <div class="screen-notes">
-          <h3 id="screen-detail">任意アプリ詳細</h3>
-          <p>利用者が明示的にインストールする画面。状態によって主CTAを1つに絞る。</p>
+          <h3 id="screen-detail-optional-install">アプリ詳細 — 任意・未インストール</h3>
+          <p>ホームの行からタップして開くアプリ詳細の基本形。Google Play と同じ「アイコン + 名前 + バージョン + 主アクション」の縦構成を 1 画面 1 状態で表す。</p>
           <dl class="key-value-list screen-meta">
-            <div><dt>出すタイミング</dt><dd>任意アプリ一覧から行タップ。</dd></div>
-            <div><dt>主CTA（状態別）</dt><dd>未インストール → 「インストール」 / インストール済み → 「開く」 + 二次操作で「アンインストール」 / 更新あり → 「更新」 / 失敗中 → 「再試行」。</dd></div>
-            <div><dt>議論ポイント</dt><dd>変更点（リリースノート）を表示するか。アンインストールの確認ダイアログを置くか。</dd></div>
+            <div><dt>主CTA</dt><dd>「インストール」（プライマリ・横幅 100%）。</dd></div>
+            <div><dt>出すタイミング</dt><dd>install_mode = AVAILABLE で未インストールの行をタップ。</dd></div>
+            <div><dt>置かないもの</dt><dd>追加の「キャンセル」「一覧へ戻る」テキストボタン（戻るは OS の戻るボタンと AppBar の ← に任せる）。</dd></div>
           </dl>
         </div>
       </article>
 
-      <article class="android-screen-card" aria-labelledby="screen-error">
-        <div class="phone-shell" aria-label="エラーと再試行画面">
+      <article class="android-screen-card" aria-labelledby="screen-detail-optional-installed">
+        <div class="phone-shell" aria-label="アプリ詳細 — 任意 (インストール済み)">
           <div class="phone-screen">
-            <div class="phone-status"><span>10:28</span><span>5G 86%</span></div>
+            <div class="phone-status"><span>10:22</span><span>5G 100%</span></div>
             <header class="app-bar">
               <span class="app-bar-icon" aria-hidden="true">←</span>
-              <span class="app-bar-title">エラー</span>
+              <span class="app-bar-title"></span>
             </header>
             <main class="app-body">
-              <h3>通信できる場所で再試行してください</h3>
-              <md-list>
-                <md-list-item type="button">
-                  <div slot="headline">棚卸サポート</div>
-                  <div slot="supporting-text">ダウンロードに失敗</div>
-                </md-list-item>
-              </md-list>
-              <md-filled-button>すべて再試行</md-filled-button>
-              <md-outlined-button>ホームへ戻る</md-outlined-button>
+              <div class="app-detail-header">
+                <div class="app-icon">来</div>
+                <div>
+                  <h3>来客受付</h3>
+                  <p class="app-detail-meta">version 2.1.3 ・ インストール済み</p>
+                </div>
+              </div>
+              <div class="app-detail-actions app-detail-actions--single">
+                <md-outlined-button>アンインストール</md-outlined-button>
+              </div>
+              <p class="screen-copy">受付タブレットで来客対応に使うアプリです。</p>
             </main>
           </div>
         </div>
         <div class="screen-notes">
-          <h3 id="screen-error">エラーと再試行</h3>
-          <p>利用者操作で進む失敗のみを並べる画面。自動再試行で解決するものや、結果が変わらない失敗は出さない。</p>
+          <h3 id="screen-detail-optional-installed">アプリ詳細 — 任意・インストール済み（最新）</h3>
+          <p>最新版が入っている任意アプリ。利用者が辞めたいときのアンインストールだけが残るので、それをセカンダリで 1 つ置く。</p>
           <dl class="key-value-list screen-meta">
-            <div><dt>出すタイミング</dt><dd>ホームの「エラーで止まっています」から。</dd></div>
-            <div><dt>主な操作</dt><dd>「すべて再試行」/ 行ごとの再試行 / ホームへ戻る。</dd></div>
-            <div><dt>置かないもの</dt><dd>内部エラーコードやAPI名。同じ条件で結果が変わらない失敗。</dd></div>
+            <div><dt>主CTA</dt><dd>「アンインストール」（セカンダリ・横幅 100%）。</dd></div>
+            <div><dt>出すタイミング</dt><dd>install_mode = AVAILABLE で installed version_code ≧ 配信 version_code。</dd></div>
+            <div><dt>置かないもの</dt><dd>「開く」CTA（業務アプリを本アプリから launch する責務は持たない）。</dd></div>
           </dl>
         </div>
       </article>
 
-      <article class="android-screen-card" aria-labelledby="screen-settings">
-        <div class="phone-shell" aria-label="設定画面">
+      <article class="android-screen-card" aria-labelledby="screen-detail-optional-update">
+        <div class="phone-shell" aria-label="アプリ詳細 — 任意 (更新あり)">
           <div class="phone-screen">
-            <div class="phone-status"><span>10:32</span><span>5G 92%</span></div>
+            <div class="phone-status"><span>10:23</span><span>5G 100%</span></div>
             <header class="app-bar">
               <span class="app-bar-icon" aria-hidden="true">←</span>
-              <span class="app-bar-title">設定</span>
+              <span class="app-bar-title"></span>
             </header>
             <main class="app-body">
-              <md-list>
-                <md-list-item type="button">
-                  <div slot="headline">表示名</div>
-                  <div slot="supporting-text">Pixel 8 QA-01</div>
-                </md-list-item>
-                <md-list-item type="button">
-                  <div slot="headline">このアプリについて</div>
-                  <div slot="supporting-text">バージョン 1.0.0</div>
-                </md-list-item>
-              </md-list>
+              <div class="app-detail-header">
+                <div class="app-icon">配</div>
+                <div>
+                  <h3>配達ナビ</h3>
+                  <p class="app-detail-meta">version 1.0.5 → 1.1.0</p>
+                </div>
+              </div>
+              <div class="app-detail-actions app-detail-actions--pair">
+                <md-outlined-button>アンインストール</md-outlined-button>
+                <md-filled-button>アップデート</md-filled-button>
+              </div>
+              <p class="screen-copy">配達ルート支援のアプリです。新しいバージョンが配信されています。</p>
             </main>
           </div>
         </div>
         <div class="screen-notes">
-          <h3 id="screen-settings">設定</h3>
-          <p>登録後の維持管理画面。手動更新ボタンは置かず、ホームのpull-to-refreshで代替する。端末利用者による登録解除は提供しない。</p>
+          <h3 id="screen-detail-optional-update">アプリ詳細 — 任意・更新あり</h3>
+          <p>新しいリリースが利用可能なときの並び。Google Play 同様、左に「アンインストール」（セカンダリ）、右に「アップデート」（プライマリ）を横並びで配置する。</p>
           <dl class="key-value-list screen-meta">
-            <div><dt>出すタイミング</dt><dd>ホーム右上の設定アイコンから。</dd></div>
-            <div><dt>主な操作</dt><dd>表示名の確認 / このアプリについて。</dd></div>
-            <div><dt>議論ポイント</dt><dd>表示名変更APIの要否。端末利用者による登録解除は作らず、アプリ削除・データ初期化時のサーバー側 cleanup は別ページで扱う。</dd></div>
+            <div><dt>主CTA</dt><dd>「アップデート」（プライマリ・右）。「アンインストール」（セカンダリ・左）。</dd></div>
+            <div><dt>出すタイミング</dt><dd>install_mode = AVAILABLE で installed version_code &lt; 配信 version_code。</dd></div>
+            <div><dt>ボタン比率</dt><dd>等幅 1:1 を基本とし、押し間違い防止のためボタン間にギャップを取る。</dd></div>
           </dl>
         </div>
       </article>
+
+      <article class="android-screen-card" aria-labelledby="screen-detail-required-update">
+        <div class="phone-shell" aria-label="アプリ詳細 — 必須 (更新あり)">
+          <div class="phone-screen">
+            <div class="phone-status"><span>10:24</span><span>5G 100%</span></div>
+            <header class="app-bar">
+              <span class="app-bar-icon" aria-hidden="true">←</span>
+              <span class="app-bar-title"></span>
+            </header>
+            <main class="app-body">
+              <div class="app-detail-header">
+                <div class="app-icon">勤</div>
+                <div>
+                  <h3>勤怠アプリ</h3>
+                  <p class="app-detail-meta">version 2.2 → 2.3 ・ 必須</p>
+                </div>
+              </div>
+              <div class="app-detail-actions app-detail-actions--single">
+                <md-filled-button>アップデート</md-filled-button>
+              </div>
+              <p class="screen-copy">勤怠の打刻に使う社内アプリです。最新版へのアップデートが必要です。</p>
+            </main>
+          </div>
+        </div>
+        <div class="screen-notes">
+          <h3 id="screen-detail-required-update">アプリ詳細 — 必須・更新あり / 未インストール</h3>
+          <p>install_mode = FORCE_INSTALLED の場合は<strong>アンインストールを提供しない</strong>。アクションは「インストール」（未インストール時）か「アップデート」（旧版が入っているとき）の単体。</p>
+          <dl class="key-value-list screen-meta">
+            <div><dt>主CTA</dt><dd>未インストール → 「インストール」 / 旧版インストール済み → 「アップデート」。いずれもプライマリの単体ボタン。</dd></div>
+            <div><dt>出さないボタン</dt><dd>「アンインストール」（必須配信を端末側で外すことは利用者操作の責務ではない）。</dd></div>
+            <div><dt>進行中の表現</dt><dd>ダウンロード中は CTA を disabled にして「ダウンロード中 48%」のような進行表示に切り替える。失敗中は「再試行」に切り替える。</dd></div>
+            <div><dt>議論ポイント</dt><dd>必須・最新時にこの画面を開かれた場合、CTA を全く出さない（情報のみ）か、「最新です」のステータスチップを残すか。</dd></div>
+          </dl>
+        </div>
+      </article>
+
     </div>
   </section>
 
@@ -593,14 +567,19 @@ const notificationFlow = `flowchart TB
             <td>通常起動で未登録だった場合の案内と、登録リンクから端末登録を完了させるまでの端末側主導の画面。</td>
           </tr>
           <tr>
-            <th scope="row">ホーム（最新 / やること / 更新中 / オフライン / エラー）、必要な対応、通知、エラーと再試行、任意アプリ一覧・詳細、設定</th>
+            <th scope="row">ホーム（ポリシー未指定 / アプリ一覧）、アプリ詳細、通知一覧 (ベル)、OS通知</th>
             <td>Androidアプリで作る</td>
-            <td>配信状態と利用者の行動を結びつける中核。通知はOS面だが、本文タップやアクションボタンの遷移はAndroidアプリが設計する。</td>
+            <td>配信状態と利用者の行動を結びつける中核。ポリシーで指定された全アプリを 1 つの一覧で見せ、各アプリの操作はアプリ詳細に閉じる。OS 通知の本文は <code>GET /api/notifications</code> と同じ集合をアプリ内インボックスにも出す。</td>
           </tr>
           <tr>
-            <th scope="row">配信設定取得画面、必須アプリ同期中画面（単独）</th>
+            <th scope="row">設定画面</th>
             <td>独立画面としては作らない</td>
-            <td>ホームの「更新中」状態として畳む。完了はスナックバーで吸収する。</td>
+            <td>表示名・サーバーの向き先・アプリバージョンといった状態表示しかないため、ホーム下部の情報ブロックに畳む。端末利用者による登録解除は提供しない。</td>
+          </tr>
+          <tr>
+            <th scope="row">ホーム「最新です / やることがあります / 更新中 / オフライン」の状態切替、必要な対応、エラーと再試行、任意アプリ一覧</th>
+            <td>独立画面 / 独立状態としては作らない</td>
+            <td>ホームを「ポリシーで指定された全アプリの一覧」に統一し、各行の背景色（対応要 = 白 / 不要 = グレー）で状況を伝える。複数アプリへの一括操作画面は持たず、行タップ → アプリ詳細で個別に対応する。配信設定取得や同期中のフィードバックはスナックバーで吸収する。</td>
           </tr>
           <tr>
             <th scope="row">Android PackageInstaller確認画面</th>
@@ -646,7 +625,7 @@ const notificationFlow = `flowchart TB
                 <li>通知許可が未付与でユーザー操作が必要</li>
               </ul>
             </td>
-            <td>「やることがあります」「エラーで止まっています」状態へ振り分ける。再試行通知や「再試行」ボタンで利用者が次に進める。</td>
+            <td>該当アプリの行を白背景にして「対応が必要」と示し、通知一覧 (ベル) と OS 通知に sticky で並べる。利用者は行タップでアプリ詳細に入り、「再試行」「アップデート」「インストール」のいずれかで進める。</td>
           </tr>
           <tr>
             <th scope="row">そうではない失敗（再試行で解決しない）</th>
@@ -672,11 +651,13 @@ const notificationFlow = `flowchart TB
     <h2 id="discussion">判断指針</h2>
     <ul class="usa-list">
       <li><strong>登録は1画面で終える。</strong> 表示名入力と登録ボタンだけで構成し、通知トークン取得待ちはボタンのdisabledで吸収する。初回同期や配信説明を登録完了画面へ足さない。</li>
-      <li><strong>ホームは「状態 + アクション + 任意導線」に絞る。</strong> 「今、何かする必要があるか」を1秒で答える表示にし、端末名や件数サマリ、内部状態は出さない。</li>
-      <li><strong>同期中・取得中は独立画面にしない。</strong> ホームの「更新中」状態として扱い、完了はスナックバーで吸収する。</li>
-      <li><strong>必須と任意を混ぜない。</strong> 必須は自動同期の状態として、任意は利用者が選ぶカタログとして見せる。任意アプリ詳細は状態別に主CTAを1つに絞る。</li>
-      <li><strong>通知は入口を2つ持つ。</strong> 本文タップはホームに着地して状態を説明する画面へ、アクションボタンは画面を開かず処理再開へ進める。</li>
-      <li><strong>リカバリ可能な失敗は行動に変換する。</strong> 通信再試行、権限許可、あとで通知のような操作にし、内部エラーコードをそのまま見せない。</li>
+      <li><strong>ホームは「ポリシーで指定された全アプリの一覧」。</strong> 必須・任意を行で区別せず、行末の「必須」チップだけで識別する。「今この行に対応が必要か」は行の背景色（要 = 白 / 不要 = グレー）で表す。状態見出しや件数サマリは持たない。</li>
+      <li><strong>端末名・サーバーの向き先・アプリバージョンはホーム下部に畳む。</strong> 独立した「設定」画面は持たない。サーバーの向き先はホストだけを表示し、トークンや revision のような内部値は出さない。</li>
+      <li><strong>個別アプリの操作はアプリ詳細に閉じる。</strong> 一括操作画面（旧「必要な対応」「エラーと再試行」）は作らず、行タップで詳細に入って 1 アプリずつ進める。アプリ詳細の CTA は Google Play と同じ並び（任意・更新あり = 「アンインストール」セカンダリ + 「アップデート」プライマリ、必須 = 「アンインストール」非表示）。</li>
+      <li><strong>ダウンロード中は同じ操作を無効化する。</strong> WorkManager の unique work とローカル download state を反映し、同じ release の二重ダウンロードを UI から起こせないようにする。詳細画面の CTA も「ダウンロード中」表示に切り替える。</li>
+      <li><strong>通知は1集合・2窓口。</strong> 「OS 通知 (sticky)」と「アプリ内 通知一覧 (ベル)」は同じ <code>GET /api/notifications</code> の集合を表示する別窓口。条件が解消したら両方から自動で消える。利用者側の「ミュート」「次から表示しない」は提供しない。</li>
+      <li><strong>OS 通知の本文タップはアプリ詳細に着地する。</strong> 「何のアプリに何をすべきか」が 1 タップで作業画面に直結することを優先し、中継のサマリ画面は作らない。</li>
+      <li><strong>リカバリ可能な失敗は行動に変換する。</strong> 通信再試行、権限許可のような操作にし、内部エラーコードをそのまま見せない。</li>
       <li><strong>Material Webモックは完成UIではなく議論用。</strong> Android実装ではMaterial 3の同等コンポーネントに置き換え、文言、余白、disabled/loading/error状態をこの一覧から詰める。</li>
     </ul>
   </section>
@@ -785,6 +766,10 @@ const notificationFlow = `flowchart TB
     padding: 0.9rem 1rem;
   }
 
+  .app-bar--with-actions {
+    justify-content: space-between;
+  }
+
   .app-bar-title {
     flex: 1;
     min-width: 0;
@@ -799,6 +784,43 @@ const notificationFlow = `flowchart TB
     font-weight: 400;
   }
 
+  .app-bar-bell {
+    align-items: center;
+    background: transparent;
+    border: none;
+    color: #1b1b1b;
+    cursor: pointer;
+    display: inline-flex;
+    height: 2rem;
+    justify-content: center;
+    padding: 0;
+    position: relative;
+    width: 2rem;
+  }
+
+  .bell-icon {
+    font-size: 1.15rem;
+    line-height: 1;
+  }
+
+  .bell-badge {
+    align-items: center;
+    background: #b45309;
+    border: 2px solid #f7f9fc;
+    border-radius: 999px;
+    color: #fff;
+    display: inline-flex;
+    font-size: 0.62rem;
+    font-weight: 800;
+    height: 1rem;
+    justify-content: center;
+    min-width: 1rem;
+    padding: 0 0.25rem;
+    position: absolute;
+    right: -0.2rem;
+    top: -0.2rem;
+  }
+
   .app-body {
     display: grid;
     gap: 0.9rem;
@@ -809,6 +831,107 @@ const notificationFlow = `flowchart TB
     align-content: center;
     min-height: 35rem;
     text-align: center;
+  }
+
+  .app-body--list {
+    gap: 0.75rem;
+    padding: 0.75rem 0.75rem 1.1rem;
+  }
+
+  .policy-app-list {
+    border: 1px solid #dde3ee;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    list-style: none;
+    margin: 0;
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .policy-app-row {
+    align-items: center;
+    border-bottom: 1px solid #dde3ee;
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    min-height: 4rem;
+    padding: 0.85rem 1rem;
+  }
+
+  .policy-app-row:last-child {
+    border-bottom: none;
+  }
+
+  .policy-app-row--action {
+    background: #fff;
+  }
+
+  .policy-app-row--idle {
+    background: #eef0f4;
+  }
+
+  .policy-app-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .policy-app-main strong {
+    font-size: 0.98rem;
+    font-weight: 700;
+  }
+
+  .policy-app-main span {
+    color: #565c65;
+    font-size: 0.82rem;
+  }
+
+  .policy-app-chip {
+    background: #fff7e0;
+    border: 1px solid #f2c84b;
+    border-radius: 999px;
+    color: #6b3f00;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.15rem 0.55rem;
+    white-space: nowrap;
+  }
+
+  .home-device-info--standalone {
+    margin-top: 1.5rem;
+  }
+
+  .app-detail-header {
+    align-items: center;
+    display: grid;
+    gap: 0.85rem;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .app-detail-header h3 {
+    margin: 0;
+  }
+
+  .app-detail-meta {
+    color: #565c65;
+    font-size: 0.86rem;
+    margin: 0.2rem 0 0;
+  }
+
+  .app-detail-actions {
+    display: grid;
+    gap: 0.6rem;
+    margin-top: 0.4rem;
+  }
+
+  .app-detail-actions--single {
+    grid-template-columns: 1fr;
+  }
+
+  .app-detail-actions--pair {
+    grid-template-columns: 1fr 1fr;
   }
 
   .app-body h3 {
@@ -1057,6 +1180,32 @@ const notificationFlow = `flowchart TB
 
   .version-row span {
     color: #565c65;
+  }
+
+  .home-device-info {
+    border-top: 1px solid #dde3ee;
+    display: grid;
+    gap: 0.3rem;
+    margin: 0.5rem 0 0;
+    padding-top: 0.7rem;
+  }
+
+  .home-device-info > div {
+    align-items: baseline;
+    display: flex;
+    font-size: 0.78rem;
+    justify-content: space-between;
+  }
+
+  .home-device-info dt {
+    color: #565c65;
+    margin: 0;
+  }
+
+  .home-device-info dd {
+    color: #1b1b1b;
+    font-weight: 600;
+    margin: 0;
   }
 
   .screen-notes {

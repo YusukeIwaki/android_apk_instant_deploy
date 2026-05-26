@@ -8,6 +8,13 @@ vendor/bundle/
 local.properties
 .DS_Store
 
+androidapp/keystore.properties
+androidapp/app/release.keystore
+
 development/node_modules/
 development/dist/
 development/.astro/
+
+.codex
+.playwright-mcp
+.envrc
