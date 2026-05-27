@@ -9,6 +9,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.concurrent.ExecutionException;
 
 import androidx.work.Data;
 import androidx.work.Worker;
@@ -71,10 +72,41 @@ public final class ApkDownloadWorker extends Worker {
 
         try {
             store.markInstalling(releaseId, versionCode, apkFile.length());
+            if (tryAmapiCustomAppInstall(context, packageName, apkFile, store, releaseId, versionCode)) {
+                return Result.success();
+            }
             new ApkInstaller().install(context, packageName, apkFile, apkFile.length(), releaseId, versionCode);
             return Result.success();
         } catch (IOException | RuntimeException e) {
             return failAndCleanup(store, apkFile, releaseId, versionCode);
+        }
+    }
+
+    private boolean tryAmapiCustomAppInstall(
+            Context context,
+            String packageName,
+            File apkFile,
+            ApkDownloadStore store,
+            int releaseId,
+            int versionCode
+    ) throws IOException {
+        AmapiCustomAppInstaller installer = new AmapiCustomAppInstaller();
+        if (!installer.isAvailable(context)) {
+            return false;
+        }
+
+        try {
+            installer.install(context, packageName, apkFile);
+            deleteQuietly(apkFile);
+            deleteQuietly(ApkDownloadManager.temporaryFile(apkFile));
+            store.remove(releaseId, versionCode);
+            RequiredAppNotificationReceiver.cancelRequiredInstallNotification(context, packageName, versionCode);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while issuing AMAPI InstallCustomApp command.", e);
+        } catch (ExecutionException | RuntimeException e) {
+            return false;
         }
     }
 

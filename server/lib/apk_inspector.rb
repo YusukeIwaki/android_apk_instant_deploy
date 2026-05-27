@@ -126,6 +126,7 @@ module ApkInstantDeploy
       return nil if tool.to_s.empty?
 
       stdout, _stderr, status = Open3.capture3(tool, "verify", "--print-certs", @path)
+      stdout, _stderr, status = Open3.capture3(tool, "verify", "--min-sdk-version", "23", "--print-certs", @path) unless status.success?
       return nil unless status.success?
 
       stdout[/Signer #1 certificate SHA-256 digest: ([0-9a-fA-F:]+)/, 1]&.delete(":")&.downcase

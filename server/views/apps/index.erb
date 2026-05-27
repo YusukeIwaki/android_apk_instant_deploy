@@ -41,3 +41,12 @@
     </div>
   <% end %>
 </div>
+
+<div class="table-card mt-3">
+  <h2 class="h6 text-muted mb-2">AMAPI ApplicationPolicy JSON</h2>
+  <p class="text-muted small">
+    Add these objects to the policy <code>applications[]</code> array.
+    Values are taken from each app's latest release. Replace any placeholder before applying an AMAPI policy.
+  </p>
+  <pre class="bg-light border rounded p-3 small mb-0"><code id="application-policy-value"><%= h(application_policy_json) %></code></pre>
+</div>

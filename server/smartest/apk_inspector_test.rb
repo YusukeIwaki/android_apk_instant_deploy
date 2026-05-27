@@ -18,6 +18,10 @@ ensure
   ENV["APKSIGNER_PATH"] = original_apksigner_path
 end
 
+def inspect_apk_asset_with_tools(filename)
+  ApkInstantDeploy::ApkInspector.inspect(File.expand_path("assets/#{filename}", __dir__))
+end
+
 test("extracts a literal application label from a text manifest APK") do
   metadata = inspect_apk_asset("text_literal_label.apk")
 
@@ -43,4 +47,14 @@ test("resolves application label resource references from a binary manifest APK"
   expect(metadata.version_code).to eq(42)
   expect(metadata.version_name).to eq("4.2.0")
   expect(metadata.display_name).to eq("Resource Label Demo")
+end
+
+test("extracts signing certificate SHA-256 with apksigner from a signed test APK") do
+  metadata = inspect_apk_asset_with_tools("signed_text_manifest.apk")
+
+  expect(metadata.package_name).to eq("com.example.signed")
+  expect(metadata.version_code).to eq(1)
+  expect(metadata.version_name).to eq("1.0")
+  expect(metadata.display_name).to eq("Signed Test")
+  expect(metadata.signing_cert_sha256).to eq("5d4d463713a6136d0077ba3fb2677ee73efc55edc4247d59773e85150e1402cf")
 end

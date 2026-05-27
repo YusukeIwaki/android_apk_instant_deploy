@@ -55,4 +55,6 @@ Object storage defaults to S3 when `S3_BUCKET` is set. In Compose, Floci is only
 
 Set `OBJECT_STORE=local` to store APK bytes under `server/storage/artifacts` and return local download URLs.
 
-APK signing certificate extraction uses `APKSIGNER_PATH` or `apksigner` when available. If neither `apksigner` nor a v1 signature certificate is available, `signing_cert_sha256` is recorded as `UNKNOWN`; existing known certificates are still enforced when present.
+APK signing certificate extraction uses `APKSIGNER_PATH` or `apksigner`. The Docker images install Android build-tools and set `APKSIGNER_PATH`; if you bypass Docker, provide an equivalent `apksigner` locally. If neither `apksigner` nor a v1 signature certificate is available, `signing_cert_sha256` is recorded as `UNKNOWN`; existing known certificates are still enforced when present.
+
+`signing_cert_sha256` is stored and displayed as a hex string for readability, but AMAPI's `signingKeyCerts[].signingKeyCertFingerprintSha256` requires the base64-encoded raw 32-byte SHA-256. The hex value is therefore converted to base64 only when emitting the AMAPI policy JSON (`COMPANION_APP_SIGNING_CERT_SHA256` is also supplied as hex). `UNKNOWN` and unresolved placeholders are passed through unchanged.

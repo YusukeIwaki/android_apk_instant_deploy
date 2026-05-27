@@ -10,8 +10,11 @@
         --line: #dfe1e2;
         --blue: #005ea8;
         --green: #2e7044;
-        --gold: #ffbe2e;
-        --bg: #f7f9fa;
+        --badge-bg: #ecf3ec;
+        --info-bg: #e7f6f8;
+        --info-ink: #3d4551;
+        --alert: #d83933;
+        --bar: #f7f9fa;
       }
 
       * {
@@ -34,20 +37,20 @@
         background: #111;
         border-radius: 34px;
         margin: 0 auto;
-        max-width: 370px;
+        max-width: 380px;
         padding: 12px;
       }
 
       .screen {
         background: #fff;
         border-radius: 24px;
-        min-height: 650px;
+        min-height: 680px;
         overflow: hidden;
       }
 
       .statusbar {
         align-items: center;
-        background: var(--bg);
+        background: var(--bar);
         display: flex;
         font-size: 12px;
         font-weight: 700;
@@ -55,120 +58,193 @@
         padding: 10px 18px 8px;
       }
 
-      .bar {
-        background: var(--bg);
+      .topbar {
+        align-items: center;
+        background: var(--bar);
         border-bottom: 1px solid var(--line);
-        font-weight: 700;
-        padding: 14px 16px;
+        display: flex;
+        justify-content: space-between;
+        padding: 13px 16px;
       }
 
-      .body {
-        padding: 18px;
+      .topbar .title {
+        font-size: 16px;
+        font-weight: 600;
       }
 
-      h1 {
-        font-size: 22px;
-        line-height: 1.2;
-        margin: 0 0 8px;
-      }
-
-      p {
+      .bell {
         color: var(--muted);
-        line-height: 1.55;
-        margin: 0 0 14px;
+        font-size: 18px;
+        position: relative;
       }
 
-      .event {
-        border: 1px solid var(--line);
-        margin-bottom: 14px;
+      .bell .dot {
+        background: var(--alert);
+        border: 1px solid var(--bar);
+        border-radius: 50%;
+        height: 9px;
+        position: absolute;
+        right: -1px;
+        top: -1px;
+        width: 9px;
+      }
+
+      .section-label {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+        padding: 12px 18px 6px;
       }
 
       .row {
-        display: grid;
+        align-items: center;
+        display: flex;
         gap: 10px;
-        grid-template-columns: 28px minmax(0, 1fr);
-        padding: 11px;
+        padding: 11px 16px;
       }
 
       .row + .row {
         border-top: 1px solid var(--line);
       }
 
-      .icon {
-        background: var(--blue);
-        color: #fff;
-        display: grid;
-        font-size: 11px;
+      .row .body {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .row .name {
+        font-size: 15px;
         font-weight: 700;
-        height: 28px;
-        place-items: center;
-        width: 28px;
       }
 
-      .icon.ok {
-        background: var(--green);
-      }
-
-      .row span {
+      .row .meta {
         color: var(--muted);
         display: block;
         font-size: 12px;
+        line-height: 1.45;
         margin-top: 2px;
       }
 
-      .refresh-hint {
-        color: var(--muted);
-        display: block;
-        font-size: 13px;
-        margin: 12px 0 4px;
-        padding: 8px 12px;
-        text-align: center;
+      .row .meta.mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
 
-      .refresh-hint::before {
-        content: "↓";
-        color: var(--blue);
+      .chip {
+        background: var(--badge-bg);
+        border-radius: 8px;
+        color: var(--green);
+        font-size: 11px;
         font-weight: 700;
-        margin-right: 6px;
+        padding: 4px 8px;
+        white-space: nowrap;
       }
 
-      .state {
-        background: #fff5c2;
-        border-left: 5px solid var(--gold);
-        color: #3d4551;
+      .banner {
+        align-items: stretch;
+        background: var(--info-bg);
+        display: flex;
+        margin: 12px 18px;
+      }
+
+      .banner .stripe {
+        background: var(--blue);
+        width: 5px;
+      }
+
+      .banner .text {
+        color: var(--info-ink);
         font-size: 13px;
         line-height: 1.45;
         padding: 10px;
       }
 
-      .mono {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      .info-row {
+        align-items: center;
+        display: flex;
+        justify-content: space-between;
+        padding: 11px 18px;
+      }
+
+      .info-row + .info-row {
+        border-top: 1px solid var(--line);
+      }
+
+      .info-row .k {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .info-row .v {
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .caption {
+        color: var(--muted);
+        font-size: 12px;
+        padding: 12px 18px 18px;
       }
     </style>
   </head>
   <body>
-    <div class="phone" aria-label="スマートフォン上のPolicy再取得画面">
+    <div class="phone" aria-label="コンパニオンアプリのホーム画面。取得した配信ポリシーをアプリ一覧で表示">
       <div class="screen">
         <div class="statusbar"><span>10:12</span><span>5G 100%</span></div>
-        <div class="bar">APK Remote Companion</div>
-        <div class="body">
-          <h1>最新の配信設定を受信</h1>
-          <div class="event">
-            <div class="row">
-              <div class="icon ok">10:12</div>
-              <div><b>更新を受信</b><span>サーバーから新しい配信設定が届きました</span></div>
-            </div>
-            <div class="row">
-              <div class="icon ok">10:12</div>
-              <div><b>最新の構成を取得</b><span>同期するアプリの一覧を確認できます</span></div>
-            </div>
-            <div class="row">
-              <div class="icon">09:48</div>
-              <div><b>前回の同期</b><span>このときの構成は反映済みです</span></div>
-            </div>
-          </div>
-          <div class="refresh-hint">下に引っ張って手動で更新</div>
+        <div class="topbar">
+          <span class="title">APK Instant Deploy</span>
+          <span class="bell" aria-label="通知 1">🔔<span class="dot" aria-hidden="true"></span></span>
         </div>
+
+        <div class="section-label">ポリシーで指定されたアプリ</div>
+
+        <div class="row">
+          <div class="body">
+            <div class="name">勤怠アプリ</div>
+            <span class="meta mono">com.example.appa</span>
+            <span class="meta">version 2.4.0-qa</span>
+            <span class="meta">インストール済み</span>
+          </div>
+          <span class="chip">必須</span>
+        </div>
+
+        <div class="row">
+          <div class="body">
+            <div class="name">棚卸アプリ</div>
+            <span class="meta mono">com.example.appb</span>
+            <span class="meta">version 1.1.0 → 1.2.0</span>
+          </div>
+          <span class="chip">必須</span>
+        </div>
+
+        <div class="row">
+          <div class="body">
+            <div class="name">配送アプリ</div>
+            <span class="meta mono">com.example.appc</span>
+            <span class="meta">version 0.9.3</span>
+            <span class="meta">ダウンロード中 50%</span>
+          </div>
+          <span class="chip">必須</span>
+        </div>
+
+        <div class="row">
+          <div class="body">
+            <div class="name">社内ポータル</div>
+            <span class="meta mono">com.example.appd</span>
+            <span class="meta">version 0.3.1</span>
+          </div>
+        </div>
+
+        <div class="banner">
+          <div class="stripe" aria-hidden="true"></div>
+          <div class="text">ダウンロード 1件を処理しています</div>
+        </div>
+
+        <div class="section-label">現在のデバイス</div>
+        <div class="info-row"><span class="k">デバイス情報</span><span class="v">Pixel 8 QA-01</span></div>
+        <div class="info-row"><span class="k">サーバー情報</span><span class="v">distribution.example.test</span></div>
+        <div class="info-row"><span class="k">アプリ情報</span><span class="v">1.0.0</span></div>
+
+        <div class="caption">最終確認 2026-05-23 10:12 ・ 下に引っ張って手動で更新</div>
       </div>
     </div>
     <script>

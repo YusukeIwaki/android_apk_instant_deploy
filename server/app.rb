@@ -339,24 +339,110 @@ module ApkInstantDeploy
         ENV.fetch("COMPANION_APP_PACKAGE_NAME", "io.github.yusukeiwaki.android_apk_instant_deploy.alpha")
       end
 
-      def amapi_application_policy_payload(identifier, secret, display_name)
-        {
-          packageName: companion_app_package_name,
-          installType: "FORCE_INSTALLED",
-          defaultPermissionPolicy: "GRANT",
-          permissionGrants: [
-            {
-              permission: "android.permission.POST_NOTIFICATIONS",
-              policy: "GRANT"
+      def companion_app_signing_cert_sha256
+        ENV.fetch("COMPANION_APP_SIGNING_CERT_SHA256", "<companion_app_signing_cert_sha256>")
+      end
+
+      def custom_app_policy_entries
+        App.includes(releases: :artifact).order(:package_name).filter_map do |app|
+          next if app.package_name == companion_app_package_name
+
+          release = latest_release_for_policy(app)
+          next unless release
+
+          {
+            packageName: app.package_name,
+            installType: "CUSTOM",
+            defaultPermissionPolicy: "GRANT",
+            signingKeyCerts: [
+              {
+                signingKeyCertFingerprintSha256: policy_signing_cert_fingerprint(signing_cert_sha256_for_policy(app, release))
+              }
+            ],
+            customAppConfig: {
+              userUninstallSettings: "DISALLOW_UNINSTALL_BY_USER"
             }
-          ],
-          managedConfiguration: {
-            server_base_url: public_base_url,
-            device_registration_identifier: identifier,
-            device_registration_secret: secret,
-            display_name: display_name
           }
+        end
+      end
+
+      def amapi_policy_payload(identifier, secret, display_name)
+        {
+          statusReportingSettings: {
+            applicationReportsEnabled: true
+          },
+          applications: [
+            {
+              packageName: companion_app_package_name,
+              installType: "FORCE_INSTALLED",
+              defaultPermissionPolicy: "GRANT",
+              permissionGrants: [
+                {
+                  permission: "android.permission.POST_NOTIFICATIONS",
+                  policy: "GRANT"
+                }
+              ],
+              signingKeyCerts: [
+                {
+                  signingKeyCertFingerprintSha256: policy_signing_cert_fingerprint(companion_app_signing_cert_sha256)
+                }
+              ],
+              roles: [
+                {
+                  roleType: "COMPANION_APP"
+                }
+              ],
+              managedConfiguration: {
+                server_base_url: public_base_url,
+                device_registration_identifier: identifier,
+                device_registration_secret: secret,
+                display_name: display_name
+              }
+            }
+          ] + custom_app_policy_entries
         }
+      end
+
+      def latest_release_for_policy(app)
+        app.releases.max_by { |candidate| [candidate.version_code, candidate.id] }
+      end
+
+      def signing_cert_sha256_for_policy(app, release)
+        signing_cert_sha256 = release.artifact.signing_cert_sha256.to_s
+        return signing_cert_sha256 unless signing_cert_sha256.empty? || signing_cert_sha256 == "UNKNOWN"
+
+        "<signing_cert_sha256_for_#{app.package_name}>"
+      end
+
+      # AMAPI requires signingKeyCertFingerprintSha256 as the base64-encoded raw
+      # 32-byte SHA-256, not hex. We keep hex everywhere internally (DB, env) and
+      # convert only when emitting the policy JSON. Non-hex values (UNKNOWN,
+      # placeholders) are passed through unchanged.
+      def policy_signing_cert_fingerprint(value)
+        hex = value.to_s
+        return hex unless hex.match?(/\A\h{64}\z/)
+
+        [[hex].pack("H*")].pack("m0")
+      end
+
+      def app_application_policy_payloads(apps)
+        apps.filter_map do |app|
+          release = latest_release_for_policy(app)
+          next unless release
+
+          {
+            packageName: app.package_name,
+            installType: "CUSTOM",
+            customAppConfig: {
+                userUninstallSettings: "DISALLOW_UNINSTALL_BY_USER"
+            },
+            signingKeyCerts: [
+              {
+                signingKeyCertFingerprintSha256: policy_signing_cert_fingerprint(signing_cert_sha256_for_policy(app, release))
+              }
+            ]
+          }
+        end
       end
 
       def h(text)
@@ -822,8 +908,8 @@ module ApkInstantDeploy
         issued_at: token.issued_at,
         expires_at: token.expires_at,
         deep_link: deep_link,
-        amapi_application_policy_json: JSON.pretty_generate(
-          amapi_application_policy_payload(token.device_identifier.identifier, secret, managed_config_display_name)
+        amapi_policy_json: JSON.pretty_generate(
+          amapi_policy_payload(token.device_identifier.identifier, secret, managed_config_display_name)
         )
       }
       render_page :"devices/new", title: "Issue device registration token", locals: { result: result }
@@ -879,8 +965,11 @@ module ApkInstantDeploy
     # ----- Apps -----
 
     get "/apps" do
-      apps = App.includes(:app_profile, :releases).order(updated_at: :desc, id: :desc)
-      render_page :"apps/index", title: "Apps", locals: { apps: apps }
+      apps = App.includes(:app_profile, releases: :artifact).order(updated_at: :desc, id: :desc)
+      render_page :"apps/index", title: "Apps", locals: {
+        apps: apps,
+        application_policy_json: JSON.pretty_generate(app_application_policy_payloads(apps))
+      }
     end
 
     get "/apps/new" do

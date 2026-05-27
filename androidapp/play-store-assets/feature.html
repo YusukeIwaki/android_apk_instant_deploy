@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { background: #fff; }
+  #feature { display: block; }
+</style>
+</head>
+<body>
+  <!-- 1024x500 Google Play feature graphic.
+       Concept: one upload source rains apps along parabolic arcs onto ~5 devices. -->
+  <svg id="feature" width="1024" height="500" viewBox="0 0 1024 500" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#E3F2FD"/>
+        <stop offset="1" stop-color="#FFFFFF"/>
+      </linearGradient>
+      <linearGradient id="hub" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#42A5F5"/>
+        <stop offset="1" stop-color="#1E88E5"/>
+      </linearGradient>
+      <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#1565C0" flood-opacity="0.20"/>
+      </filter>
+
+      <!-- origami paper plane (two-triangle motif, matches the app icon) -->
+      <symbol id="plane" viewBox="0 0 108 108">
+        <path d="M96,12 L12,60 L50,50 Z" fill="#BBDEFB"/>
+        <path d="M96,12 L50,50 L60,96 Z" fill="#0D47A1"/>
+      </symbol>
+
+      <!-- a target device showing the installed app -->
+      <symbol id="phone" viewBox="0 0 80 158">
+        <rect x="3" y="3" width="74" height="144" rx="15" fill="#0D47A1"/>
+        <rect x="9" y="12" width="62" height="126" rx="8" fill="#FFFFFF"/>
+        <circle cx="40" cy="60" r="17" fill="#2196F3"/>
+        <path d="M40,49 L51,60 L45,60 L45,72 L35,72 L35,60 L29,60 Z" fill="#FFFFFF"/>
+        <path d="M28,86 L52,86 L52,89 L28,89 Z" fill="#90CAF9"/>
+        <!-- installed check badge -->
+        <circle cx="63" cy="123" r="14" fill="#43A047"/>
+        <path d="M56,123 l5,5 l9,-10" fill="none" stroke="#FFFFFF" stroke-width="3.4"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+    </defs>
+
+    <!-- backdrop -->
+    <rect x="0" y="0" width="1024" height="500" fill="url(#sky)"/>
+    <circle cx="880" cy="80" r="120" fill="#BBDEFB" opacity="0.30"/>
+    <circle cx="120" cy="430" r="90" fill="#BBDEFB" opacity="0.25"/>
+
+    <!-- parabolic delivery arcs -->
+    <g fill="none" stroke="#64B5F6" stroke-width="3" stroke-linecap="round" stroke-dasharray="2 11" opacity="0.85">
+      <path d="M230,205 Q330,70 465,250"/>
+      <path d="M230,205 Q400,60 580,300"/>
+      <path d="M230,205 Q460,55 700,235"/>
+      <path d="M230,205 Q520,60 820,305"/>
+      <path d="M230,205 Q580,55 940,255"/>
+    </g>
+
+    <!-- target devices, scattered -->
+    <ellipse cx="465" cy="398" rx="46" ry="11" fill="#1565C0" opacity="0.12"/>
+    <ellipse cx="580" cy="448" rx="46" ry="11" fill="#1565C0" opacity="0.12"/>
+    <ellipse cx="700" cy="383" rx="46" ry="11" fill="#1565C0" opacity="0.12"/>
+    <ellipse cx="820" cy="453" rx="46" ry="11" fill="#1565C0" opacity="0.12"/>
+    <ellipse cx="940" cy="403" rx="46" ry="11" fill="#1565C0" opacity="0.12"/>
+    <use href="#phone" x="430" y="250" width="70" height="138"/>
+    <use href="#phone" x="545" y="300" width="70" height="138"/>
+    <use href="#phone" x="665" y="235" width="70" height="138"/>
+    <use href="#phone" x="785" y="305" width="70" height="138"/>
+    <use href="#phone" x="905" y="255" width="70" height="138"/>
+
+    <!-- flying app packets riding the arcs -->
+    <g transform="rotate(52 338 149)"><use href="#plane" x="315" y="126" width="46" height="46"/></g>
+    <g transform="rotate(58 402 156)"><use href="#plane" x="379" y="133" width="46" height="46"/></g>
+    <g transform="rotate(48 462 138)"><use href="#plane" x="439" y="115" width="46" height="46"/></g>
+    <g transform="rotate(55 522 158)"><use href="#plane" x="499" y="135" width="46" height="46"/></g>
+    <g transform="rotate(50 582 143)"><use href="#plane" x="559" y="120" width="46" height="46"/></g>
+
+    <!-- upload source hub (single point of distribution) -->
+    <g filter="url(#soft)">
+      <rect x="80" y="150" width="150" height="150" rx="30" fill="url(#hub)"/>
+    </g>
+    <path d="M155,196 L181,219 L168,219 L168,247 L142,247 L142,219 L129,219 Z" fill="#FFFFFF"/>
+    <path d="M120,258 L190,258 L190,263 L120,263 Z" fill="#FFFFFF"/>
+    <!-- launch plane leaving the hub -->
+    <g transform="rotate(50 250 188)"><use href="#plane" x="226" y="164" width="48" height="48"/></g>
+  </svg>
+</body>
+</html>

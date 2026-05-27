@@ -26,6 +26,9 @@ const axisMatrix = `flowchart LR
   RegAxis -. "独立" .- InstallAxis`;
 
 const amapiPolicy = `{
+  "statusReportingSettings": {
+    "applicationReportsEnabled": true
+  },
   "applications": [
     {
       "packageName": "io.github.yusukeiwaki.android_apk_instant_deploy.alpha",
@@ -37,11 +40,34 @@ const amapiPolicy = `{
           "policy": "GRANT"
         }
       ],
+      "signingKeyCerts": [
+        {
+          "signingKeyCertFingerprintSha256": "<companion_app_signing_cert_sha256>"
+        }
+      ],
+      "roles": [
+        {
+          "roleType": "COMPANION_APP"
+        }
+      ],
       "managedConfiguration": {
         "server_base_url": "https://distribution.example.test",
         "device_registration_identifier": "drt_01HX9A2W...",
         "device_registration_secret": "drs_4Gk...",
         "display_name": "Pixel 8 QA-01"
+      }
+    },
+    {
+      "packageName": "<custom_app_package_name>",
+      "installType": "CUSTOM",
+      "defaultPermissionPolicy": "GRANT",
+      "signingKeyCerts": [
+        {
+          "signingKeyCertFingerprintSha256": "<custom_app_signing_cert_sha256>"
+        }
+      ],
+      "customAppConfig": {
+        "userUninstallSettings": "DISALLOW_UNINSTALL_BY_USER"
       }
     }
   ]
@@ -75,29 +101,17 @@ adb shell am start \\
   -a android.intent.action.VIEW \\
   -d "apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...&server_base_url=https%3A%2F%2Fdistribution.example.test"`;
 
-const sequence = `sequenceDiagram
-  autonumber
-  actor Admin as 管理者
-  participant Api as APK配信API
-  participant Amapi as Android Management API
-  participant Device as 管理対象端末
-  participant App as コンパニオンアプリ
-
-  alt AMAPI管理端末 (managedConfiguration経由で自動登録)
-    Admin->>Api: DeviceRegistrationToken を発行
-    Admin->>Amapi: policyに FORCE_INSTALLED + managedConfiguration を設定
-    Note over Amapi,Device: managedConfigurationに identifier / secret / display_name を含める
-    Amapi->>Device: Android Device Policyがアプリ導入と設定配布
-    Device->>App: 初回起動
-    App->>App: RestrictionsManagerから登録情報を読む
-    App->>Api: FCM token + managedConfigの値で登録
-  else 手動導入 (deep link経由で登録)
-    Admin->>Api: DeviceRegistrationToken を発行
-    Admin->>Device: Google Play / adb / 社内配布でアプリを入れる
-    Admin->>Device: apkdist://register-device... を配布
-    Device->>App: deep linkで起動
-    App->>Api: FCM token + 表示名 + secret で登録
-  end`;
+const sequence = `flowchart TD
+  Issue["管理者がDeviceRegistrationTokenを発行"]
+  Issue --> AmapiPolicy["AMAPI policyにFORCE_INSTALLEDとmanagedConfigurationを設定"]
+  Issue --> ManualInstall["手動配布でコンパニオンアプリを導入"]
+  AmapiPolicy --> DevicePolicy["Android Device Policyがアプリと設定を配布"]
+  DevicePolicy --> ReadConfig["アプリがmanagedConfigurationを読む"]
+  ManualInstall --> OpenLink["登録用deep linkでアプリを起動"]
+  ReadConfig --> Fcm["アプリがFCM tokenを取得"]
+  OpenLink --> Fcm
+  Fcm --> Register["同じPOST /api/devicesで登録"]
+  Register --> Ready["device_auth_tokenとFCM tokenを保存"]`;
 ---
 
 <BaseLayout
@@ -218,15 +232,17 @@ const sequence = `sequenceDiagram
     <p>
       端末への導入と初回登録は、同じpolicy内の <code>applications[]</code> に <code>installType</code> と <code>managedConfiguration</code> を並べることでひと括りにします。
       管理者は事前に <code>POST /admin/device_registration_tokens</code> で DeviceRegistrationToken を発行し、その <code>identifier</code> と <code>secret</code> を <code>managedConfiguration</code> に詰めます。
-      管理画面の登録トークン発行結果には、QRコード / deep link とあわせて、この <code>ApplicationPolicy</code> オブジェクトを端末別の値で生成して表示します。
+      管理画面の登録トークン発行結果には、QRコード / deep link とあわせて、<code>COMPANION_APP</code> role と、server にアップロード済み apps の最新 release から作る <code>CUSTOM</code> entry を含む policy JSON テンプレートを端末別の値で生成して表示します。
     </p>
     <pre class="curl-block"><code>{amapiPolicy}</code></pre>
     <ul class="usa-list">
       <li><code>installType: FORCE_INSTALLED</code> により、管理対象端末へ自動導入し、利用者による削除を抑止する。</li>
+      <li><code>{`roles: [{ roleType: "COMPANION_APP" }]`}</code> により、コンパニオンアプリを AMAPI SDK local command の発行元として扱う。Play Store 外のアプリで role を持たせる場合は <code>signingKeyCerts</code> も設定する。</li>
       <li><code>managedConfiguration</code> は policy 単位で配るため、端末ごとに異なる <code>identifier</code> / <code>secret</code> を渡したい場合は policy を端末別に発行する。同じ policy を複数端末に当てると、同じ DeviceRegistrationToken を取り合うので不可。</li>
+      <li><code>installType: CUSTOM</code> の entry は、コンパニオンアプリが AMAPI SDK でインストール・更新する配布対象APKを宣言する。管理画面では server にアップロード済みの各 app について、最新 release の <code>artifacts.signing_cert_sha256</code> (DB上はhex) を base64 エンコードした32バイトの SHA-256 として <code>signingKeyCertFingerprintSha256</code> に入れて列挙する (AMAPIはhexではなくbase64を要求する)。</li>
       <li><code>POST_NOTIFICATIONS</code> は Android 13+ の通知許可に関わる。AMAPIで許可できない端末やOS差分は、アプリ側のホーム状態表示でフォールバックする。</li>
       <li><code>REQUEST_INSTALL_PACKAGES</code> や提供元不明アプリの許可は通常の runtime permission ではないため、AMAPI policy 例では解決済みとしない。<code>PACKAGE_INSTALLER</code> 経路ではOS設定・PackageInstaller UIへ誘導する。</li>
-      <li>上の例は <strong>登録 (軸A) を成立させるための最小構成</strong>。配布APKのサイレントインストール (軸B = <code>AMAPI_CUSTOM_APP</code>) も使うなら、同じ <code>applications[]</code> にコンパニオンアプリ側として <code>{`roles: [{ roleType: "COMPANION_APP" }]`}</code> を追加し、配布対象APKを別エントリとして <code>installType: "CUSTOM"</code> + <code>signingKeyCerts</code> で宣言する。条件は <a href="#install-axis">インストール経路という独立した軸</a> を参照。</li>
+      <li>登録だけを確認する場合は <code>roles</code> や <code>CUSTOM</code> entry は不要。ただし配布APKのサイレントインストール (軸B = <code>AMAPI_CUSTOM_APP</code>) も確認するなら、上の例のように <code>COMPANION_APP</code> role と対象APKの <code>installType: "CUSTOM"</code> + <code>signingKeyCerts</code> を同じ policy に含める。</li>
     </ul>
   </section>
 

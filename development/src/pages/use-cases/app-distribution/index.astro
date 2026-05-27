@@ -58,8 +58,10 @@ const updatePolicyResponse = `HTTP/1.1 200 OK
 const adminPolicyGetCurl = `curl -X GET https://distribution.example.test/admin/devices/drt_01HX9A2W.../policy \\
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
-# Policy 編集前にポリシー編集画面が呼ぶ admin 用 GET。
-# 削除済みアプリの entry もそのまま含まれ、UI で「削除されたアプリ」として表示する。`;
+# ポリシー編集画面 (/policies/:identifier/edit) の初期表示で使う admin 用 GET。
+# 現在の revision に含まれる app.id と install_mode を返す。
+# app は hard delete されると関連 entry も CASCADE 削除されるため、応答に「削除されたアプリ」は現れない。
+# 編集画面は登録済みアプリ一覧 (apps) を全行表示し、この応答に含まれる app.id を「Include」チェック済み + 該当 install_mode 選択済みとして反映する。`;
 
 const adminPolicyGetResponse = `HTTP/1.1 200 OK
 {
@@ -337,7 +339,7 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">APIサーバー</th>
             <td>PUT /admin/devices/:identifier/policy / GET /admin/devices/:identifier/policy / GET /api/devices/me/policy / POST /api/devices/me/policy_sync_results</td>
-            <td>Policy更新を不変revisionとして保存し、FCM data messageを送信。GET時に各 entry の app_id から最新release を解決して install フィールドに乗せる。削除されたアプリの entry は、admin GET には含めるが device GET からは除外する。一括失敗報告 (policy_sync_results) を受領して監査ログに残す。</td>
+            <td>Policy更新を不変revisionとして保存し、FCM data messageを送信。GET時に各 entry の app_id から最新release を解決して install フィールドに乗せる。app が hard delete されると関連 entry も CASCADE 削除されるため、admin GET / device GET いずれの応答にも「削除されたアプリ」は現れない。一括失敗報告 (policy_sync_results) を受領して監査ログに残す。</td>
             <td>device_policies, device_policy_revisions, device_policy_app_entries, apps, releases, device_policy_sync_reports, fcm_push_tokens</td>
           </tr>
           <tr>
@@ -412,12 +414,12 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">1</span>
         <div>
           <h3 id="step-1">管理者がデバイスのDevicePolicyを更新する</h3>
-          <p>1デバイスにつき1つのDevicePolicyを持ちます。entry には app.id と install_mode のみを指定し、配信するリリースを指定しません。「このアプリは必須」「このアプリは任意」というあるべき状態だけを宣言し、実際のリリース解決はサーバーが GET 時に行います。Policy更新は新しい revision の追加であり、過去 revision は不変です。</p>
+          <p>1デバイスにつき1つのDevicePolicyを持ちます。entry には app.id と install_mode のみを指定し、配信するリリースを指定しません。「このアプリは必須」「このアプリは任意」というあるべき状態だけを宣言し、実際のリリース解決はサーバーが GET 時に行います。Policy更新は新しい revision の追加であり、過去 revision は不変です。編集画面 (Bootstrap 管理 UI) は登録済みアプリを全行表示し、各行の <code>Include</code> チェックと <code>FORCE_INSTALLED</code> / <code>AVAILABLE</code> の切り替えで構成を決め、「Publish new revision」で新しい revision を発行します。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-distribution/step-1-policy-editor.html" title="管理画面: デバイスPolicy編集" />
+          <DiagramFrame src="/mocks/app-distribution/step-1-policy-editor.html" title="管理画面 (Web): デバイスのポリシー編集" />
         </div>
         <div class="flow-step__details">
           <h4>Policy ロード (編集前)</h4>
@@ -448,12 +450,12 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">2</span>
         <div>
           <h3 id="step-2">FCM push を契機に pending_policy_fetch を立て、可能なときに Policy を取得する</h3>
-          <p>FCM は data message として Policy 更新だけを届けます。端末はこの受信で <code>pending_policy_fetch</code> フラグを立て、それ以後の最初に Policy API を呼べる機会 (直後に通信できればその場で、ダメなら次のオンライン到達時、再起動時、アプリ明示起動時など) で GET を1回試みます。<strong>起動するたびに無条件で fetch することはしません</strong>。fetch が失敗してもフラグは立ったままにし、次の機会に再試行します。fetch が成功して fetched_policy_snapshot を上書きした瞬間に、フラグを下ろします。FCM が届かなかった端末は自動では気づけないため、利用者がアプリを開いて手動更新したときに復旧できればよい、という前提にします。</p>
+          <p>FCM は data message として Policy 更新だけを届けます。端末はこの受信で <code>pending_policy_fetch</code> フラグを立て、それ以後の最初に Policy API を呼べる機会 (直後に通信できればその場で、ダメなら次のオンライン到達時、再起動時、アプリ明示起動時など) で GET を1回試みます。<strong>起動するたびに無条件で fetch することはしません</strong>。fetch が失敗してもフラグは立ったままにし、次の機会に再試行します。fetch が成功して fetched_policy_snapshot を上書きした瞬間に、フラグを下ろします。FCM が届かなかった端末は自動では気づけないため、利用者がアプリを開いて手動更新したときに復旧できればよい、という前提にします。取得した Policy はホーム画面に「ポリシーで指定されたアプリ」一覧 (全 entries を1リスト) として表示され、FORCE_INSTALLED の行には「必須」チップ、各行にバージョンと状態 (インストール済み / 内容に更新あり / ダウンロード中…) が出ます。ホーム画面を下に引っ張ると <code>pending_policy_fetch</code> を立てて手動で再取得します。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-distribution/step-2-policy-fetch.html" title="コンパニオンアプリ: Policy再取得" />
+          <DiagramFrame src="/mocks/app-distribution/step-2-policy-fetch.html" title="コンパニオンアプリ: ホーム画面 (取得した配信ポリシーの一覧)" />
         </div>
         <div class="flow-step__details">
           <h4>FCM data message</h4>
@@ -498,12 +500,12 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">3</span>
         <div>
           <h3 id="step-3">entry ごとに DOWNLOAD と INSTALL を進め、リカバリ可能な失敗はリトライする</h3>
-          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code / artifact_sha256」と「端末上の installed package の versionCode / APK checksum」。同期は永続的な entry 進捗ではなく、毎反復で計算する <strong>work list</strong> として扱います。work list は fetched_policy_snapshot、installed_package_index、active_download_jobs、downloaded_artifact_index、failed_artifacts_blacklist からその場で作り、各 work item を1回進めます。既に同じ release.id + version_code の active_download_jobs がある場合は新しい work を enqueue せず、ローカル download state を UI に反映して待ちます。リカバリ可能な失敗では同じ WorkManager job が artifact URL を取り直して retry します。リカバリ不能な失敗だけ failed_artifacts_blacklist に追記し、以後は同じ artifact では再試行しません。</p>
+          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code / artifact_sha256」と「端末上の installed package の versionCode / APK checksum」。同期は永続的な entry 進捗ではなく、毎反復で計算する <strong>work list</strong> として扱います。work list は fetched_policy_snapshot、installed_package_index、active_download_jobs、downloaded_artifact_index、failed_artifacts_blacklist からその場で作り、各 work item を1回進めます。既に同じ release.id + version_code の active_download_jobs がある場合は新しい work を enqueue せず、ローカル download state を UI に反映して待ちます。リカバリ可能な失敗では同じ WorkManager job が artifact URL を取り直して retry します。リカバリ不能な失敗だけ failed_artifacts_blacklist に追記し、以後は同じ artifact では再試行しません。利用者がホームの行をタップするとアプリ詳細画面に入り、状態に応じて「インストール」/「アップデート」/「アンインストール」ボタンが出ます。ダウンロード進行中はボタンを無効化し、本文に「ダウンロード中 NN%」、ボタンに「ダウンロード中」(完了直前は「インストール準備中」) を表示します。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-distribution/step-3-sync-plan.html" title="コンパニオンアプリ: アプリ詳細のダウンロード状態" />
+          <DiagramFrame src="/mocks/app-distribution/step-3-sync-plan.html" title="コンパニオンアプリ: アプリ詳細 (ダウンロード進行中)" />
         </div>
         <div class="flow-step__details">
           <h4>必要なときだけ artifact URL を取得する</h4>
@@ -559,12 +561,12 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">4</span>
         <div>
           <h3 id="step-4">確定した結果をまとめて報告し、applied_policy_snapshot を更新する</h3>
-          <p>全 work item が terminal になったら、成功した work item と <strong>リカバリ不能な失敗だけ</strong>を一括で POST します。リカバリ可能な失敗で deferred になった work item は報告対象に含めません (=端末がリトライ継続中であることを意味する)。報告本文は送信前に <code>pending_report_payload</code> として保存し、報告が 201 で受理されたら applied_policy_snapshot を更新して payload を破棄します。報告自体が失敗した場合は次の機会に同じペイロードで再送します。</p>
+          <p>全 work item が terminal になったら、成功した work item と <strong>リカバリ不能な失敗だけ</strong>を一括で POST します。リカバリ可能な失敗で deferred になった work item は報告対象に含めません (=端末がリトライ継続中であることを意味する)。報告本文は送信前に <code>pending_report_payload</code> として保存し、報告が 201 で受理されたら applied_policy_snapshot を更新して payload を破棄します。報告自体が失敗した場合は次の機会に同じペイロードで再送します。FORCE_INSTALLED が PACKAGE_INSTALLER 経路で未達のあいだは、アプリごとに消去不可 (ongoing) の常駐通知を出します。通知本文をタップするとアプリ詳細が開き、通知の「インストール」アクションを押すとその場でダウンロードが始まります (通知に「あとで」等の他アクションは持たせません)。INSTALL が確定 (成功 or リカバリ不能失敗) したら通知を下げます。</p>
         </div>
       </div>
       <div class="flow-step__grid">
         <div>
-          <DiagramFrame src="/mocks/app-distribution/step-4-install-route.html" title="スマートフォン: 必須アプリのインストールを促す通知" />
+          <DiagramFrame src="/mocks/app-distribution/step-4-install-route.html" title="スマートフォン: 必須アプリのインストールを促す常駐通知" />
         </div>
         <div class="flow-step__details">
           <h4>一括結果報告</h4>

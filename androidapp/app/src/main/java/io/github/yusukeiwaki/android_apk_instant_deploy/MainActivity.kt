@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -78,9 +79,15 @@ import androidx.compose.ui.unit.sp
 import org.json.JSONException
 import java.io.FileInputStream
 import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.net.UnknownServiceException
 import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import javax.net.ssl.SSLException
 
 class MainActivity : ComponentActivity() {
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -102,6 +109,9 @@ class MainActivity : ComponentActivity() {
     private var restrictionsReceiverRegistered = false
     private var managedRegistrationInProgress = false
     private var lastManagedRegistrationAttemptKey = ""
+    private var lastHandledRegistrationDeepLink = ""
+    private var activeRegistrationRequestKey = ""
+    private var registrationDeepLinkInForeground = false
     private var pendingRequiredInstallOpen: RequiredInstallOpen? = null
     private val fcmPolicyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -145,6 +155,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (handleUnconsumedRegistrationDeepLinkOnResume()) {
+            return
+        }
+        if (registrationDeepLinkInForeground && !store.isRegistered) {
+            return
+        }
         if (!store.isRegistered && handleManagedRegistrationIfAvailable()) {
             return
         }
@@ -199,8 +215,11 @@ class MainActivity : ComponentActivity() {
         }
 
         val data = intent.data
-        if (data != null && data.scheme == "apkdist" && data.host == "register-device") {
+        if (data != null && isRegistrationDeepLink(data)) {
+            registrationDeepLinkInForeground = true
+            lastHandledRegistrationDeepLink = data.toString()
             val serverBaseUrl = data.getQueryParameter("server_base_url")
+            registrationLog("manual_link_received identifier=${data.getQueryParameter("identifier").debugTail()} server=${serverBaseUrl.orEmpty()} registered=${store.isRegistered}")
             if (store.isRegistered) {
                 showAlreadyRegistered(serverBaseUrl)
                 return
@@ -225,6 +244,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        registrationDeepLinkInForeground = false
         if (store.isRegistered) {
             showHome(false)
         } else if (handleManagedRegistrationIfAvailable()) {
@@ -244,6 +264,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showRegister(identifier: String, secret: String) {
+        activeRegistrationRequestKey = ""
         setScreen(ScreenState.Register(identifier, secret, "", "通知トークンを準備しています...", ""))
         executor.execute {
             try {
@@ -260,6 +281,7 @@ class MainActivity : ComponentActivity() {
                     val current = screenState as? ScreenState.Register
                     if (current != null && current.identifier == identifier && current.secret == secret) {
                         setScreen(current.copy(tokenStatus = "通知トークンを取得できませんでした"))
+                        registrationLog("manual_registration_fcm_token_failed identifier=${identifier.debugTail()}")
                     }
                 }
             }
@@ -272,26 +294,55 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun registerDevice(identifier: String, secret: String, displayName: String, fcmToken: String) {
+        val requestKey = registrationRequestKey(identifier, secret, displayName, fcmToken)
+        activeRegistrationRequestKey = requestKey
+        registrationLog("manual_registration_started identifier=${identifier.debugTail()} server=${store.serverBaseUrl()} displayNameLength=${displayName.length}")
         showLoading("登録しています")
         executor.execute {
             try {
                 val device = ApiClient(store.serverBaseUrl(), "").registerDevice(identifier, secret, displayName, fcmToken)
-                store.saveRegistration(device, fcmToken)
-                syncApiClientFromStore()
-                mainHandler.post { showRegistrationDone() }
+                mainHandler.post {
+                    if (activeRegistrationRequestKey != requestKey) {
+                        return@post
+                    }
+                    activeRegistrationRequestKey = ""
+                    store.saveRegistration(device, fcmToken)
+                    syncApiClientFromStore()
+                    registrationLog("manual_registration_succeeded identifier=${identifier.debugTail()}")
+                    showRegistrationDone()
+                }
             } catch (e: ApiClient.ApiException) {
                 mainHandler.post {
+                    if (activeRegistrationRequestKey != requestKey) {
+                        return@post
+                    }
+                    activeRegistrationRequestKey = ""
+                    registrationLog("manual_registration_api_error identifier=${identifier.debugTail()} httpStatus=${e.httpStatus} code=${e.code}")
                     when (e.code) {
                         "DEVICE_ALREADY_REGISTERED", "REGISTRATION_TOKEN_NOT_FOUND" -> {
                             showRegisterBlocked("このリンクは使えません", "新しい登録リンクを管理者に依頼してください。")
                         }
-                        else -> showRegisterBlocked("登録できませんでした", e.message ?: "")
+                        else -> showRegisterBlocked("登録できませんでした", registrationApiFailureMessage(e))
                     }
                 }
-            } catch (_: IOException) {
-                mainHandler.post { showRegisterBlocked("登録できませんでした", "通信できる場所で再試行してください。") }
+            } catch (e: IOException) {
+                mainHandler.post {
+                    if (activeRegistrationRequestKey != requestKey) {
+                        return@post
+                    }
+                    activeRegistrationRequestKey = ""
+                    registrationLog("manual_registration_io_error identifier=${identifier.debugTail()} error=${e.javaClass.simpleName}: ${e.message.orEmpty()}")
+                    showRegisterRetryableError(identifier, secret, displayName, fcmToken, registrationIoFailureMessage(e))
+                }
             } catch (_: JSONException) {
-                mainHandler.post { showRegisterBlocked("登録できませんでした", "通信できる場所で再試行してください。") }
+                mainHandler.post {
+                    if (activeRegistrationRequestKey != requestKey) {
+                        return@post
+                    }
+                    activeRegistrationRequestKey = ""
+                    registrationLog("manual_registration_response_parse_error identifier=${identifier.debugTail()}")
+                    showRegisterRetryableError(identifier, secret, displayName, fcmToken, registrationResponseParseFailureMessage())
+                }
             }
         }
     }
@@ -303,6 +354,7 @@ class MainActivity : ComponentActivity() {
 
         val config = managedRegistrationConfig() ?: return false
         if (config.identifier.isEmpty() || config.secret.isEmpty()) {
+            registrationLog("managed_registration_config_incomplete identifier=${config.identifier.debugTail()} hasSecret=${config.secret.isNotEmpty()}")
             return false
         }
 
@@ -322,6 +374,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (config.displayName.isEmpty()) {
+            registrationLog("managed_registration_needs_display_name identifier=${config.identifier.debugTail()}")
             showRegister(config.identifier, config.secret)
         } else {
             registerManagedDevice(config, attemptKey)
@@ -343,6 +396,7 @@ class MainActivity : ComponentActivity() {
     private fun registerManagedDevice(config: ManagedRegistrationConfig, attemptKey: String) {
         managedRegistrationInProgress = true
         lastManagedRegistrationAttemptKey = attemptKey
+        registrationLog("managed_registration_started identifier=${config.identifier.debugTail()} server=${store.serverBaseUrl()} displayNameLength=${config.displayName.length}")
         setScreen(ScreenState.Loading("登録しています", "管理設定から端末を登録しています。", true))
         executor.execute {
             try {
@@ -358,32 +412,37 @@ class MainActivity : ComponentActivity() {
                 syncApiClientFromStore()
                 mainHandler.post {
                     managedRegistrationInProgress = false
+                    registrationLog("managed_registration_succeeded identifier=${config.identifier.debugTail()}")
                     showRegistrationDone()
                 }
             } catch (e: ApiClient.ApiException) {
                 mainHandler.post {
                     managedRegistrationInProgress = false
+                    registrationLog("managed_registration_api_error identifier=${config.identifier.debugTail()} httpStatus=${e.httpStatus} code=${e.code}")
                     when (e.code) {
                         "DEVICE_ALREADY_REGISTERED", "REGISTRATION_TOKEN_NOT_FOUND" -> {
                             showRegisterBlocked("管理設定では登録できません", "管理者に新しい DeviceRegistrationToken を依頼してください。")
                         }
-                        else -> showRegisterBlocked("登録できませんでした", e.message ?: "")
+                        else -> showRegisterBlocked("登録できませんでした", registrationApiFailureMessage(e))
                     }
                 }
-            } catch (_: IOException) {
+            } catch (e: IOException) {
                 mainHandler.post {
                     managedRegistrationInProgress = false
-                    showRegisterBlocked("登録できませんでした", "通信できる場所で再試行してください。")
+                    registrationLog("managed_registration_io_error identifier=${config.identifier.debugTail()} error=${e.javaClass.simpleName}: ${e.message.orEmpty()}")
+                    showRegisterBlocked("登録できませんでした", registrationIoFailureMessage(e))
                 }
             } catch (_: JSONException) {
                 mainHandler.post {
                     managedRegistrationInProgress = false
-                    showRegisterBlocked("登録できませんでした", "通信できる場所で再試行してください。")
+                    registrationLog("managed_registration_response_parse_error identifier=${config.identifier.debugTail()}")
+                    showRegisterBlocked("登録できませんでした", registrationResponseParseFailureMessage())
                 }
             } catch (_: Exception) {
                 mainHandler.post {
                     managedRegistrationInProgress = false
-                    showRegisterBlocked("登録できませんでした", "通知トークンを取得できませんでした。")
+                    registrationLog("managed_registration_fcm_token_failed identifier=${config.identifier.debugTail()}")
+                    showRegisterBlocked("登録できませんでした", "原因: 通知トークンを取得できませんでした。\nFirebase の設定、Google Play 開発者サービス、端末のネットワーク状態を確認してください。")
                 }
             }
         }
@@ -398,7 +457,101 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showRegisterBlocked(heading: String, message: String) {
+        activeRegistrationRequestKey = ""
         setScreen(ScreenState.RegisterBlocked(heading, message))
+    }
+
+    private fun showRegisterRetryableError(identifier: String, secret: String, displayName: String, fcmToken: String, message: String) {
+        setScreen(ScreenState.Register(identifier, secret, displayName, message, fcmToken))
+    }
+
+    private fun handleUnconsumedRegistrationDeepLinkOnResume(): Boolean {
+        val data = intent?.data ?: return false
+        if (!isRegistrationDeepLink(data)) {
+            return false
+        }
+        if (lastHandledRegistrationDeepLink == data.toString()) {
+            return false
+        }
+        handleIntent(intent)
+        return true
+    }
+
+    private fun isRegistrationDeepLink(data: Uri): Boolean {
+        return data.scheme == "apkdist" && data.host == "register-device"
+    }
+
+    private fun registrationRequestKey(identifier: String, secret: String, displayName: String, fcmToken: String): String {
+        return listOf(store.serverBaseUrl(), identifier, secret, displayName, fcmToken).joinToString("\u0000")
+    }
+
+    private fun registrationApiFailureMessage(e: ApiClient.ApiException): String {
+        val parts = mutableListOf(
+            "原因: サーバーが登録リクエストを拒否しました。",
+            "HTTP ${e.httpStatus} / ${e.code}",
+        )
+        val message = e.message.orEmpty().trim()
+        if (message.isNotEmpty()) {
+            parts.add("サーバー応答: $message")
+        }
+        parts.add("接続先: ${store.serverBaseUrl()}")
+        return parts.joinToString("\n")
+    }
+
+    private fun registrationIoFailureMessage(e: IOException): String {
+        val message = e.message.orEmpty()
+        val reason = when {
+            e is UnknownServiceException || message.contains("CLEARTEXT", ignoreCase = true) -> {
+                "HTTP通信が許可されていません。HTTPSのURLを使うか、アプリのHTTP許可設定を確認してください。"
+            }
+            e is UnknownHostException -> {
+                "サーバー名を解決できません。URLのホスト名、DNS、ネットワーク接続を確認してください。"
+            }
+            e is SocketTimeoutException -> {
+                "サーバー応答がタイムアウトしました。サーバーの起動状態、ネットワーク経路、ファイアウォールを確認してください。"
+            }
+            e is ConnectException || e is NoRouteToHostException -> {
+                "サーバーに接続できません。IPアドレス、ポート、端末とサーバーが同じネットワーク上にあるかを確認してください。"
+            }
+            e is SSLException -> {
+                "HTTPS/TLS接続に失敗しました。証明書、サーバーURL、端末時刻を確認してください。"
+            }
+            else -> {
+                "通信エラーが発生しました。ネットワーク状態とサーバーURLを確認してください。"
+            }
+        }
+        return buildRegistrationFailureMessage(reason, e.javaClass.simpleName, message)
+    }
+
+    private fun registrationResponseParseFailureMessage(): String {
+        return buildRegistrationFailureMessage(
+            "サーバーから登録結果を読み取れませんでした。サーバーの応答形式が想定と違います。",
+            "JSON_PARSE_ERROR",
+            "",
+        )
+    }
+
+    private fun buildRegistrationFailureMessage(reason: String, detailType: String, detailMessage: String): String {
+        val parts = mutableListOf(
+            "原因: $reason",
+            "接続先: ${store.serverBaseUrl()}",
+            "詳細: $detailType",
+        )
+        if (detailMessage.isNotBlank()) {
+            parts[parts.lastIndex] = "詳細: $detailType: $detailMessage"
+        }
+        return parts.joinToString("\n")
+    }
+
+    private fun registrationLog(message: String) {
+        Log.i(REGISTRATION_LOG_TAG, message)
+    }
+
+    private fun String?.debugTail(): String {
+        if (this.isNullOrBlank()) {
+            return "(blank)"
+        }
+        return if (length <= 8) this else take(4) + "..." + takeLast(4)
     }
 
     private fun isHttpUrl(value: String): Boolean {
@@ -899,7 +1052,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun installEntry(entry: ApiClient.PolicyEntry) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+        if (!canUseAmapiCustomAppInstall() &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
             requestInstallPermissionIfNeeded()
             Toast.makeText(this, "不明なアプリのインストールを許可してから再試行してください", Toast.LENGTH_LONG).show()
             return
@@ -924,28 +1080,50 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun uninstallEntry(entry: ApiClient.PolicyEntry) {
+        if (canUseAmapiCustomAppInstall()) {
+            uninstallEntryWithAmapi(entry.packageName)
+            return
+        }
+        uninstallEntryWithPackageInstaller(entry.packageName)
+    }
+
+    private fun uninstallEntryWithAmapi(targetPackageName: String) {
+        Toast.makeText(this, "アンインストールを開始しました", Toast.LENGTH_LONG).show()
+        executor.execute {
+            try {
+                AmapiCustomAppInstaller().uninstall(applicationContext, targetPackageName)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                mainHandler.post { uninstallEntryWithPackageInstaller(targetPackageName) }
+            } catch (_: Exception) {
+                mainHandler.post { uninstallEntryWithPackageInstaller(targetPackageName) }
+            }
+        }
+    }
+
+    private fun uninstallEntryWithPackageInstaller(targetPackageName: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             try {
                 val callback = Intent(this, InstallNotificationReceiver::class.java)
                     .setAction(InstallNotificationReceiver.ACTION_UNINSTALL_COMMITTED)
-                    .putExtra(InstallNotificationReceiver.EXTRA_PACKAGE_NAME, entry.packageName)
+                    .putExtra(InstallNotificationReceiver.EXTRA_PACKAGE_NAME, targetPackageName)
                 var flags = PendingIntent.FLAG_UPDATE_CURRENT
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     flags = flags or PendingIntent.FLAG_MUTABLE
                 }
-                val pendingIntent = PendingIntent.getBroadcast(this, entry.packageName.hashCode(), callback, flags)
-                packageManager.packageInstaller.uninstall(entry.packageName, pendingIntent.intentSender)
+                val pendingIntent = PendingIntent.getBroadcast(this, targetPackageName.hashCode(), callback, flags)
+                packageManager.packageInstaller.uninstall(targetPackageName, pendingIntent.intentSender)
                 Toast.makeText(this, "アンインストールを開始しました", Toast.LENGTH_LONG).show()
                 return
             } catch (_: SecurityException) {
-                openUninstallIntent(entry.packageName)
+                openUninstallIntent(targetPackageName)
                 return
             } catch (_: RuntimeException) {
-                openUninstallIntent(entry.packageName)
+                openUninstallIntent(targetPackageName)
                 return
             }
         }
-        openUninstallIntent(entry.packageName)
+        openUninstallIntent(targetPackageName)
     }
 
     @Suppress("DEPRECATION")
@@ -1031,6 +1209,23 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        if (canUseAmapiCustomAppInstall()) {
+            RequiredAppNotificationReceiver.cancelAllRequiredInstallNotifications(this)
+            var started = false
+            entries.forEach { entry ->
+                try {
+                    ApkDownloadManager().enqueue(this, entry.packageName, entry.releaseId, entry.versionCode)
+                    started = true
+                } catch (_: RuntimeException) {
+                }
+            }
+            if (started) {
+                startDownloadStatusRefresh()
+                refreshDownloadStatusViews()
+            }
+            return
+        }
+
         requestPostNotifications()
         RequiredAppNotificationReceiver.cancelAllRequiredInstallNotifications(this)
         entries.forEach { entry ->
@@ -1042,6 +1237,10 @@ class MainActivity : ComponentActivity() {
                 entry.versionCode,
             )
         }
+    }
+
+    private fun canUseAmapiCustomAppInstall(): Boolean {
+        return AmapiCustomAppInstaller().isAvailable(this)
     }
 
     private fun requestInstallPermissionIfNeeded() {
@@ -1800,6 +1999,7 @@ class MainActivity : ComponentActivity() {
         val InfoInk = Color(0xFF3D4551)
         val BadgeInstallBg = Color(0xFFECF3EC)
         const val REQUEST_POST_NOTIFICATIONS = 10
+        const val REGISTRATION_LOG_TAG = "ApkDeployRegistration"
         const val MC_SERVER_BASE_URL = "server_base_url"
         const val MC_IDENTIFIER = "device_registration_identifier"
         const val MC_SECRET = "device_registration_secret"

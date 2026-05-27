@@ -40,7 +40,9 @@ public final class RequiredAppNotificationReceiver extends BroadcastReceiver {
             return;
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.getPackageManager().canRequestPackageInstalls()) {
+        if (!new AmapiCustomAppInstaller().isAvailable(context) &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                !context.getPackageManager().canRequestPackageInstalls()) {
             Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + context.getPackageName()));
             settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             context.startActivity(settings);

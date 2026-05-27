@@ -5,13 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       :root {
-        --ink: #1b1b1b;
-        --muted: #565c65;
-        --line: #dfe1e2;
-        --blue: #005ea8;
-        --green: #2e7044;
-        --gold: #ffbe2e;
-        --bg: #f7f9fa;
+        --ink: #212529;
+        --muted: #6c757d;
+        --line: #dee2e6;
+        --primary: #0d6efd;
+        --danger: #dc3545;
+        --info: #0dcaf0;
+        --info-text: #087990;
+        --bg: #f6f7fb;
+        --dark: #212529;
         --chrome: #eef1f4;
       }
 
@@ -37,7 +39,7 @@
         border-radius: 10px;
         box-shadow: 0 10px 26px rgba(27, 27, 27, 0.12);
         margin: 0 auto;
-        max-width: 940px;
+        max-width: 960px;
         overflow: hidden;
       }
 
@@ -68,11 +70,11 @@
       }
 
       .traffic span:nth-child(2) {
-        background: var(--gold);
+        background: #ffbe2e;
       }
 
       .traffic span:nth-child(3) {
-        background: var(--green);
+        background: #2e7044;
       }
 
       .tab {
@@ -99,50 +101,87 @@
         white-space: nowrap;
       }
 
-      .admin {
-        display: grid;
-        grid-template-columns: 190px minmax(0, 1fr);
-        min-height: 430px;
-      }
-
-      .nav {
+      .app {
         background: var(--bg);
-        border-right: 1px solid var(--line);
-        padding: 18px;
+        min-height: 470px;
       }
 
-      .nav b,
-      .main h1 {
-        display: block;
-        font-size: 18px;
+      .navbar {
+        align-items: center;
+        background: var(--dark);
+        color: #fff;
+        display: flex;
+        gap: 22px;
+        padding: 11px 20px;
+      }
+
+      .brand {
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      .nav-links {
+        align-items: center;
+        display: flex;
+        flex: 1;
+        gap: 18px;
+      }
+
+      .nav-links span {
+        color: rgba(255, 255, 255, 0.65);
+        font-size: 14px;
+      }
+
+      .nav-links span.active {
+        color: #fff;
+        font-weight: 600;
+      }
+
+      .signout {
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        border-radius: 6px;
+        color: #fff;
+        font-size: 13px;
+        padding: 4px 12px;
+      }
+
+      .container {
+        margin: 0 auto;
+        max-width: 880px;
+        padding: 22px 20px 28px;
+      }
+
+      .back {
+        color: var(--primary);
+        font-size: 14px;
+        margin-bottom: 14px;
+      }
+
+      h1 {
+        font-size: 22px;
+        font-weight: 500;
+        margin: 0 0 4px;
+      }
+
+      .device-line {
+        color: var(--muted);
+        font-size: 14px;
         margin: 0 0 18px;
       }
 
-      .nav span {
-        border-left: 4px solid transparent;
-        color: var(--muted);
-        display: block;
-        font-size: 14px;
-        padding: 8px 0 8px 10px;
+      .device-line code {
+        color: #d63384;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
 
-      .nav span.current {
-        border-left-color: var(--blue);
-        color: var(--blue);
-        font-weight: 700;
-      }
-
-      .main {
-        padding: 20px;
-      }
-
-      .device {
-        background: #e7f6f8;
-        border-left: 5px solid var(--blue);
-        color: #3d4551;
-        font-size: 14px;
-        margin-bottom: 14px;
-        padding: 10px 12px;
+      .table-card {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+        margin-bottom: 18px;
+        overflow: hidden;
+        padding: 14px 16px;
       }
 
       table {
@@ -152,86 +191,114 @@
 
       th,
       td {
-        border: 1px solid var(--line);
-        font-size: 13px;
-        padding: 9px 10px;
+        border-bottom: 1px solid var(--line);
+        font-size: 14px;
+        padding: 11px 8px;
         text-align: left;
-        vertical-align: top;
+        vertical-align: middle;
       }
 
       th {
-        background: var(--bg);
+        color: var(--ink);
+        font-weight: 600;
       }
 
-      .mode {
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .checkbox {
+        border: 1px solid #b6bcc2;
+        border-radius: 4px;
         display: inline-block;
-        font-size: 12px;
-        font-weight: 700;
-        padding: 4px 7px;
+        height: 18px;
+        width: 18px;
       }
 
-      .force {
-        background: #ecf3ec;
-        color: var(--green);
+      .checkbox.on {
+        background: var(--primary);
+        border-color: var(--primary);
+        position: relative;
       }
 
-      .available {
-        background: #fff5c2;
-        color: #7d5f00;
+      .checkbox.on::after {
+        border: solid #fff;
+        border-width: 0 2px 2px 0;
+        content: "";
+        height: 9px;
+        left: 6px;
+        position: absolute;
+        top: 2px;
+        transform: rotate(45deg);
+        width: 5px;
       }
 
-      .badge-deleted {
-        background: #f8dfe2;
-        color: #b50909;
-        display: inline-block;
-        font-size: 11px;
-        font-weight: 700;
-        margin-left: 6px;
-        padding: 2px 6px;
-      }
-
-      .pkg {
+      td code {
+        color: #d63384;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 13px;
       }
 
-      .muted {
-        color: var(--muted);
+      .segmented {
+        display: inline-flex;
+        width: 100%;
       }
 
-      .row-action {
-        color: var(--blue);
-        font-weight: 700;
-      }
-
-      .add-row {
-        border: 2px dashed #8d9297;
-        color: var(--blue);
-        font-weight: 700;
-        margin-top: 12px;
-        padding: 10px;
+      .seg {
+        border: 1px solid;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 6px 4px;
         text-align: center;
+        white-space: nowrap;
+        width: 50%;
+      }
+
+      .seg.force {
+        border-color: var(--danger);
+        border-radius: 6px 0 0 6px;
+        color: var(--danger);
+      }
+
+      .seg.force.on {
+        background: var(--danger);
+        color: #fff;
+      }
+
+      .seg.avail {
+        border-color: var(--info-text);
+        border-left: 0;
+        border-radius: 0 6px 6px 0;
+        color: var(--info-text);
+      }
+
+      .seg.avail.on {
+        background: var(--info);
+        border-color: var(--info);
+        color: #04323d;
       }
 
       .actions {
         align-items: center;
         display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 14px;
+        justify-content: space-between;
       }
 
-      .button {
-        background: var(--blue);
+      .btn {
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 500;
+        padding: 8px 16px;
+      }
+
+      .btn-cancel {
+        border: 1px solid #6c757d;
+        color: #6c757d;
+      }
+
+      .btn-primary {
+        background: var(--primary);
         color: #fff;
-        display: inline-block;
-        font-weight: 700;
-        padding: 10px 14px;
-      }
-
-      .note {
-        color: var(--muted);
-        font-size: 13px;
       }
 
       @media (max-width: 720px) {
@@ -243,84 +310,108 @@
           display: none;
         }
 
-        .admin {
-          grid-template-columns: 1fr;
-        }
-
-        .nav {
-          border-bottom: 1px solid var(--line);
-          border-right: 0;
+        .nav-links span:not(.active) {
+          display: none;
         }
       }
     </style>
   </head>
   <body>
-    <div class="chrome" aria-label="Chrome風の管理画面でデバイスPolicyを編集">
+    <div class="chrome" aria-label="ブラウザの管理画面でデバイスの配信ポリシーを編集">
       <div class="chrome-top" aria-hidden="true">
         <div class="traffic"><span></span><span></span><span></span></div>
-        <div class="tab">Distribution Admin</div>
-        <div class="address">https://distribution.example.test/admin/devices/drt_01HX9A2W/policy</div>
+        <div class="tab">APK Instant Deploy</div>
+        <div class="address">https://distribution.example.test/policies/drt_01HX9A2W.../edit</div>
       </div>
-      <div class="admin">
-        <aside class="nav">
-          <b>Distribution Admin</b>
-          <span>Apps</span>
-          <span class="current">Devices</span>
-          <span>Policies</span>
-          <span>Audit log</span>
-        </aside>
-        <main class="main">
-          <h1>配信設定を編集</h1>
-          <div class="device">
-            Pixel 8 QA-01
+      <div class="app">
+        <nav class="navbar" aria-hidden="true">
+          <span class="brand">APK Instant Deploy</span>
+          <div class="nav-links">
+            <span>Dashboard</span>
+            <span>Devices</span>
+            <span>Apps</span>
+            <span class="active">Policies</span>
           </div>
-          <table aria-label="このデバイスへ配信するアプリの一覧">
-            <thead>
-              <tr>
-                <th>アプリ</th>
-                <th>現在配信中バージョン</th>
-                <th>配信方法</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="pkg">com.example.appa</td>
-                <td>2.4.0-qa (42)</td>
-                <td><span class="mode force">必須</span></td>
-                <td><span class="row-action">削除</span></td>
-              </tr>
-              <tr>
-                <td class="pkg">com.example.appb</td>
-                <td>1.2.0 (5)</td>
-                <td><span class="mode force">必須</span></td>
-                <td><span class="row-action">削除</span></td>
-              </tr>
-              <tr>
-                <td class="pkg">com.example.appc</td>
-                <td>0.9.3 (9)</td>
-                <td><span class="mode force">必須</span></td>
-                <td><span class="row-action">削除</span></td>
-              </tr>
-              <tr>
-                <td class="pkg">com.example.appd</td>
-                <td>0.3.1 (3)</td>
-                <td><span class="mode available">任意</span></td>
-                <td><span class="row-action">削除</span></td>
-              </tr>
-              <tr>
-                <td class="pkg">com.example.removed<span class="badge-deleted">削除されたアプリ</span></td>
-                <td class="muted">—</td>
-                <td><span class="mode force">必須</span></td>
-                <td><span class="row-action">削除</span></td>
-              </tr>
-            </tbody>
-          </table>
-          <div class="add-row">+ アプリを追加</div>
+          <span class="signout">Sign out</span>
+        </nav>
+        <div class="container">
+          <div class="back">&larr; Back to policies</div>
+          <h1>Edit policy</h1>
+          <p class="device-line">Device: <code>drt_01HX9A2W...</code> · Pixel 8 QA-01</p>
+          <div class="table-card">
+            <table aria-label="登録済みアプリと配信方法">
+              <thead>
+                <tr>
+                  <th style="width: 4rem;">Include</th>
+                  <th>Package</th>
+                  <th>Display name</th>
+                  <th style="width: 17rem;">Install mode</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="checkbox on"></span></td>
+                  <td><code>com.example.appa</code></td>
+                  <td>勤怠アプリ</td>
+                  <td>
+                    <div class="segmented">
+                      <span class="seg force on">FORCE_INSTALLED</span>
+                      <span class="seg avail">AVAILABLE</span>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="checkbox on"></span></td>
+                  <td><code>com.example.appb</code></td>
+                  <td>棚卸アプリ</td>
+                  <td>
+                    <div class="segmented">
+                      <span class="seg force on">FORCE_INSTALLED</span>
+                      <span class="seg avail">AVAILABLE</span>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="checkbox on"></span></td>
+                  <td><code>com.example.appc</code></td>
+                  <td>配送アプリ</td>
+                  <td>
+                    <div class="segmented">
+                      <span class="seg force on">FORCE_INSTALLED</span>
+                      <span class="seg avail">AVAILABLE</span>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="checkbox on"></span></td>
+                  <td><code>com.example.appd</code></td>
+                  <td>社内ポータル</td>
+                  <td>
+                    <div class="segmented">
+                      <span class="seg force">FORCE_INSTALLED</span>
+                      <span class="seg avail on">AVAILABLE</span>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="checkbox"></span></td>
+                  <td><code>com.example.kiosk</code></td>
+                  <td>受付キオスク</td>
+                  <td>
+                    <div class="segmented">
+                      <span class="seg force">FORCE_INSTALLED</span>
+                      <span class="seg avail on">AVAILABLE</span>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <div class="actions">
-            <span class="button">保存して反映</span>
+            <span class="btn btn-cancel">Cancel</span>
+            <span class="btn btn-primary">Publish new revision</span>
           </div>
-        </main>
+        </div>
       </div>
     </div>
     <script>

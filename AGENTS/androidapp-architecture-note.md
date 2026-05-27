@@ -17,6 +17,8 @@ The app is intentionally framework-light:
 - `ApkDownloadWorker.java` fetches a fresh artifact URL, streams the APK with OkHttp into app-private storage, updates local progress, and starts installation.
 - `ApkDownloadStore.java` stores active WorkManager job metadata by release/version so repeated taps do not enqueue the same APK multiple times.
 - `MainActivity.java` reflects the active download state from local progress data and disables matching install actions while a job is active.
+- `AmapiCustomAppInstaller.java` wraps AMAPI SDK `InstallCustomApp` local commands for fully managed devices where Android Device Policy exposes the custom APK storage directory.
+- `AmapiNotificationReceiverService.java` extends AMAPI SDK `NotificationReceiverService` so Android Device Policy can notify the app about assigned roles and local command status updates.
 - `ApkInstaller.java` wraps `PackageInstaller` sessions.
 - `InstallNotificationReceiver.java` handles install commit callbacks and opens the Android confirmation UI when user action is required.
 - `AndroidManifest.xml` declares the launcher, `apkdist://register-device` deep link, install receiver, and required permissions.
@@ -72,16 +74,19 @@ Install flow:
 
 1. User selects an entry.
 2. The app treats an install/update as needed when the package is missing, the server `version_code` is newer than the installed one, or the `version_code` is the same but the server `artifact_sha256` differs from the installed APK checksum.
-3. The app checks `REQUEST_INSTALL_PACKAGES` capability and sends the user to Android settings when needed.
+3. If AMAPI SDK custom app install is unavailable, the app checks `REQUEST_INSTALL_PACKAGES` capability and sends the user to Android settings when needed.
 4. `ApkDownloadManager` enqueues a WorkManager unique work named by `release_id + version_code` and records the app-private APK path.
 5. `ApkDownloadWorker` calls `GET /api/releases/:release_id/artifact_url` inside the worker so retries obtain a fresh short-lived URL.
 6. `ApkDownloadWorker` streams the APK with OkHttp to `context.getFilesDir()/apk-downloads/*.apk.part`, resumes with HTTP `Range` when a partial file exists and the server supports it, then renames to `.apk`.
 7. While `ApkDownloadStore` has an active job for that release, `MainActivity` disables the matching install action and displays waiting/running/installing progress.
-8. After download completion, `ApkDownloadWorker` passes the app-private APK file to `ApkInstaller`.
-9. `ApkInstaller.install` streams the downloaded APK into a full-install `PackageInstaller` session and commits it.
-10. `InstallNotificationReceiver` handles success, failure, or pending user action and removes the temporary APK file/state when the install reaches a terminal result.
+8. After download completion, `ApkDownloadWorker` first tries AMAPI SDK custom app install when `InstallCustomAppCommandHelper.getCustomApksStorageDirectory()` is available. It copies the APK into that directory, issues `InstallCustomApp(packageName, packageUri)`, then removes the temporary copy and local download state if the command succeeds.
+9. If AMAPI SDK custom app install is unavailable or command issuing fails, `ApkDownloadWorker` falls back to `ApkInstaller`.
+10. `ApkInstaller.install` streams the downloaded APK into a full-install `PackageInstaller` session and commits it.
+11. `InstallNotificationReceiver` handles success, failure, or pending user action and removes the temporary APK file/state when the install reaches a terminal result.
 
-Android does not allow silent arbitrary APK installs for this companion app. Expect a platform confirmation flow unless the app later becomes a device owner, profile owner, privileged app, or uses another managed-device channel.
+AMAPI SDK custom app install is attempted only when Android Device Policy exposes the AMAPI custom APK storage directory. That runtime signal is expected only on fully managed devices where the companion app has the required AMAPI policy role/configuration. Non-AMAPI or incomplete-policy devices fall back to the platform confirmation flow.
+
+Uninstall flow mirrors the same route choice: when AMAPI SDK custom app management is available, the app issues `UninstallCustomApp` through `AmapiCustomAppInstaller` first. If AMAPI is unavailable or command issuing fails, it falls back to Android `PackageInstaller.uninstall()` / the platform uninstall UI. This matters for AMAPI custom apps whose policy sets `customAppConfig.userUninstallSettings=DISALLOW_UNINSTALL_BY_USER`; user-driven uninstall UI can be blocked, while the AMAPI custom app command is the intended managed route.
 
 The server already has `POST /api/devices/me/policy_sync_results`, but the current app does not yet submit detailed sync reports after install attempts. Add that deliberately when the install result model is ready, and make repeated reports idempotent by policy revision as the server expects.
 
@@ -123,6 +128,9 @@ The manifest currently declares:
 - `POST_NOTIFICATIONS` for Android 13+ notification permission.
 - `REQUEST_INSTALL_PACKAGES` for user-approved APK installation.
 - `QUERY_ALL_PACKAGES` for broad package visibility if future policy comparison needs installed-package inspection.
+- A `<queries>` package visibility entry for Android Device Policy (`com.google.android.apps.work.clouddpc`).
+- The AMAPI SDK custom app `CustomAppProvider` with `res/xml/file_provider_paths.xml` for the SDK-managed custom APK cache path.
+- An exported AMAPI SDK `NotificationReceiverService` with `SERVICE_APP_ROLES` and `SERVICE_COMMAND_STATUS` metadata. Android Device Policy uses this to discover the companion app role receiver and deliver local command status updates.
 - A browsable `apkdist://register-device` intent filter on `MainActivity`.
 - A non-exported install callback receiver.
 

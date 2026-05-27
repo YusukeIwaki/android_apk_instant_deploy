@@ -4,6 +4,7 @@
 
 - Server-side implementation guidance is maintained in `AGENTS/server-architecture-note.md`. Read it before changing `server/`, especially API behavior, database schema, object storage, authentication, or Docker Compose wiring.
 - Android companion app implementation guidance is maintained in `AGENTS/androidapp-architecture-note.md`. Read it before changing `androidapp/`, especially registration deep links, local persistence, policy sync, APK installation, permissions, or FCM behavior.
+- When locally checking `server/`, do not use the host's native Ruby or Bundler. Run server-side commands through Docker Compose, for example `cd server && docker compose run --rm server bundle exec rake hoge`, so the Ruby/Bundler versions and service environment match the project.
 - Before building `androidapp/`, load `androidapp/.envrc` or otherwise export its `JAVA_HOME` so Gradle uses Java 17; missing this commonly causes local Android builds to fail.
 
 ## Documentation Goals

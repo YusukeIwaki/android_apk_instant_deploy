@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { background: #fff; }
+  #icon { display: block; }
+</style>
+</head>
+<body>
+  <!-- 512x512 Google Play store icon.
+       Same composition as the adaptive launcher icon (108x108 viewport):
+       blue background, two-triangle origami paper plane, white up-arrow + base bar. -->
+  <svg id="icon" width="512" height="512" viewBox="0 0 108 108" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#42A5F5"/>
+        <stop offset="1" stop-color="#1E88E5"/>
+      </linearGradient>
+    </defs>
+
+    <!-- background -->
+    <rect x="0" y="0" width="108" height="108" fill="url(#bg)"/>
+
+    <!-- paper plane: light wing + dark wing -->
+    <path d="M96,12 L12,60 L50,50 Z" fill="#BBDEFB"/>
+    <path d="M96,12 L50,50 L60,96 Z" fill="#0D47A1"/>
+
+    <!-- up arrow + base bar -->
+    <path d="M54,39 L69,51 L59,51 L59,60 L49,60 L49,51 L39,51 Z" fill="#FFFFFF"/>
+    <path d="M33,62 L75,62 L75,65 L33,65 Z" fill="#FFFFFF"/>
+  </svg>
+</body>
+</html>

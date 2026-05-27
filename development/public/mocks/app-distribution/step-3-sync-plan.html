@@ -9,10 +9,8 @@
         --muted: #565c65;
         --line: #dfe1e2;
         --blue: #005ea8;
-        --green: #2e7044;
-        --gold: #ffbe2e;
-        --red: #d83933;
-        --bg: #f7f9fa;
+        --bar: #f7f9fa;
+        --disabled-bg: #e1e3e1;
       }
 
       * {
@@ -35,20 +33,20 @@
         background: #111;
         border-radius: 34px;
         margin: 0 auto;
-        max-width: 390px;
+        max-width: 380px;
         padding: 12px;
       }
 
       .screen {
         background: #fff;
         border-radius: 24px;
-        min-height: 690px;
+        min-height: 660px;
         overflow: hidden;
       }
 
       .statusbar {
         align-items: center;
-        background: var(--bg);
+        background: var(--bar);
         display: flex;
         font-size: 12px;
         font-weight: 700;
@@ -56,116 +54,78 @@
         padding: 10px 18px 8px;
       }
 
-      .bar {
-        background: var(--bg);
+      .topbar {
+        align-items: center;
+        background: var(--bar);
         border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 10px;
+        padding: 13px 14px;
+      }
+
+      .topbar .back {
+        color: var(--ink);
+        font-size: 22px;
         font-weight: 700;
-        padding: 14px 16px;
       }
 
       .body {
-        padding: 18px;
+        padding: 20px 18px;
       }
 
       h1 {
         font-size: 22px;
-        line-height: 1.2;
+        font-weight: 700;
+        line-height: 1.25;
         margin: 0 0 8px;
       }
 
-      p {
+      .meta {
         color: var(--muted);
+        font-size: 15px;
         line-height: 1.55;
         margin: 0 0 14px;
       }
 
-      .banner {
-        background: #e7f6f8;
-        border-left: 5px solid var(--blue);
-        color: #3d4551;
-        font-size: 13px;
-        line-height: 1.45;
-        margin-bottom: 12px;
-        padding: 10px;
-      }
-
-      .list {
-        border: 1px solid var(--line);
-      }
-
-      .item {
-        display: grid;
-        gap: 10px;
-        grid-template-columns: 78px minmax(0, 1fr);
-        padding: 10px;
-      }
-
-      .item + .item {
-        border-top: 1px solid var(--line);
-      }
-
-      .badge {
-        align-items: center;
-        display: flex;
-        font-size: 11px;
-        font-weight: 700;
-        justify-content: center;
-        min-height: 28px;
-        padding: 4px;
-        text-align: center;
-      }
-
-      .install {
-        background: #ecf3ec;
-        color: var(--green);
-      }
-
-      .keep {
-        background: #f7f9fa;
-        color: #3d4551;
-      }
-
-      .available {
-        background: #fff5c2;
-        color: #7d5f00;
-      }
-
-      .remove {
-        background: #fde0db;
-        color: var(--red);
-      }
-
-      .item span {
-        color: var(--muted);
-        display: block;
-        font-size: 12px;
-        margin-top: 2px;
+      .meta .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
 
       .button {
+        align-items: center;
+        border-radius: 22px;
+        display: flex;
+        font-size: 14px;
+        font-weight: 700;
+        justify-content: center;
+        margin-top: 6px;
+        min-height: 44px;
+        padding: 10px 14px;
+      }
+
+      .button.primary {
         background: var(--blue);
         color: #fff;
-        display: block;
-        font-weight: 700;
-        margin-top: 14px;
-        padding: 12px;
-        text-align: center;
       }
 
       .button.disabled {
-        background: #e1e3e1;
-        color: #565c65;
+        background: var(--disabled-bg);
+        color: #8a9099;
       }
     </style>
   </head>
   <body>
-    <div class="phone" aria-label="スマートフォン上のアプリ詳細画面">
+    <div class="phone" aria-label="コンパニオンアプリのアプリ詳細画面。ダウンロード進行中">
       <div class="screen">
         <div class="statusbar"><span>10:13</span><span>5G 100%</span></div>
-        <div class="bar">APK Remote Companion</div>
+        <div class="topbar"><span class="back" aria-hidden="true">←</span></div>
         <div class="body">
-          <h1>com.example.appa</h1>
-          <p>version 1.0.0</p>
+          <h1>配送アプリ</h1>
+          <p class="meta">
+            <span class="mono">com.example.appc</span><br />
+            version 0.9.3<br />
+            ダウンロード中 50%
+          </p>
           <div class="button disabled">ダウンロード中</div>
         </div>
       </div>
