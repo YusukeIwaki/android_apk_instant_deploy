@@ -18,6 +18,9 @@ development/node_modules/
 development/dist/
 development/.astro/
 
+cli/dist/
+cli/build.sh
+
 .codex
 .playwright-mcp
 .envrc
