@@ -12,6 +12,7 @@ end
 
 around_suite do |suite|
   use_fixture SinatraServerFixture
+  use_fixture ApiFixture
   use_matcher PlaywrightMatcher
 
   ApkInstantDeploy::CleanDatabase.truncate!

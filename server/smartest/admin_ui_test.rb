@@ -138,7 +138,55 @@ test("同一 package_name と versionCode でも checksum が異なれば releas
   raise "expected two releases" unless admin_page.locator("tbody tr").count == 2
 end
 
-test("ポリシー編集で revision が発行され、デバイス詳細に反映される") do |admin_page:|
+test("管理画面の APK 更新で関連ポリシー revision が更新され FCM が送信される") do |admin_page:, api_client:, fake_fcm_factory:, fcm_deliveries:|
+  admin_page.goto("/apps/new")
+  admin_page.locator('input[type="file"]').set_input_files(SAMPLE_APK_PATH)
+  admin_page.get_by_role("button", name: "Upload").click
+  expect(admin_page.get_by_text("Uploaded com.example.smartest versionCode=1.")).to be_visible
+
+  identifier = issue_registration_token(admin_page)
+  secret = admin_page.locator("dd code").nth(1).text_content.strip
+  device_auth_token = api_client.register_device(identifier: identifier, registration_secret: secret)
+
+  admin_page.goto("/policies/#{identifier}/edit")
+  row = admin_page.locator('tr:has-text("com.example.smartest")')
+  row.locator('input[name="include[]"]').check
+  row.locator('label:has-text("FORCE_INSTALLED")').click
+  admin_page.get_by_role("button", name: "Publish new revision").click
+  expect(admin_page.get_by_text("Policy updated for #{identifier}.")).to be_visible
+
+  device = ApkInstantDeploy::DeviceIdentifier.find_by!(identifier: identifier).device
+  policy = device.device_policy
+  initial_revision_id = policy.current_revision_id
+  initial_revision_count = policy.device_policy_revisions.count
+  initial_latest_release_id = ApkInstantDeploy::App.find_by!(package_name: "com.example.smartest").releases.order(version_code: :desc, id: :desc).first.id
+
+  original_fcm_enabled = ApkInstantDeploy::Server.settings.fcm_push_enabled
+  original_fcm_factory = ApkInstantDeploy::Server.settings.fcm_push_client_factory
+  ApkInstantDeploy::Server.set :fcm_push_enabled, true
+  ApkInstantDeploy::Server.set :fcm_push_client_factory, fake_fcm_factory
+  begin
+    admin_page.goto("/apps/new")
+    admin_page.locator('input[type="file"]').set_input_files(SAME_VERSION_NEW_CHECKSUM_APK_PATH)
+    admin_page.get_by_role("button", name: "Upload").click
+  ensure
+    ApkInstantDeploy::Server.set :fcm_push_enabled, original_fcm_enabled
+    ApkInstantDeploy::Server.set :fcm_push_client_factory, original_fcm_factory
+  end
+
+  expect(admin_page.get_by_text("Uploaded com.example.smartest versionCode=1.")).to be_visible
+  policy.reload
+  raise "expected policy revision to be refreshed" unless policy.current_revision_id != initial_revision_id
+  raise "expected one additional policy revision" unless policy.device_policy_revisions.count == initial_revision_count + 1
+  raise "expected one fake FCM delivery, got #{fcm_deliveries.length}" unless fcm_deliveries.length == 1
+  raise "expected decrypted FCM token" unless fcm_deliveries.first.fetch(:token) == "smartest-fcm"
+  raise "expected POLICY_UPDATED payload" unless fcm_deliveries.first.fetch(:payload).fetch(:type) == "POLICY_UPDATED"
+
+  latest_release_id = api_client.fetch_device_policy(device_auth_token).fetch("entries").first.fetch("install").fetch("release").fetch("id")
+  raise "expected latest release to change" unless latest_release_id != initial_latest_release_id
+end
+
+test("ポリシー編集で revision が発行され、デバイス詳細に反映される") do |admin_page:, api_client:, fake_fcm_factory:, fcm_deliveries:|
   # 1) アプリを登録
   admin_page.goto("/apps/new")
   admin_page.locator('input[type="file"]').set_input_files(SAMPLE_APK_PATH)
@@ -149,37 +197,15 @@ test("ポリシー編集で revision が発行され、デバイス詳細に反�
   identifier = issue_registration_token(admin_page)
   secret = admin_page.locator("dd code").nth(1).text_content.strip
 
-  api_response = admin_page.context.request.post(
-    "/api/devices",
-    headers: { "Content-Type" => "application/json" },
-    data: JSON.generate(
-      identifier: identifier,
-      registration_secret: secret,
-      display_name: "Smartest Device",
-      fcm_push_token: "smartest-fcm"
-    )
-  )
-  raise "device registration failed: #{api_response.status} #{api_response.body}" unless api_response.ok?
-  device_auth_token = JSON.parse(api_response.body).fetch("device").fetch("device_auth_token")
+  device_auth_token = api_client.register_device(identifier: identifier, registration_secret: secret)
 
   # 3) ポリシー編集画面で対象アプリを FORCE_INSTALLED に設定
   admin_page.goto("/policies/#{identifier}/edit")
   row = admin_page.locator('tr:has-text("com.example.smartest")')
   row.locator('input[name="include[]"]').check
   row.locator('label:has-text("FORCE_INSTALLED")').click
-  fcm_deliveries = []
   original_fcm_enabled = ApkInstantDeploy::Server.settings.fcm_push_enabled
   original_fcm_factory = ApkInstantDeploy::Server.settings.fcm_push_client_factory
-  fake_fcm_factory = Struct.new(:deliveries) do
-    def call(token, logger: nil)
-      Struct.new(:token, :deliveries) do
-        def send_message(payload)
-          deliveries << { token: token, payload: payload }
-          { "name" => "fake-fcm-message" }
-        end
-      end.new(token, deliveries)
-    end
-  end.new(fcm_deliveries)
 
   ApkInstantDeploy::Server.set :fcm_push_enabled, true
   ApkInstantDeploy::Server.set :fcm_push_client_factory, fake_fcm_factory
@@ -195,12 +221,7 @@ test("ポリシー編集で revision が発行され、デバイス詳細に反�
   raise "expected decrypted FCM token" unless fcm_deliveries.first.fetch(:token) == "smartest-fcm"
   raise "expected POLICY_UPDATED payload" unless fcm_deliveries.first.fetch(:payload).fetch(:type) == "POLICY_UPDATED"
 
-  policy_response = admin_page.context.request.get(
-    "/api/devices/me/policy",
-    headers: { "Authorization" => "Bearer #{device_auth_token}" }
-  )
-  raise "policy fetch failed: #{policy_response.status} #{policy_response.body}" unless policy_response.ok?
-  policy_entry = JSON.parse(policy_response.body).fetch("entries").first
+  policy_entry = api_client.fetch_device_policy(device_auth_token).fetch("entries").first
   expect(policy_entry.fetch("app").fetch("display_name")).to eq("Smartest Demo")
 
   # 4) デバイス詳細にポリシーが反映されている

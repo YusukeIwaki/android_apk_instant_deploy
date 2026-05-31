@@ -128,20 +128,31 @@ module ApkInstantDeploy
       end
 
       def apps_payload
-        apps = App.includes(:releases).order(updated_at: :desc, id: :desc).map do |app|
+        apps = App.includes(:app_profile).order(updated_at: :desc, id: :desc).map do |app|
           {
-            id: app.id,
-            package_name: app.package_name,
-            releases: app.releases.sort_by { |release| [-release.version_code, -release.id] }.map do |release|
-              {
-                id: release.id,
-                version_code: release.version_code,
-                version_name: release.version_name
-              }
-            end
+            display_name: app_display_name(app),
+            package_name: app.package_name
           }
         end
         { apps: apps }
+      end
+
+      def app_releases_payload(app)
+        releases = app.releases.includes(:artifact).sort_by { |release| [-release.version_code, -release.id] }.map do |release|
+          {
+            id: release.id,
+            version_code: release.version_code,
+            version_name: release.version_name,
+            artifact: artifact_payload(release.artifact)
+          }
+        end
+        {
+          app: {
+            package_name: app.package_name,
+            display_name: app_display_name(app)
+          },
+          releases: releases
+        }
       end
 
       def latest_release_for(app)
@@ -170,19 +181,6 @@ module ApkInstantDeploy
             version_code: release.version_code,
             version_name: release.version_name,
             artifact_sha256: release.artifact.sha256
-          }
-        }
-      end
-
-      def admin_policy_payload(device, policy)
-        revision = policy.current_revision
-        entries = revision ? revision.device_policy_app_entries.includes(app: :app_profile).map { |entry| policy_entry_payload(entry) }.compact : []
-        {
-          device_policy: {
-            identifier: device.identifier,
-            current_revision: { id: revision&.id },
-            updated_at: timestamp(policy.updated_at),
-            entries: entries
           }
         }
       end
@@ -236,33 +234,6 @@ module ApkInstantDeploy
           reported_at: timestamp(report.reported_at),
           actions: report.actions
         }
-      end
-
-      def validate_policy_entries!(payload)
-        entries = payload["entries"]
-        unless entries.is_a?(Array)
-          halt 400, error_response("INVALID_REQUEST", "Request body is not valid JSON.", 400)
-        end
-
-        app_ids = []
-        entries.each do |entry|
-          app_id = positive_integer(entry.dig("app", "id")) if entry.is_a?(Hash)
-          mode = entry["install_mode"] if entry.is_a?(Hash)
-          unless app_id
-            halt 400, error_response("APP_NOT_FOUND_FOR_ENTRY", "One or more entries reference an app that does not exist.", 400)
-          end
-          unless %w[FORCE_INSTALLED AVAILABLE].include?(mode)
-            halt 400, error_response("INSTALL_MODE_INVALID", "install_mode must be one of FORCE_INSTALLED, AVAILABLE.", 400)
-          end
-          app_ids << app_id
-        end
-
-        existing_ids = App.where(id: app_ids).pluck(:id)
-        if app_ids.length != app_ids.uniq.length || existing_ids.sort != app_ids.uniq.sort
-          halt 400, error_response("APP_NOT_FOUND_FOR_ENTRY", "One or more entries reference an app that does not exist.", 400)
-        end
-
-        entries
       end
 
       def validate_sync_actions!(actions)
@@ -319,6 +290,64 @@ module ApkInstantDeploy
         settings.fcm_event_logger.warn("fcm token decrypt failed for #{device.identifier}: #{e.message}")
       rescue StandardError => e
         settings.fcm_event_logger.error("fcm push failed for #{device.identifier}: #{e.class}: #{e.message}")
+      end
+
+      def touch_policy_revisions_for_app_ids(app_ids)
+        refreshed_policies = []
+        policies = DevicePolicy
+          .joins(current_revision: :device_policy_app_entries)
+          .where(device_policy_app_entries: { app_id: app_ids })
+          .includes(:device, current_revision: :device_policy_app_entries)
+          .distinct
+
+        DevicePolicy.transaction do
+          policies.each do |policy|
+            entries = policy.current_revision.device_policy_app_entries.order(:id).to_a
+            revision = policy.device_policy_revisions.create!
+            entries.each do |entry|
+              DevicePolicyAppEntry.create!(
+                device_policy_revision: revision,
+                app_id: entry.app_id,
+                install_mode: entry.install_mode
+              )
+            end
+            policy.update!(current_revision: revision)
+            refreshed_policies << policy
+          end
+        end
+
+        refreshed_policies.each { |policy| notify_policy_updated(policy.device, policy) }
+        refreshed_policies
+      end
+
+      def touched_policy_payload(policy)
+        {
+          identifier: policy.device.identifier,
+          display_name: policy.device.device_profile&.display_name.to_s,
+          current_revision: { id: policy.current_revision_id },
+          updated_at: timestamp(policy.updated_at)
+        }
+      end
+
+      def refresh_policy_revisions_for_app_update(app)
+        touch_policy_revisions_for_app_ids([app.id]).length
+      end
+
+      def delete_release_and_artifact!(release)
+        artifact = release.artifact
+        app = release.app
+
+        begin
+          object_store.delete(artifact.s3_key)
+        rescue Aws::S3::Errors::ServiceError
+          halt 502, error_response("ARTIFACT_DELETE_FAILED", "Failed to remove the stored APK object. The release was not deleted.", 502)
+        end
+
+        Release.transaction do
+          release.destroy!
+          artifact.destroy!
+          app.destroy! unless app.releases.exists?
+        end
       end
 
       def public_base_url
@@ -482,44 +511,6 @@ module ApkInstantDeploy
       json_response(status: "ok", service: "android_apk_instant_deploy")
     end
 
-    post "/admin/device_registration_tokens" do
-      require_admin!
-      payload = parsed_json_body
-      expires_in = positive_integer(payload["expires_in_minutes"])
-      unless expires_in
-        halt 400, error_response("EXPIRES_IN_MINUTES_INVALID", "expires_in_minutes must be a positive integer.", 400)
-      end
-
-      issued_at = Time.now.utc
-      expires_at = issued_at + (expires_in * 60)
-      identifier = Security.registration_identifier
-      secret = Security.registration_secret
-
-      token = DeviceRegistrationToken.transaction do
-        device_identifier = DeviceIdentifier.create!(identifier: identifier)
-        DeviceRegistrationToken.create!(
-          device_identifier: device_identifier,
-          secret_hash: Security.hmac(secret),
-          issued_at: issued_at,
-          expires_at: expires_at
-        )
-      end
-
-      deep_link = device_registration_deep_link(identifier, secret)
-      json_response(
-        {
-          device_registration_token: {
-            identifier: token.device_identifier.identifier,
-            registration_secret: secret,
-            issued_at: timestamp(token.issued_at),
-            expires_at: timestamp(token.expires_at),
-            deep_link: deep_link
-          }
-        },
-        201
-      )
-    end
-
     post "/api/devices" do
       payload = parsed_json_body
       display_name = payload["display_name"].to_s.strip
@@ -537,7 +528,7 @@ module ApkInstantDeploy
 
       token = device_identifier&.device_registration_token
       unless token && token.expires_at > Time.now.utc && Security.secure_compare(token.secret_hash, Security.hmac(registration_secret))
-        halt 404, error_response("REGISTRATION_TOKEN_NOT_FOUND", "Registration link is expired, already used, or the secret is incorrect.", 404)
+        halt error_response("REGISTRATION_TOKEN_NOT_FOUND", "Registration link is expired, already used, or the secret is incorrect.", 404)
       end
 
       device_auth_token = Security.device_auth_token
@@ -564,17 +555,6 @@ module ApkInstantDeploy
       )
     rescue ActiveRecord::RecordNotUnique
       halt 403, error_response("DEVICE_ALREADY_REGISTERED", "A device already exists for this identifier.", 403)
-    end
-
-    delete "/admin/devices/:identifier" do
-      require_admin!
-      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
-      device = device_identifier&.device
-      halt 404, error_response("DEVICE_NOT_FOUND", "Device was not found.", 404) unless device
-
-      device.destroy!
-      status 204
-      body ""
     end
 
     post "/admin/artifacts" do
@@ -645,26 +625,42 @@ module ApkInstantDeploy
       json_response(apps_payload)
     end
 
+    get "/admin/apps/:package_name/releases" do
+      require_admin!
+      app = App.includes(:app_profile, releases: :artifact).find_by(package_name: params.fetch("package_name"))
+      halt 404, error_response("APP_NOT_FOUND", "App was not found.", 404) unless app
+
+      json_response(app_releases_payload(app))
+    end
+
+    post "/admin/apps/:package_name/touch_policies" do
+      require_admin!
+      app = App.find_by(package_name: params.fetch("package_name"))
+      halt 404, error_response("APP_NOT_FOUND", "App was not found.", 404) unless app
+
+      policies = touch_policy_revisions_for_app_ids([app.id])
+      json_response(device_policies: policies.map { |policy| touched_policy_payload(policy) })
+    end
+
+    delete "/admin/apps/:package_name/releases/:release_id" do
+      require_admin!
+      app = App.find_by(package_name: params.fetch("package_name"))
+      halt 404, error_response("APP_NOT_FOUND", "App was not found.", 404) unless app
+
+      release = Release.includes(:artifact, :app).find_by(id: params.fetch("release_id"), app_id: app.id)
+      halt 404, error_response("RELEASE_NOT_FOUND", "Release was not found.", 404) unless release
+
+      delete_release_and_artifact!(release)
+      status 204
+      body ""
+    end
+
     delete "/admin/releases/:release_id" do
       require_admin!
       release = Release.includes(:artifact, :app).find_by(id: params.fetch("release_id"))
       halt 404, error_response("RELEASE_NOT_FOUND", "Release was not found.", 404) unless release
 
-      artifact = release.artifact
-      app = release.app
-
-      begin
-        object_store.delete(artifact.s3_key)
-      rescue Aws::S3::Errors::ServiceError
-        halt 502, error_response("ARTIFACT_DELETE_FAILED", "Failed to remove the stored APK object. The release was not deleted.", 502)
-      end
-
-      Release.transaction do
-        release.destroy!
-        artifact.destroy!
-        app.destroy! unless app.releases.exists?
-      end
-
+      delete_release_and_artifact!(release)
       status 204
       body ""
     end
@@ -672,7 +668,7 @@ module ApkInstantDeploy
     get "/api/releases/:release_id/artifact_url" do
       current_device
       release = Release.find_by(id: params.fetch("release_id"))
-      halt 404, error_response("RELEASE_NOT_FOUND", "Release was not found.", 404) unless release
+      halt error_response("RELEASE_NOT_FOUND", "Release was not found.", 404) unless release
 
       detail = object_store.download_url(release.artifact.s3_key)
       json_response(
@@ -700,46 +696,6 @@ module ApkInstantDeploy
       else
         body store.read(key)
       end
-    end
-
-    get "/admin/devices/:identifier/policy" do
-      require_admin!
-      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
-      device = device_identifier&.device
-      halt 404, error_response("DEVICE_NOT_FOUND", "Device was not found.", 404) unless device
-
-      policy = device.device_policy
-      unless policy&.current_revision
-        halt 404, error_response("DEVICE_POLICY_NOT_FOUND", "Device policy has not been created for this device yet.", 404)
-      end
-
-      json_response(admin_policy_payload(device, policy))
-    end
-
-    put "/admin/devices/:identifier/policy" do
-      require_admin!
-      payload = parsed_json_body
-      entries = validate_policy_entries!(payload)
-      device_identifier = DeviceIdentifier.find_by(identifier: params.fetch("identifier"))
-      device = device_identifier&.device
-      halt 404, error_response("DEVICE_NOT_FOUND", "Device was not found.", 404) unless device
-
-      policy = nil
-      DevicePolicy.transaction do
-        policy = device.device_policy || DevicePolicy.create!(device: device)
-        revision = policy.device_policy_revisions.create!
-        entries.each do |entry|
-          DevicePolicyAppEntry.create!(
-            device_policy_revision: revision,
-            app_id: entry.fetch("app").fetch("id"),
-            install_mode: entry.fetch("install_mode")
-          )
-        end
-        policy.update!(current_revision: revision)
-      end
-
-      notify_policy_updated(device, policy)
-      json_response(admin_policy_payload(device, policy))
     end
 
     get "/api/devices/me/policy" do
@@ -783,7 +739,7 @@ module ApkInstantDeploy
 
       revision = DevicePolicyRevision.joins(:device_policy).find_by(id: revision_id, device_policies: { device_id: device.id })
       unless revision
-        halt 404, error_response("DEVICE_POLICY_REVISION_NOT_FOUND", "The referenced device_policy_revision was not found for this device.", 404)
+        halt error_response("DEVICE_POLICY_REVISION_NOT_FOUND", "The referenced device_policy_revision was not found for this device.", 404)
       end
 
       existing = DevicePolicySyncReport.find_by(device: device, device_policy_revision: revision)
@@ -1007,6 +963,7 @@ module ApkInstantDeploy
       artifact = nil
       stored_key = nil
       created_app = app
+      created_release = nil
 
       begin
         Artifact.transaction do
@@ -1028,7 +985,7 @@ module ApkInstantDeploy
             profile.save!
           end
           AppIcon.find_or_create_by!(app: created_app)
-          Release.create!(
+          created_release = Release.create!(
             app: created_app,
             artifact: artifact,
             version_code: metadata.version_code,
@@ -1042,6 +999,10 @@ module ApkInstantDeploy
       rescue Aws::S3::Errors::ServiceError
         set_flash(:danger, "Failed to store the uploaded APK. Retry the upload.")
         redirect "/apps/new"
+      end
+
+      if app && latest_release_for(created_app)&.id == created_release.id
+        refresh_policy_revisions_for_app_update(created_app)
       end
 
       set_flash(:success, "Uploaded #{metadata.package_name} versionCode=#{metadata.version_code}.")
@@ -1166,6 +1127,9 @@ module ApkInstantDeploy
     end
 
     not_found do
+      existing_body = Array(response.body).join
+      return existing_body unless existing_body.empty?
+
       if request.path_info.start_with?("/api/") || request.path_info.start_with?("/admin/")
         error_response("NOT_FOUND", "The requested endpoint was not found.", 404)
       else
