@@ -7,6 +7,10 @@ const uploadCurl = `curl -X POST https://distribution.example.test/admin/artifac
   -H "Authorization: Bearer $ADMIN_TOKEN" \\
   -F "file=@qa-camera-2.4.0-42.apk;type=application/vnd.android.package-archive"`;
 
+const uploadCli = `ANDROID_APK_INSTANT_DEPLOY_SERVER=https://distribution.example.test \\
+ANDROID_APK_INSTANT_DEPLOY_ACCESS_TOKEN=$ADMIN_TOKEN \\
+android_apk_instant_deploy upload qa-camera-2.4.0-42.apk`;
+
 const uploadResponse = `HTTP/1.1 201 Created
 {
   "artifact": {
@@ -28,6 +32,10 @@ const newVersionCurl = `curl -X POST https://distribution.example.test/admin/art
 # - 古い release はそのまま残る (削除は管理者が明示的に DELETE する)
 # - 完全に同じ APK bytes は拒否される (400 ARTIFACT_ALREADY_EXISTS)`;
 
+const newVersionCli = `ANDROID_APK_INSTANT_DEPLOY_SERVER=https://distribution.example.test \\
+ANDROID_APK_INSTANT_DEPLOY_ACCESS_TOKEN=$ADMIN_TOKEN \\
+android_apk_instant_deploy upload qa-camera-2.4.1-43.apk`;
+
 const newVersionResponse = `HTTP/1.1 201 Created
 {
   "artifact": {
@@ -41,7 +49,7 @@ const newVersionResponse = `HTTP/1.1 201 Created
 
 # 応答形は新規パッケージの初回アップロード時と同じ。
 # 既存パッケージへの新バージョン追加でも、artifact メタデータのみを返す。
-# 「どの release が増えたか」は次の GET /admin/apps から確認する。`;
+# 「どの release が増えたか」は GET /admin/apps/{package_name}/releases から確認する。`;
 
 const artifactAlreadyExistsResponse = `HTTP/1.1 400 Bad Request
 {
@@ -80,41 +88,68 @@ const signingCertMismatchResponse = `HTTP/1.1 400 Bad Request
 const listAppsCurl = `curl -X GET https://distribution.example.test/admin/apps \\
   -H "Authorization: Bearer $ADMIN_TOKEN"`;
 
+const listAppsCli = `ANDROID_APK_INSTANT_DEPLOY_SERVER=https://distribution.example.test \\
+ANDROID_APK_INSTANT_DEPLOY_ACCESS_TOKEN=$ADMIN_TOKEN \\
+android_apk_instant_deploy apps`;
+
 const listAppsResponse = `HTTP/1.1 200 OK
 {
   "apps": [
     {
-      "id": 12,
-      "package_name": "com.example.qacamera",
-      "releases": [
-        { "id": 301, "version_code": 42, "version_name": "2.4.0-qa" }
-      ]
+      "display_name": "QA Camera",
+      "package_name": "com.example.qacamera"
     },
     {
-      "id": 11,
-      "package_name": "com.example.scanner",
-      "releases": [
-        { "id": 211, "version_code": 7, "version_name": "1.3.0" },
-        { "id": 210, "version_code": 6, "version_name": "1.2.4" }
-      ]
+      "display_name": "Scanner",
+      "package_name": "com.example.scanner"
     },
     {
-      "id": 9,
-      "package_name": "com.example.kiosk",
-      "releases": [
-        { "id": 180, "version_code": 12, "version_name": "3.1.0" }
-      ]
+      "display_name": "Kiosk",
+      "package_name": "com.example.kiosk"
     }
   ]
 }
 
-# POST /admin/artifacts でアップロードが成功すると、次の GET /admin/apps からこの一覧に新しい app または release が現れる。
-# 管理者はこの一覧を見て「アップロードが反映された」ことを確認する。`;
+# POST /admin/artifacts でアップロードが成功すると、新規 package はこの一覧に現れる。
+# release の追加確認や削除に使う id は GET /admin/apps/{package_name}/releases で確認する。`;
 
-const deleteReleaseCurl = `curl -X DELETE https://distribution.example.test/admin/releases/301 \\
+const listReleasesCurl = `curl -X GET https://distribution.example.test/admin/apps/com.example.qacamera/releases \\
+  -H "Authorization: Bearer $ADMIN_TOKEN"`;
+
+const listReleasesCli = `ANDROID_APK_INSTANT_DEPLOY_SERVER=https://distribution.example.test \\
+ANDROID_APK_INSTANT_DEPLOY_ACCESS_TOKEN=$ADMIN_TOKEN \\
+android_apk_instant_deploy releases --app com.example.qacamera`;
+
+const listReleasesResponse = `HTTP/1.1 200 OK
+{
+  "app": {
+    "display_name": "QA Camera",
+    "package_name": "com.example.qacamera"
+  },
+  "releases": [
+    {
+      "id": 301,
+      "version_code": 42,
+      "version_name": "2.4.0-qa",
+      "artifact": {
+        "id": 101,
+        "filename": "qa-camera-2.4.0-42.apk",
+        "sha256": "58f7d4...",
+        "size_bytes": 50541312,
+        "signing_cert_sha256": "9a5c0e..."
+      }
+    }
+  ]
+}`;
+
+const deleteReleaseCurl = `curl -X DELETE https://distribution.example.test/admin/apps/com.example.qacamera/releases/301 \\
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # Response: 204 No Content`;
+
+const deleteReleaseCli = `ANDROID_APK_INSTANT_DEPLOY_SERVER=https://distribution.example.test \\
+ANDROID_APK_INSTANT_DEPLOY_ACCESS_TOKEN=$ADMIN_TOKEN \\
+android_apk_instant_deploy delete_release 301 --app com.example.qacamera --yes`;
 
 const relationshipDiagram = `flowchart LR
   subgraph App["apps: アプリidentity"]
@@ -224,7 +259,7 @@ const sequence = `sequenceDiagram
     Api-->>Operator: 400 INVALID_APK / ARTIFACT_ALREADY_EXISTS / SIGNING_CERT_MISMATCH を返す
   end
 
-  Operator->>Api: DELETE /admin/releases/:id
+  Operator->>Api: DELETE /admin/apps/:package_name/releases/:release_id
   Api->>AR: Release.destroy
   AR->>AR: 関連artifactをdestroy
   AR->>S3: artifact destroy callback で S3 objectを削除
@@ -242,7 +277,7 @@ const lifecycle = `stateDiagram-v2
   DisplayMetadata --> ReleaseLinked: releases を新規作成 (append-only)
   ReleaseLinked --> Registered: 登録結果を返す
   Registered --> Active: 配信可能
-  Active --> ReleaseDeleting: DELETE /admin/releases/:id
+  Active --> ReleaseDeleting: DELETE /admin/apps/:package_name/releases/:release_id
   ReleaseDeleting --> ArtifactDestroying: Release 削除から推移
   ArtifactDestroying --> S3Deleted: S3 object 削除
   S3Deleted --> AppHardDeleted: その app の release が0件<br/>apps を hard delete<br/>device_policy_app_entries も FK CASCADE で削除
@@ -259,7 +294,7 @@ const lifecycle = `stateDiagram-v2
   <p class="lede">
     アプリ登録は、管理者またはCIがAPKファイルを1つアップロードする操作で完結します。
     APIサーバーは受け取った <code>input[:file]</code> を解析・検証し、APKとして妥当ならS3へ保存して、APKから読み取った package_name、version_code、version_name、署名、hash、サイズ、application label、icon をもとに、artifacts、apps、app_profiles、app_icons、releases を必要な分だけ作成または更新します。
-    ユーザー操作として扱うのは <strong>Artifact作成 (POST /admin/artifacts)</strong> と <strong>Release削除 (DELETE /admin/releases/:id)</strong> の2つだけで、artifact 単体の作成・削除APIは提供しません。
+    ユーザー操作として扱うのは <strong>Artifact作成 (POST /admin/artifacts)</strong> と <strong>Release削除 (DELETE /admin/apps/:package_name/releases/:release_id)</strong> の2つだけで、artifact 単体の作成・削除APIは提供しません。
     build source や changelog はこの登録データでは管理しません。
   </p>
 
@@ -280,12 +315,12 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">管理者 / CI</th>
             <td>新しいAPK ができた (新規 package or 新バージョン) / 配信対象から外したい</td>
-            <td>POST /admin/artifacts でAPKをアップロードする。配信終了時は DELETE /admin/releases/:id を呼ぶ。</td>
+            <td>POST /admin/artifacts でAPKをアップロードする。配信終了時は DELETE /admin/apps/:package_name/releases/:release_id を呼ぶ。</td>
             <td>artifacts, releases (経由で apps)</td>
           </tr>
           <tr>
             <th scope="row">APIサーバー</th>
-            <td>POST /admin/artifacts / DELETE /admin/releases/:id</td>
+            <td>POST /admin/artifacts / DELETE /admin/apps/:package_name/releases/:release_id</td>
             <td>APK解析 → 重複 checksum チェック → 署名検証 → S3保存 → artifact / (必要なら apps) / releases を1トランザクションで確定 (releases は常に append-only)。Release削除時は artifact を destroy して S3 object を削除し、その app の release が0件になったら apps を hard delete (関連 device_policy_app_entries も FK CASCADE で削除)。</td>
             <td>apps, artifacts, releases, S3 bucket</td>
           </tr>
@@ -345,8 +380,10 @@ const lifecycle = `stateDiagram-v2
           <DiagramFrame src="/mocks/app-registration/step-1-upload-url.html" title="管理画面: APKファイル選択" />
         </div>
         <div class="flow-step__details">
-          <h4>API呼び出し</h4>
+          <h4>REST APIの場合 (curl)</h4>
           <pre class="curl-block"><code>{uploadCurl}</code></pre>
+          <h4>CLIツールの場合</h4>
+          <pre class="curl-block"><code>{uploadCli}</code></pre>
           <h4>応答</h4>
           <pre class="curl-block"><code>{uploadResponse}</code></pre>
           <h4>入力の制約</h4>
@@ -361,7 +398,7 @@ const lifecycle = `stateDiagram-v2
             </div>
           </dl>
           <h4>応答の責務</h4>
-          <p>応答は作成された artifact のメタデータ (<code>id</code>、<code>filename</code>、<code>sha256</code>、<code>size_bytes</code>、<code>signing_cert_sha256</code>) のみ。S3 の storage 種別や key などバックエンド都合の情報は含めない。サーバー内部では artifact と同じトランザクションで app と release も作成・更新するが、その結果は応答では返さず、管理者は次ステップの GET /admin/apps で確認する。</p>
+          <p>応答は作成された artifact のメタデータ (<code>id</code>、<code>filename</code>、<code>sha256</code>、<code>size_bytes</code>、<code>signing_cert_sha256</code>) のみ。S3 の storage 種別や key などバックエンド都合の情報は含めない。サーバー内部では artifact と同じトランザクションで app と release も作成・更新するが、その結果は応答では返さず、管理者は次ステップの GET /admin/apps と GET /admin/apps/:package_name/releases で確認する。</p>
         </div>
       </div>
     </article>
@@ -402,8 +439,8 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">3</span>
         <div>
-          <h3 id="step-3">GET /admin/apps で登録結果を確認する</h3>
-          <p>POST /admin/artifacts の応答は artifact メタデータだけなので、管理者は GET /admin/apps を呼んで「アップロードしたアプリが一覧に増えているか」を確認します。新規 package なら apps 一覧に1行追加され、既存 package への新バージョンなら該当 app の releases に新しい行が <strong>追加</strong> されます (古いリリースはそのまま残ります)。</p>
+          <h3 id="step-3">GET /admin/apps と GET /admin/apps/:package_name/releases で登録結果を確認する</h3>
+          <p>POST /admin/artifacts の応答は artifact メタデータだけなので、管理者は GET /admin/apps で「アップロードしたアプリが一覧に増えているか」を確認し、GET /admin/apps/:package_name/releases でリリース ID とバージョンを確認します。新規 package なら apps 一覧に1行追加され、既存 package への新バージョンなら該当 app の releases に新しい行が <strong>追加</strong> されます (古いリリースはそのまま残ります)。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -411,12 +448,22 @@ const lifecycle = `stateDiagram-v2
           <DiagramFrame src="/mocks/app-registration/step-3-release-created.html" title="管理画面: アプリ一覧 (アップロード後)" />
         </div>
         <div class="flow-step__details">
-          <h4>API呼び出し</h4>
+          <h4>REST APIの場合 (curl): アプリ一覧</h4>
           <pre class="curl-block"><code>{listAppsCurl}</code></pre>
+          <h4>CLIツールの場合: アプリ一覧</h4>
+          <pre class="curl-block"><code>{listAppsCli}</code></pre>
           <h4>応答</h4>
           <pre class="curl-block"><code>{listAppsResponse}</code></pre>
+          <h4>REST APIの場合 (curl): リリース一覧</h4>
+          <pre class="curl-block"><code>{listReleasesCurl}</code></pre>
+          <h4>CLIツールの場合: リリース一覧</h4>
+          <pre class="curl-block"><code>{listReleasesCli}</code></pre>
+          <h4>応答</h4>
+          <pre class="curl-block"><code>{listReleasesResponse}</code></pre>
           <h4>既存パッケージへ新バージョンを追加する場合</h4>
           <pre class="curl-block"><code>{newVersionCurl}</code></pre>
+          <h4>CLIツールの場合</h4>
+          <pre class="curl-block"><code>{newVersionCli}</code></pre>
           <h4>応答 (新バージョン)</h4>
           <pre class="curl-block"><code>{newVersionResponse}</code></pre>
           <h4>append-only の挙動</h4>
@@ -447,8 +494,10 @@ const lifecycle = `stateDiagram-v2
           <DiagramFrame src="/mocks/app-registration/step-4-registration-result.html" title="管理画面: リリース削除完了" />
         </div>
         <div class="flow-step__details">
-          <h4>API呼び出し</h4>
+          <h4>REST APIの場合 (curl)</h4>
           <pre class="curl-block"><code>{deleteReleaseCurl}</code></pre>
+          <h4>CLIツールの場合</h4>
+          <pre class="curl-block"><code>{deleteReleaseCli}</code></pre>
           <h4>DB / S3 の扱い</h4>
           <dl class="db-list">
             <div>
@@ -620,7 +669,7 @@ const lifecycle = `stateDiagram-v2
     <h2 id="guidance">不足ユースケースに遭遇したときの判断指針</h2>
     <p>このページに書かれていないケースは、まず次の原則で判断してください。</p>
     <ol>
-      <li><strong>ユーザー操作の入口は2つだけ。</strong> Artifact作成 (POST /admin/artifacts) と Release削除 (DELETE /admin/releases/:id)。artifact 単体の作成・削除APIや、apps を直接編集するAPIは追加しない。</li>
+      <li><strong>ユーザー操作の入口は2つだけ。</strong> Artifact作成 (POST /admin/artifacts) と Release削除 (DELETE /admin/apps/:package_name/releases/:release_id)。artifact 単体の作成・削除APIや、apps を直接編集するAPIは追加しない。</li>
       <li><strong>artifactsはAPK bytesと保存先の事実だけを持つ。</strong> changelog、build source、CI metadata、ブランチ名などを足したくなったら別テーブルを検討する。</li>
       <li><strong>表示メタデータはappsに混ぜない。</strong> application label は <code>app_profiles</code>、launcher icon は Shrine-backed の <code>app_icons</code> に保存する。package_name identity と表示名・画像の lifecycle を分ける。</li>
       <li><strong>build由来情報を登録データに混ぜない。</strong> branch、commit SHA、CIビルド番号、Slack通知用のリリースノートなどは、必要なら別ユースケースとして別の paths / tables で扱う。</li>

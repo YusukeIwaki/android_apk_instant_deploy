@@ -3,24 +3,6 @@ import DiagramFrame from "../../../components/DiagramFrame.astro";
 import Mermaid from "../../../components/Mermaid.astro";
 import BaseLayout from "../../../layouts/BaseLayout.astro";
 
-const createTokenCurl = `curl -X POST https://distribution.example.test/admin/device_registration_tokens \\
-  -H "Authorization: Bearer $ADMIN_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "expires_in_minutes": 30
-  }'`;
-
-const createTokenResponse = `HTTP/1.1 201 Created
-{
-  "device_registration_token": {
-    "identifier": "drt_01HX9A2W...",
-    "registration_secret": "drs_4Gk...",
-    "issued_at": "2026-05-19T09:41:00+09:00",
-    "expires_at": "2026-05-19T10:11:00+09:00",
-    "deep_link": "apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...&server_base_url=https%3A%2F%2Fdistribution.example.test"
-  }
-}`;
-
 const deepLinkExample = `apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...&server_base_url=https%3A%2F%2Fdistribution.example.test`;
 
 const createDeviceCurl = `curl -X POST https://distribution.example.test/api/devices \\
@@ -219,7 +201,7 @@ const identityFlow = `flowchart LR
         <span class="flow-step__number">1</span>
         <div>
           <h3 id="step-1">管理者がデバイス登録リンクを発行する</h3>
-          <p>管理画面または管理APIで登録リンクを作成します。リンクには <code>identifier</code> と一回限りの <code>secret</code> が含まれ、QRコードや共有リンクとして渡せます。この時点ではまだdevicesは作られません。</p>
+          <p>管理画面で登録リンクを作成します。リンクには <code>identifier</code> と一回限りの <code>secret</code> が含まれ、QRコードや共有リンクとして渡せます。この時点ではまだdevicesは作られません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -227,10 +209,8 @@ const identityFlow = `flowchart LR
           <DiagramFrame src="/mocks/device-registration/step-1-admin-token.html" title="管理画面: デバイス登録リンク作成" />
         </div>
         <div class="flow-step__details">
-          <h4>API呼び出し</h4>
-          <pre class="curl-block"><code>{createTokenCurl}</code></pre>
-          <h4>応答</h4>
-          <pre class="curl-block"><code>{createTokenResponse}</code></pre>
+          <h4>画面に表示される登録リンク</h4>
+          <pre class="curl-block"><code>{deepLinkExample}</code></pre>
           <h4>作成されるDBデータ</h4>
           <dl class="db-list">
             <div>
@@ -412,7 +392,7 @@ const identityFlow = `flowchart LR
             <th scope="row">device_auth_token</th>
             <td>APIサーバー</td>
             <td>端末内 private storage。サーバー側は <code>device_credentials.token_hmac</code> として HMAC 値を保持する。</td>
-            <td>登録済み端末からの後続API呼び出しで、identifier に対する本人性を確認する。MVPでは強制失効・再発行APIを持たず、不要になった端末は <code>DELETE /admin/devices/:identifier</code> で device 行ごと消す。再登録は新しい DeviceRegistrationToken の発行から行う。</td>
+            <td>登録済み端末からの後続API呼び出しで、identifier に対する本人性を確認する。MVPでは強制失効・再発行APIを持たず、不要になった端末の扱いは管理画面側の端末管理フローで定義する。再登録は新しい DeviceRegistrationToken の発行から行う。</td>
           </tr>
           <tr>
             <th scope="row">FCM push token</th>
@@ -553,7 +533,7 @@ const identityFlow = `flowchart LR
       <li><strong>失敗理由は集約してから細分化する。</strong> リンクの有効性に関わるエラーは、まず1つに集約してから、攻撃面に影響しない範囲で細分化する。</li>
       <li><strong>登録完了の前提を勝手に増やさない。</strong> 必要条件は「未使用の有効な identifier + secret」「FCM token」「表示名」の3点。手動経路では deep link、AMAPI経路では <code>managedConfiguration</code> を入力源として、同じ <code>POST /api/devices</code> に到達する。AMAPI enrollment や初期同期そのものを登録完了の前提に組み込まない。</li>
       <li><strong>profileの自動収集はしない。</strong> 機種、OS、SDK、ロケールなどは初期登録では収集しない。あとから別ユースケースとして追加する。</li>
-      <li><strong>device_auth_token は HMAC で保管、強制失効・再発行APIは持たない。</strong> 不要になった端末は <code>DELETE /admin/devices/:identifier</code> で行ごと消す。再登録が必要なら新しい DeviceRegistrationToken を発行する経路に集約する。<code>device_credentials</code> を別テーブルにしてあるのは、将来 rotation が必要になったとき列追加で対応できる余地を残すため。</li>
+      <li><strong>device_auth_token は HMAC で保管、強制失効・再発行APIは持たない。</strong> 不要になった端末の扱いは管理画面側の端末管理フローで定義する。再登録が必要なら新しい DeviceRegistrationToken を発行する経路に集約する。<code>device_credentials</code> を別テーブルにしてあるのは、将来 rotation が必要になったとき列追加で対応できる余地を残すため。</li>
     </ol>
     <p>判断に詰まったら <code>AGENTS.md</code> の "Device Registration Design" と "Data Modeling" のセクションを参照してください。</p>
   </section>

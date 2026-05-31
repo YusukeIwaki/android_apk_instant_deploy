@@ -137,13 +137,11 @@ paths:
       tags:
         - Admin API
       operationId: listApps
-      summary: List registered apps with their releases
+      summary: List registered apps
       description: |
-        Returns the catalog of apps currently registered, with each app's releases
-        listed inline (most recent first). After POST /admin/artifacts succeeds, the
-        admin polls this endpoint to confirm that the upload reached the catalog
-        (a new app appears for a new package_name, or a new release entry appears
-        under an existing app).
+        Returns the catalog of apps currently registered. The list intentionally
+        exposes only app business identifiers and display names; release ids are
+        fetched through GET /admin/apps/{package_name}/releases.
       security:
         - AdminBearerAuth: []
       responses:
@@ -151,6 +149,63 @@ paths:
           $ref: "#/components/responses/AppsListResponse"
         "401":
           $ref: "#/components/responses/AdminUnauthorizedError"
+
+  /admin/apps/{package_name}/releases:
+    get:
+      tags:
+        - Admin API
+      operationId: listAppReleases
+      summary: List releases for an app
+      description: |
+        Returns releases for the app identified by package_name, newest first.
+        This endpoint carries the release ids used by admin automation for
+        explicit deletion.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AppPackageName"
+      responses:
+        "200":
+          $ref: "#/components/responses/AppReleasesListResponse"
+        "401":
+          $ref: "#/components/responses/AdminUnauthorizedError"
+        "404":
+          $ref: "#/components/responses/AppNotFoundError"
+
+  /admin/apps/{package_name}/releases/{release_id}:
+    delete:
+      tags:
+        - Admin API
+      operationId: deleteAppRelease
+      summary: Delete a release for an app
+      description: |
+        Deletes the specified release only when it belongs to the app identified
+        by package_name. The associated artifact row and stored object are
+        removed in the same way as DELETE /admin/releases/{release_id}.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AppPackageName"
+        - $ref: "#/components/parameters/ReleaseId"
+      responses:
+        "204":
+          description: Release was deleted.
+        "401":
+          $ref: "#/components/responses/AdminUnauthorizedError"
+        "404":
+          $ref: "#/components/responses/AppOrReleaseNotFoundError"
+        "502":
+          description: Upstream object storage failed while removing the artifact's stored object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                artifact_delete_failed:
+                  value:
+                    error:
+                      code: ARTIFACT_DELETE_FAILED
+                      message: Failed to remove the stored APK object. The release was not deleted.
 
   /admin/releases/{release_id}:
     delete:
@@ -232,52 +287,6 @@ paths:
                     error:
                       code: RELEASE_NOT_FOUND
                       message: Release was not found.
-
-  /admin/device_registration_tokens:
-    post:
-      tags:
-        - Admin API
-      operationId: createDeviceRegistrationToken
-      summary: Create a device registration link
-      description: |
-        Creates a DeviceRegistrationToken and returns the custom scheme URL that the
-        administrator can show as a link or QR code. This does not create a device.
-      security:
-        - AdminBearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DeviceRegistrationTokenCreateRequest"
-            examples:
-              default:
-                value:
-                  expires_in_minutes: 30
-      responses:
-        "201":
-          $ref: "#/components/responses/DeviceRegistrationTokenDetailResponse"
-        "400":
-          description: Request body was rejected.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                invalid_request:
-                  summary: Body is missing or not valid JSON
-                  value:
-                    error:
-                      code: INVALID_REQUEST
-                      message: Request body is not valid JSON.
-                expires_in_minutes_invalid:
-                  summary: expires_in_minutes is missing or out of range
-                  value:
-                    error:
-                      code: EXPIRES_IN_MINUTES_INVALID
-                      message: expires_in_minutes must be a positive integer.
-        "401":
-          $ref: "#/components/responses/AdminUnauthorizedError"
 
   /api/devices:
     post:
@@ -400,176 +409,35 @@ paths:
         "401":
           $ref: "#/components/responses/DeviceUnauthorizedError"
 
-  /admin/devices/{identifier}:
-    delete:
+  /admin/apps/{package_name}/touch_policies:
+    post:
       tags:
         - Admin API
-      operationId: deleteDevice
-      summary: Delete a registered device
+      operationId: touchDevicePolicies
+      summary: Create new revisions for policies that include the specified app
       description: |
-        Removes the device and its registration-side records in one transaction:
-        device_credentials (which immediately invalidates the device's
-        device_auth_token), fcm_push_tokens, device_profiles, device_policies,
-        device_policy_revisions, device_policy_sync_reports, and finally
-        devices itself.
+        Finds current DevicePolicy revisions that include the app identified by
+        `{package_name}`, copies each matched revision's existing entries
+        unchanged into a new revision, and makes that new revision current. This
+        is intended for admin automation after uploading APKs through the REST
+        Admin API: upload remains only an artifact/release operation, and policy
+        refresh remains an explicit admin action.
 
-        Observation tables (fcm_delivery_failures, device_heartbeats)
-        are intentionally kept for audit; deletion is recorded in the admin
-        operation log. After deletion, requests that present the old
-        device_auth_token receive 401 DEVICE_AUTH_REQUIRED, and the admin must
-        issue a new DeviceRegistrationToken to re-register the device.
-
-        There is no end-user "unregister" API. Deletion is always an explicit
-        admin action driven by the admin UI's observation signals (last
-        contact time, FCM delivery failures, sync state). The server does not
-        delete devices automatically.
+        The request does not add or remove apps from any policy. It only advances
+        revisions for policies that already reference the specified app.
+        Devices can then fetch the same policy entries and resolve each app to
+        the latest release.
       security:
         - AdminBearerAuth: []
       parameters:
-        - $ref: "#/components/parameters/DeviceIdentifier"
-      responses:
-        "204":
-          description: Device was deleted.
-        "401":
-          $ref: "#/components/responses/AdminUnauthorizedError"
-        "404":
-          description: Device was not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                device_not_found:
-                  value:
-                    error:
-                      code: DEVICE_NOT_FOUND
-                      message: Device was not found.
-
-  /admin/devices/{identifier}/policy:
-    get:
-      tags:
-        - Admin API
-      operationId: getAdminDevicePolicy
-      summary: Get a device's current policy (admin)
-      description: |
-        Returns the current DevicePolicy for the specified device. Used by the
-        admin UI to load the policy before editing. Apps are hard-deleted when
-        their last release is removed, and the related device_policy_app_entries
-        rows are cascade-deleted at the same time, so every entry returned here
-        references a currently-existing app (no "deleted app" state).
-      security:
-        - AdminBearerAuth: []
-      parameters:
-        - $ref: "#/components/parameters/DeviceIdentifier"
+        - $ref: "#/components/parameters/AppPackageName"
       responses:
         "200":
-          $ref: "#/components/responses/AdminDevicePolicyResponse"
+          $ref: "#/components/responses/DevicePoliciesTouchResponse"
         "401":
           $ref: "#/components/responses/AdminUnauthorizedError"
         "404":
-          description: Device or its policy could not be resolved.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                device_not_found:
-                  value:
-                    error:
-                      code: DEVICE_NOT_FOUND
-                      message: Device was not found.
-                device_policy_not_found:
-                  value:
-                    error:
-                      code: DEVICE_POLICY_NOT_FOUND
-                      message: Device policy has not been created for this device yet.
-    put:
-      tags:
-        - Admin API
-      operationId: updateDevicePolicy
-      summary: Update a device policy
-      description: |
-        Replaces the target device's desired app state by creating a new immutable
-        device_policy_revision and updating the device policy's current revision.
-
-        Entries reference apps by `app.id` only. The release to install for each
-        entry is resolved per-request by the server when the device fetches the
-        policy (latest release for that app). version_code / release.id are not
-        accepted in the request.
-
-        The endpoint is designed for idempotent updates by an admin and does NOT
-        use optimistic concurrency control (no `If-Match` header, no
-        `current_revision_id` echo). Sending the same body twice results in two
-        revisions whose entries are identical; the second revision becomes the
-        current one. Concurrent edits by multiple admins are not protected at
-        the server level — admins reconcile via reload-then-PUT.
-
-        Validation rejects any `app.id` that does not currently exist in the
-        `apps` table (e.g. the app was hard-deleted between admin's GET and PUT
-        because its last release was removed). There is no separate
-        `APP_DELETED` state since `apps.deleted_at` does not exist.
-      security:
-        - AdminBearerAuth: []
-      parameters:
-        - $ref: "#/components/parameters/DeviceIdentifier"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DevicePolicyUpdateRequest"
-            examples:
-              default:
-                value:
-                  entries:
-                    - app:
-                        id: 12
-                      install_mode: FORCE_INSTALLED
-                    - app:
-                        id: 15
-                      install_mode: AVAILABLE
-      responses:
-        "200":
-          $ref: "#/components/responses/AdminDevicePolicyResponse"
-        "400":
-          description: Request body was rejected.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                invalid_request:
-                  summary: Body is missing or not valid JSON
-                  value:
-                    error:
-                      code: INVALID_REQUEST
-                      message: Request body is not valid JSON.
-                install_mode_invalid:
-                  summary: install_mode is not FORCE_INSTALLED or AVAILABLE
-                  value:
-                    error:
-                      code: INSTALL_MODE_INVALID
-                      message: install_mode must be one of FORCE_INSTALLED, AVAILABLE.
-                app_not_found_for_entry:
-                  summary: Referenced app.id does not exist (never existed or has been hard-deleted)
-                  value:
-                    error:
-                      code: APP_NOT_FOUND_FOR_ENTRY
-                      message: One or more entries reference an app that does not exist.
-        "401":
-          $ref: "#/components/responses/AdminUnauthorizedError"
-        "404":
-          description: Device was not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                device_not_found:
-                  value:
-                    error:
-                      code: DEVICE_NOT_FOUND
-                      message: Device was not found.
+          $ref: "#/components/responses/AppNotFoundError"
 
   /api/notifications:
     get:
@@ -758,6 +626,14 @@ components:
       description: Bearer token issued per registered Android companion app/device.
 
   parameters:
+    AppPackageName:
+      name: package_name
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Android application package name.
+      example: com.example.qacamera
     DeviceIdentifier:
       name: identifier
       in: path
@@ -811,10 +687,8 @@ components:
                   signing_cert_sha256: 9a5c0e...
     AppsListResponse:
       description: |
-        Catalog of apps registered on this server, with each app's releases listed
-        inline. Order: apps sorted by latest activity first; releases within each
-        app sorted by version_code descending, then release id descending for
-        repeated version_code uploads.
+        Catalog of apps registered on this server. Order: apps sorted by latest
+        activity first.
       content:
         application/json:
           schema:
@@ -823,27 +697,43 @@ components:
             default:
               value:
                 apps:
-                  - id: 12
+                  - display_name: QA Camera
                     package_name: com.example.qacamera
-                    releases:
-                      - id: 301
-                        version_code: 42
-                        version_name: 2.4.0-qa
-                  - id: 11
+                  - display_name: Scanner
                     package_name: com.example.scanner
-                    releases:
-                      - id: 211
-                        version_code: 7
-                        version_name: 1.3.0
-                      - id: 210
-                        version_code: 6
-                        version_name: 1.2.4
-                  - id: 9
+                  - display_name: Kiosk
                     package_name: com.example.kiosk
-                    releases:
-                      - id: 180
-                        version_code: 12
-                        version_name: 3.1.0
+    AppReleasesListResponse:
+      description: Releases for a single app.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AppReleasesListResponse"
+          examples:
+            default:
+              value:
+                app:
+                  display_name: QA Camera
+                  package_name: com.example.qacamera
+                releases:
+                  - id: 301
+                    version_code: 42
+                    version_name: 2.4.0-qa
+                    artifact:
+                      id: 101
+                      filename: qa-camera-2.4.0-42.apk
+                      sha256: 58f7d4...
+                      size_bytes: 50541312
+                      signing_cert_sha256: 9a5c0e...
+                  - id: 300
+                    version_code: 41
+                    version_name: 2.3.9
+                    artifact:
+                      id: 100
+                      filename: qa-camera-2.3.9-41.apk
+                      sha256: a91c0b...
+                      size_bytes: 50241000
+                      signing_cert_sha256: 9a5c0e...
     DeviceCreateResponse:
       description: Device was registered.
       content:
@@ -891,41 +781,52 @@ components:
                       version_code: 3
                       version_name: 0.3.1
                       artifact_sha256: 66ad22...
-    AdminDevicePolicyResponse:
+    DevicePoliciesTouchResponse:
       description: |
-        Current device policy for the admin UI. All entries reference apps that
-        currently exist; deleted apps are not present because they are removed
-        by FK cascade when the last release is deleted.
+        Policies whose current revisions were advanced. Policies are omitted when
+        they do not include the specified app.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/AdminDevicePolicyResponse"
+            $ref: "#/components/schemas/DevicePoliciesTouchResponse"
           examples:
             default:
               value:
-                device_policy:
-                  identifier: drt_01HX9A2W...
-                  current_revision:
-                    id: 901
-                  updated_at: "2026-05-23T10:12:00+09:00"
-                  entries:
-                    - app:
-                        id: 12
-                        package_name: com.example.appa
-                        display_name: 勤怠アプリ
-                      install_mode: FORCE_INSTALLED
-                      install:
-                        release:
-                          id: 301
-                        version_code: 42
-                        version_name: 2.4.0-qa
-                        artifact_sha256: 58f7d4...
-    DeviceRegistrationTokenDetailResponse:
-      description: Device registration link was created.
+                device_policies:
+                  - identifier: drt_01HX9A2W...
+                    display_name: QA handset 01
+                    current_revision:
+                      id: 902
+                    updated_at: "2026-05-23T10:20:00+09:00"
+    AppNotFoundError:
+      description: App was not found.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/DeviceRegistrationTokenDetailResponse"
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            app_not_found:
+              value:
+                error:
+                  code: APP_NOT_FOUND
+                  message: App was not found.
+    AppOrReleaseNotFoundError:
+      description: App or release was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            app_not_found:
+              value:
+                error:
+                  code: APP_NOT_FOUND
+                  message: App was not found.
+            release_not_found:
+              value:
+                error:
+                  code: RELEASE_NOT_FOUND
+                  message: Release was not found.
     FcmPushTokenUpdateResponse:
       description: FCM push token was updated for the authenticated device.
       content:
@@ -1024,28 +925,25 @@ components:
       type: object
       additionalProperties: false
       required:
-        - id
+        - display_name
         - package_name
-        - releases
       properties:
-        id:
-          type: integer
-          minimum: 1
+        display_name:
+          type: string
+          minLength: 1
+          example: QA Camera
         package_name:
           type: string
           example: com.example.qacamera
-        releases:
-          type: array
-          items:
-            $ref: "#/components/schemas/AppListItemRelease"
 
-    AppListItemRelease:
+    AppReleaseListItem:
       type: object
       additionalProperties: false
       required:
         - id
         - version_code
         - version_name
+        - artifact
       properties:
         id:
           type: integer
@@ -1056,6 +954,8 @@ components:
         version_name:
           type: string
           example: 2.4.0-qa
+        artifact:
+          $ref: "#/components/schemas/Artifact"
 
     AppsListResponse:
       type: object
@@ -1067,6 +967,20 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AppListItem"
+
+    AppReleasesListResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - app
+        - releases
+      properties:
+        app:
+          $ref: "#/components/schemas/AppListItem"
+        releases:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppReleaseListItem"
 
     Artifact:
       type: object
@@ -1180,76 +1094,6 @@ components:
           type: string
           format: date-time
 
-    AdminDevicePolicyResponse:
-      type: object
-      additionalProperties: false
-      required:
-        - device_policy
-      properties:
-        device_policy:
-          $ref: "#/components/schemas/AdminDevicePolicy"
-
-    AdminDevicePolicy:
-      type: object
-      additionalProperties: false
-      required:
-        - identifier
-        - current_revision
-        - updated_at
-        - entries
-      properties:
-        identifier:
-          type: string
-          example: drt_01HX9A2W...
-        current_revision:
-          $ref: "#/components/schemas/DevicePolicyRevisionReference"
-        updated_at:
-          type: string
-          format: date-time
-        entries:
-          type: array
-          items:
-            $ref: "#/components/schemas/AdminDevicePolicyEntry"
-
-    AdminDevicePolicyEntry:
-      type: object
-      additionalProperties: false
-      description: |
-        Admin-facing view of a policy entry. Always includes a currently-existing
-        app and a resolved `install` (the latest release for that app at the
-        time of the response). Deleted apps cannot appear here because their
-        entries are FK-cascaded out at delete time.
-      required:
-        - app
-        - install_mode
-        - install
-      properties:
-        app:
-          $ref: "#/components/schemas/PolicyAppView"
-        install_mode:
-          $ref: "#/components/schemas/InstallMode"
-        install:
-          $ref: "#/components/schemas/PolicyInstallTarget"
-
-    PolicyAppView:
-      type: object
-      additionalProperties: false
-      required:
-        - id
-        - package_name
-        - display_name
-      properties:
-        id:
-          type: integer
-          minimum: 1
-        package_name:
-          type: string
-          example: com.example.appa
-        display_name:
-          type: string
-          minLength: 1
-          example: 勤怠アプリ
-
     PolicyInstallTarget:
       type: object
       additionalProperties: false
@@ -1345,40 +1189,38 @@ components:
           type: integer
           minimum: 1
 
-    DevicePolicyUpdateEntry:
-      type: object
-      additionalProperties: false
-      description: |
-        Admin write-side entry. Only `app.id` and `install_mode` are supplied;
-        the release to install is resolved on each fetch and is never specified
-        here.
-      required:
-        - app
-        - install_mode
-      properties:
-        app:
-          type: object
-          additionalProperties: false
-          required:
-            - id
-          properties:
-            id:
-              type: integer
-              minimum: 1
-        install_mode:
-          $ref: "#/components/schemas/InstallMode"
-
-    DevicePolicyUpdateRequest:
+    DevicePoliciesTouchResponse:
       type: object
       additionalProperties: false
       required:
-        - entries
+        - device_policies
       properties:
-        entries:
+        device_policies:
           type: array
-          minItems: 0
           items:
-            $ref: "#/components/schemas/DevicePolicyUpdateEntry"
+            $ref: "#/components/schemas/TouchedDevicePolicy"
+
+    TouchedDevicePolicy:
+      type: object
+      additionalProperties: false
+      required:
+        - identifier
+        - display_name
+        - current_revision
+        - updated_at
+      properties:
+        identifier:
+          type: string
+          example: drt_01HX9A2W...
+        display_name:
+          type: string
+          minLength: 1
+          example: QA handset 01
+        current_revision:
+          $ref: "#/components/schemas/DevicePolicyRevisionReference"
+        updated_at:
+          type: string
+          format: date-time
 
     DeviceProfile:
       type: object
@@ -1390,57 +1232,6 @@ components:
           type: string
           minLength: 1
           example: Pixel 8 QA-01
-
-    DeviceRegistrationToken:
-      type: object
-      additionalProperties: false
-      required:
-        - identifier
-        - registration_secret
-        - issued_at
-        - expires_at
-        - deep_link
-      properties:
-        identifier:
-          type: string
-          example: drt_01HX9A2W...
-        registration_secret:
-          type: string
-          description: |
-            One-time secret returned in plaintext only in this response. The server
-            stores only a hash. Embed this in the QR code / deep link together with
-            the identifier.
-          example: drs_4Gk...
-        issued_at:
-          type: string
-          format: date-time
-        expires_at:
-          type: string
-          format: date-time
-        deep_link:
-          type: string
-          format: uri
-          example: apkdist://register-device?identifier=drt_01HX9A2W...&secret=drs_4Gk...&server_base_url=https%3A%2F%2Fdistribution.example.test
-
-    DeviceRegistrationTokenCreateRequest:
-      type: object
-      additionalProperties: false
-      required:
-        - expires_in_minutes
-      properties:
-        expires_in_minutes:
-          type: integer
-          minimum: 1
-          example: 30
-
-    DeviceRegistrationTokenDetailResponse:
-      type: object
-      additionalProperties: false
-      required:
-        - device_registration_token
-      properties:
-        device_registration_token:
-          $ref: "#/components/schemas/DeviceRegistrationToken"
 
     ErrorResponse:
       type: object

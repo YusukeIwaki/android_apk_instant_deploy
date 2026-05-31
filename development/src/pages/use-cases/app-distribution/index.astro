@@ -3,86 +3,49 @@ import DiagramFrame from "../../../components/DiagramFrame.astro";
 import Mermaid from "../../../components/Mermaid.astro";
 import BaseLayout from "../../../layouts/BaseLayout.astro";
 
-const updatePolicyCurl = `curl -X PUT https://distribution.example.test/admin/devices/drt_01HX9A2W.../policy \\
-  -H "Authorization: Bearer $ADMIN_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "entries": [
-      { "app": { "id": 12 }, "install_mode": "FORCE_INSTALLED" },
-      { "app": { "id": 13 }, "install_mode": "FORCE_INSTALLED" },
-      { "app": { "id": 14 }, "install_mode": "FORCE_INSTALLED" },
-      { "app": { "id": 15 }, "install_mode": "AVAILABLE" }
-    ]
-  }'
+const touchPoliciesCurl = `curl -X POST https://distribution.example.test/admin/apps/com.example.appa/touch_policies \\
+  -H "Authorization: Bearer $ADMIN_TOKEN"`;
 
-# entries は app の id と install_mode のみ。
-# version_code や release_id は指定しない (端末が GET 時にサーバーから最新release情報を受け取る)。`;
+const touchPoliciesCli = `ANDROID_APK_INSTANT_DEPLOY_SERVER=https://distribution.example.test \\
+ANDROID_APK_INSTANT_DEPLOY_ACCESS_TOKEN=$ADMIN_TOKEN \\
+android_apk_instant_deploy touch_policies --app com.example.appa`;
 
-const updatePolicyResponse = `HTTP/1.1 200 OK
+const touchPoliciesResponse = `HTTP/1.1 200 OK
 {
-  "device_policy": {
-    "identifier": "drt_01HX9A2W...",
-    "current_revision": { "id": 901 },
-    "updated_at": "2026-05-23T10:12:00+09:00",
-    "entries": [
-      {
-        "app": { "id": 12, "package_name": "com.example.appa", "deleted_at": null },
-        "install_mode": "FORCE_INSTALLED",
-        "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa", "artifact_sha256": "58f7d4..." }
-      },
-      {
-        "app": { "id": 13, "package_name": "com.example.appb", "deleted_at": null },
-        "install_mode": "FORCE_INSTALLED",
-        "install": { "release": { "id": 410 }, "version_code": 5, "version_name": "1.2.0", "artifact_sha256": "9a81c0..." }
-      },
-      {
-        "app": { "id": 14, "package_name": "com.example.appc", "deleted_at": null },
-        "install_mode": "FORCE_INSTALLED",
-        "install": { "release": { "id": 520 }, "version_code": 9, "version_name": "0.9.3", "artifact_sha256": "35cd02..." }
-      },
-      {
-        "app": { "id": 15, "package_name": "com.example.appd", "deleted_at": null },
-        "install_mode": "AVAILABLE",
-        "install": { "release": { "id": 612 }, "version_code": 3, "version_name": "0.3.1", "artifact_sha256": "66ad22..." }
-      }
-    ]
-  }
+  "device_policies": [
+    {
+      "identifier": "drt_01HX9A2W...",
+      "display_name": "QA handset 01",
+      "current_revision": { "id": 902 },
+      "updated_at": "2026-05-23T10:12:00+09:00"
+    }
+  ]
 }
 
-# 応答の install は更新時点で解決した最新リリース。
-# 端末が後で GET したときには更にもう一つ上のリリースが解決される可能性もある。
-# entries に存在しない app.id を1つでも含めば 400 APP_NOT_FOUND_FOR_ENTRY を返し、Policy は変更しない (= バリデーション成功時のみ revision を追加)。
-# 同じ内容で複数回 PUT しても結果は同じ (admin による冪等更新を前提に楽観的ロックは入れない。最後に書いた内容が current_revision になる)。
-# FCM への push 送信は副作用として行うが、応答ボディには含めない (失敗してもログだけ残し、Policy は更新済みのまま)。`;
+# 指定 package_name の app を含む current revision だけを対象に、
+# entries を変えずに新しい revision を作って current にする。
+# 新しい app を policy に追加したり、install_mode を変更したりはしない。`;
 
-const adminPolicyGetCurl = `curl -X GET https://distribution.example.test/admin/devices/drt_01HX9A2W.../policy \\
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+const policyEditorBehavior = `管理画面のポリシー編集画面
+- 登録済みアプリ一覧を表示する
+- Include と install_mode を選んで Publish new revision する
+- entry は app と install_mode だけを保存し、release / version は保存しない
+- Policy 更新後、FCM data message を送る
+- どの release を配るかは端末の GET /api/devices/me/policy 時にサーバーが解決する`;
 
-# ポリシー編集画面 (/policies/:identifier/edit) の初期表示で使う admin 用 GET。
-# 現在の revision に含まれる app.id と install_mode を返す。
-# app は hard delete されると関連 entry も CASCADE 削除されるため、応答に「削除されたアプリ」は現れない。
-# 編集画面は登録済みアプリ一覧 (apps) を全行表示し、この応答に含まれる app.id を「Include」チェック済み + 該当 install_mode 選択済みとして反映する。`;
-
-const adminPolicyGetResponse = `HTTP/1.1 200 OK
-{
-  "device_policy": {
-    "identifier": "drt_01HX9A2W...",
-    "current_revision": { "id": 901 },
-    "updated_at": "2026-05-23T10:12:00+09:00",
-    "entries": [
-      {
-        "app": { "id": 12, "package_name": "com.example.appa" },
-        "install_mode": "FORCE_INSTALLED",
-        "install": { "release": { "id": 301 }, "version_code": 42, "version_name": "2.4.0-qa", "artifact_sha256": "58f7d4..." }
-      }
-    ]
-  }
-}
-
-# entry に並ぶ app は全て現存する apps 行。
-# 過去に存在したが既に削除された app の entry は、
-# app の hard delete に伴って device_policy_app_entries も CASCADE 削除されているため、
-# admin GET 応答には現れない (= 「削除されたアプリ」状態は存在しない)。`;
+const policyEditorRevision = `新しい revision の作成結果
+device_policy:
+  identifier: drt_01HX9A2W...
+  current_revision:
+    id: 901
+  updated_at: 2026-05-23T10:12:00+09:00
+entries:
+  - app:
+      package_name: com.example.appa
+    install_mode: FORCE_INSTALLED
+  - app:
+      package_name: com.example.appd
+    install_mode: AVAILABLE`;
 
 const fcmDataMessage = `{
   "message": {
@@ -131,7 +94,7 @@ const fetchPolicyResponse = `HTTP/1.1 200 OK
   ]
 }
 
-# 端末向け応答も admin GET と同じ entries (削除済み app の entry は存在し得ない)。
+# 端末向け応答には削除済み app の entry は存在し得ない。
 # install は必ず非null (release が無い app は entry を持てないため)。`;
 
 const downloadUrlCurl = `curl -X GET https://distribution.example.test/api/releases/301/artifact_url \\
@@ -333,13 +296,13 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">管理者 / CI</th>
             <td>デバイスへ配るアプリ構成を変えたい</td>
-            <td>PUT /admin/devices/:identifier/policy で DevicePolicy を更新する。entry は app.id と install_mode のみで、release / version は指定しない。</td>
+            <td>管理画面で DevicePolicy を更新する。entry は app と install_mode のみで、release / version は指定しない。APKアップロード後に既存 policy の revision だけを進めたい場合は POST /admin/apps/:package_name/touch_policies を呼ぶ。</td>
             <td>device_policies, device_policy_revisions, device_policy_app_entries</td>
           </tr>
           <tr>
             <th scope="row">APIサーバー</th>
-            <td>PUT /admin/devices/:identifier/policy / GET /admin/devices/:identifier/policy / GET /api/devices/me/policy / POST /api/devices/me/policy_sync_results</td>
-            <td>Policy更新を不変revisionとして保存し、FCM data messageを送信。GET時に各 entry の app_id から最新release を解決して install フィールドに乗せる。app が hard delete されると関連 entry も CASCADE 削除されるため、admin GET / device GET いずれの応答にも「削除されたアプリ」は現れない。一括失敗報告 (policy_sync_results) を受領して監査ログに残す。</td>
+            <td>POST /admin/apps/:package_name/touch_policies / GET /api/devices/me/policy / POST /api/devices/me/policy_sync_results</td>
+            <td>Policy更新を不変revisionとして保存し、FCM data messageを送信。GET時に各 entry の app_id から最新release を解決して install フィールドに乗せる。app が hard delete されると関連 entry も CASCADE 削除されるため、端末向け Policy 応答に「削除されたアプリ」は現れない。一括失敗報告 (policy_sync_results) を受領して監査ログに残す。</td>
             <td>device_policies, device_policy_revisions, device_policy_app_entries, apps, releases, device_policy_sync_reports, fcm_push_tokens</td>
           </tr>
           <tr>
@@ -422,25 +385,27 @@ const lifecycle = `stateDiagram-v2
           <DiagramFrame src="/mocks/app-distribution/step-1-policy-editor.html" title="管理画面 (Web): デバイスのポリシー編集" />
         </div>
         <div class="flow-step__details">
-          <h4>Policy ロード (編集前)</h4>
-          <pre class="curl-block"><code>{adminPolicyGetCurl}</code></pre>
-          <h4>応答 (削除アプリ entry を含む例)</h4>
-          <pre class="curl-block"><code>{adminPolicyGetResponse}</code></pre>
-          <h4>Policy 更新</h4>
-          <pre class="curl-block"><code>{updatePolicyCurl}</code></pre>
+          <h4>管理画面での更新</h4>
+          <pre class="curl-block"><code>{policyEditorBehavior}</code></pre>
+          <h4>保存される revision の例</h4>
+          <pre class="curl-block"><code>{policyEditorRevision}</code></pre>
+          <h4>REST APIの場合 (curl): 既存 policy revision の更新</h4>
+          <pre class="curl-block"><code>{touchPoliciesCurl}</code></pre>
+          <h4>CLIツールの場合: 既存 policy revision の更新</h4>
+          <pre class="curl-block"><code>{touchPoliciesCli}</code></pre>
           <h4>応答</h4>
-          <pre class="curl-block"><code>{updatePolicyResponse}</code></pre>
+          <pre class="curl-block"><code>{touchPoliciesResponse}</code></pre>
           <h4>作成・更新されるDBデータ</h4>
           <dl class="db-list">
             <div>
               <dt>device_policies / device_policy_revisions / device_policy_app_entries</dt>
-              <dd>バリデーション (全 app.id が現存するか) を通過した時点で新しい revision を作成し entries を保存する。version_code や release_id は格納しない。同じ admin が冪等に更新することを前提に <strong>楽観的ロックは入れない</strong> (最後に書いた内容が current_revision)。FCM data message も同期的に送信する (送信失敗してもログだけ取り、Policy は変更しない)。FCM が届かなかった端末は、利用者のアプリ明示起動または手動更新で復旧する。</dd>
+              <dd>管理画面での編集では、選択された app が現存することを確認してから新しい revision を作成し entries を保存する。version_code や release_id は格納しない。<code>POST /admin/apps/:package_name/touch_policies</code> は entries を変更せず、指定 app を含む current revision をコピーして新しい revision にする。FCM data message も同期的に送信する (送信失敗してもログだけ取り、Policy は変更しない)。FCM が届かなかった端末は、利用者のアプリ明示起動または手動更新で復旧する。</dd>
             </div>
           </dl>
           <h4>過去 revision の扱い</h4>
           <p>過去 revision は不変 (admin による上書きはしない)。ただし、関連 app が hard delete された場合は FK CASCADE で過去 revision の該当 entry も削除される (= 「削除されたアプリの履歴」は残らない)。差し戻しは古い revision を current にし直すのではなく、同じ内容で新しい revision を作る。</p>
           <h4>存在しないアプリ参照のルール</h4>
-          <p>新しい revision の entries にいずれの行も無い <code>app.id</code> を含めることは拒否する (400 APP_NOT_FOUND_FOR_ENTRY)。アプリは hard delete されるため「削除済みだが id 参照は残る」状態は存在せず、判定は「現在 apps テーブルに該当 id があるか」のみ。</p>
+          <p>管理画面で新しい revision を作るときは、現在登録されているアプリだけを選択肢に出す。<code>POST /admin/apps/:package_name/touch_policies</code> は package_name が見つからない場合に 404 APP_NOT_FOUND を返す。アプリは hard delete されるため「削除済みだが参照は残る」状態は存在しない。</p>
         </div>
       </div>
     </article>
@@ -484,7 +449,7 @@ const lifecycle = `stateDiagram-v2
             </div>
             <div>
               <dt>削除アプリの扱い</dt>
-              <dd>サーバー側で app が hard delete された時点で関連 entry も CASCADE 削除される。device GET / admin GET いずれにも現れず、端末側で「削除されたアプリ」を意識する必要はない。</dd>
+              <dd>サーバー側で app が hard delete された時点で関連 entry も CASCADE 削除される。端末向け Policy 応答には現れず、端末側で「削除されたアプリ」を意識する必要はない。</dd>
             </div>
             <div>
               <dt>端末通知</dt>
@@ -714,10 +679,10 @@ const lifecycle = `stateDiagram-v2
             <td>installed_by_companion のアプリは全て UNINSTALL 候補になる。pending_policy_fetch は解除する。</td>
           </tr>
           <tr>
-            <th scope="row">PUT で存在しない app.id を指定 (古い app.id が hard delete 済み / 編集中に削除された / typo 等)</th>
-            <td>400 APP_NOT_FOUND_FOR_ENTRY</td>
+            <th scope="row">touch_policies で存在しない package_name を指定</th>
+            <td>404 APP_NOT_FOUND</td>
             <td>Policy は変更しない。entries は前回 revision のまま。</td>
-            <td>admin UI で再度 GET し直し、現存する app を選び直させる。「以前 com.example.foo を配信していたが、最後の release を消したので新しい app.id で再アップロードした」場合は、admin が新しい app.id で entry を作り直す必要がある。</td>
+            <td>GET /admin/apps で現存する package_name を確認してから再実行する。最後の release を消して app が hard delete された場合は、APKを再アップロードしてから policy を再構成する。</td>
           </tr>
           <tr>
             <th scope="row">artifact_url の DL がリカバリ可能な失敗 (5xx / TLS / タイムアウト / 期限切れ)</th>
