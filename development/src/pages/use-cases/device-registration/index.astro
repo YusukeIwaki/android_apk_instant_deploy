@@ -514,6 +514,11 @@ const identityFlow = `flowchart LR
             <td colspan="2">同じ。同じ <code>device_identifier_id</code> を持つ <code>devices</code> 行が既にあれば 403 <code>DEVICE_ALREADY_REGISTERED</code> で拒否する。</td>
           </tr>
           <tr>
+            <th scope="row">登録済みでの <code>server_base_url</code> 変更</th>
+            <td>「既に登録済みの案内」画面で、リンクの <code>server_base_url</code> が端末保持値と異なるときだけ「サーバーの向き先を変更する」を出し、利用者操作で上書きする。</td>
+            <td><code>ACTION_APPLICATION_RESTRICTIONS_CHANGED</code> または次回 onResume で managedConfiguration の <code>server_base_url</code> を読み直し、現在値と変われば自動で上書きする。<code>identifier</code> / <code>secret</code> は読み直さず再登録もしない。上書き後はキャッシュ済み配信設定を破棄し新しい向き先で再評価する。</td>
+          </tr>
+          <tr>
             <th scope="row">secret の性質</th>
             <td colspan="2">どちらも一回限り・短期有効。登録成功で <code>device_registration_tokens</code> 行は削除。AMAPI policy に置いた値も同様に短命扱い。</td>
           </tr>

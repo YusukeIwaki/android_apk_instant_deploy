@@ -24,6 +24,7 @@ public final class ApkDownloadWorker extends Worker {
     static final String KEY_RELEASE_ID = "release_id";
     static final String KEY_VERSION_CODE = "version_code";
     static final String KEY_FILE_PATH = "file_path";
+    static final String KEY_INSTALL_AFTER_DOWNLOAD = "install_after_download";
     static final String PROGRESS_DOWNLOADED_BYTES = "downloaded_bytes";
     static final String PROGRESS_TOTAL_BYTES = "total_bytes";
 
@@ -41,33 +42,41 @@ public final class ApkDownloadWorker extends Worker {
         int releaseId = getInputData().getInt(KEY_RELEASE_ID, -1);
         int versionCode = getInputData().getInt(KEY_VERSION_CODE, -1);
         String filePath = getInputData().getString(KEY_FILE_PATH);
+        boolean installAfterDownload = getInputData().getBoolean(KEY_INSTALL_AFTER_DOWNLOAD, true);
         if (packageName == null || packageName.isEmpty() || releaseId < 0 || versionCode < 0 || filePath == null || filePath.isEmpty()) {
             return Result.failure();
         }
 
         ApkDownloadStore store = new ApkDownloadStore(context);
         File apkFile = new File(filePath);
-        try {
-            ApiClient.ArtifactUrl artifactUrl = fetchFreshArtifactUrl(context, releaseId);
-            DownloadAttempt attempt = downloadArtifact(artifactUrl.url, apkFile, store, releaseId, versionCode);
-            if (attempt == DownloadAttempt.RETRY) {
+        if (!apkFile.isFile() || apkFile.length() <= 0) {
+            try {
+                ApiClient.ArtifactUrl artifactUrl = fetchFreshArtifactUrl(context, releaseId);
+                DownloadAttempt attempt = downloadArtifact(artifactUrl.url, apkFile, store, releaseId, versionCode);
+                if (attempt == DownloadAttempt.RETRY) {
+                    store.markEnqueued(releaseId, versionCode);
+                    return Result.retry();
+                }
+                if (attempt == DownloadAttempt.FAILURE) {
+                    return failAndCleanup(store, apkFile, releaseId, versionCode);
+                }
+            } catch (ApiClient.ApiException e) {
+                if (isRetryableHttpStatus(e.httpStatus)) {
+                    store.markEnqueued(releaseId, versionCode);
+                    return Result.retry();
+                }
+                return failAndCleanup(store, apkFile, releaseId, versionCode);
+            } catch (IOException e) {
                 store.markEnqueued(releaseId, versionCode);
                 return Result.retry();
-            }
-            if (attempt == DownloadAttempt.FAILURE) {
+            } catch (JSONException | RuntimeException e) {
                 return failAndCleanup(store, apkFile, releaseId, versionCode);
             }
-        } catch (ApiClient.ApiException e) {
-            if (isRetryableHttpStatus(e.httpStatus)) {
-                store.markEnqueued(releaseId, versionCode);
-                return Result.retry();
-            }
-            return failAndCleanup(store, apkFile, releaseId, versionCode);
-        } catch (IOException e) {
-            store.markEnqueued(releaseId, versionCode);
-            return Result.retry();
-        } catch (JSONException | RuntimeException e) {
-            return failAndCleanup(store, apkFile, releaseId, versionCode);
+        }
+
+        if (!installAfterDownload) {
+            store.markDownloaded(releaseId, versionCode, apkFile.length());
+            return Result.success();
         }
 
         try {

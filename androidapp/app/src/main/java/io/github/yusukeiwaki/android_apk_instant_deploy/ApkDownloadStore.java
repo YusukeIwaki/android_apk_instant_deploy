@@ -11,6 +11,7 @@ final class ApkDownloadStore {
     static final int STATE_ENQUEUED = 1;
     static final int STATE_RUNNING = 2;
     static final int STATE_INSTALLING = 3;
+    static final int STATE_DOWNLOADED = 4;
 
     private static final String PREFS = "apkdist_downloads";
     private static final String KEY_PACKAGE_NAME_PREFIX = "package_name:";
@@ -57,6 +58,10 @@ final class ApkDownloadStore {
 
     void markInstalling(int releaseId, int versionCode, long sizeBytes) {
         updateProgress(releaseId, versionCode, STATE_INSTALLING, sizeBytes, sizeBytes);
+    }
+
+    void markDownloaded(int releaseId, int versionCode, long sizeBytes) {
+        updateProgress(releaseId, versionCode, STATE_DOWNLOADED, sizeBytes, sizeBytes);
     }
 
     PendingApkDownload find(int releaseId, int versionCode) {
@@ -221,6 +226,10 @@ final class ApkDownloadStore {
 
         boolean isBlocking() {
             return state == STATE_ENQUEUED || state == STATE_RUNNING || state == STATE_INSTALLING;
+        }
+
+        boolean isDownloaded() {
+            return state == STATE_DOWNLOADED;
         }
 
         int progressPercent() {

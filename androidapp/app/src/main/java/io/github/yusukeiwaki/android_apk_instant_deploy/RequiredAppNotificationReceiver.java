@@ -13,6 +13,9 @@ import android.os.Build;
 import android.provider.Settings;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.IOException;
+
 public final class RequiredAppNotificationReceiver extends BroadcastReceiver {
     static final String ACTION_OPEN_REQUIRED_APP = BuildConfig.APPLICATION_ID + ".OPEN_REQUIRED_APP";
     static final String ACTION_INSTALL_REQUIRED_APP = BuildConfig.APPLICATION_ID + ".INSTALL_REQUIRED_APP";
@@ -51,9 +54,24 @@ public final class RequiredAppNotificationReceiver extends BroadcastReceiver {
         }
 
         try {
+            ApkDownloadStore store = new ApkDownloadStore(context);
+            ApkDownloadStore.PendingApkDownload downloaded = store.find(releaseId, versionCode);
+            if (downloaded != null && downloaded.isDownloaded()) {
+                File apkFile = new File(downloaded.filePath);
+                if (apkFile.isFile() && apkFile.length() > 0) {
+                    store.markInstalling(releaseId, versionCode, apkFile.length());
+                    new ApkInstaller().install(context, packageName, apkFile, apkFile.length(), releaseId, versionCode);
+                    cancelRequiredInstallNotification(context, packageName, versionCode);
+                    Toast.makeText(context, "インストール確認を開始しました", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                new ApkDownloadManager().cleanup(context, downloaded);
+            }
             new ApkDownloadManager().enqueue(context, packageName, releaseId, versionCode);
             cancelRequiredInstallNotification(context, packageName, versionCode);
             Toast.makeText(context, "ダウンロードを開始しました", Toast.LENGTH_LONG).show();
+        } catch (IOException e) {
+            Toast.makeText(context, "インストールを開始できませんでした", Toast.LENGTH_LONG).show();
         } catch (RuntimeException e) {
             Toast.makeText(context, "ダウンロードを開始できませんでした", Toast.LENGTH_LONG).show();
         }

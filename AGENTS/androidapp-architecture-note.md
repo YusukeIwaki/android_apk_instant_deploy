@@ -68,21 +68,22 @@ Otherwise the last fetched policy JSON is parsed locally for display.
 Policy entries are split by install mode:
 
 - `FORCE_INSTALLED` appears as required action.
-- `AVAILABLE` appears as optional app list/detail.
+- `AVAILABLE` appears as optional app list/detail. The app does not auto-install a missing `AVAILABLE` app, but it may pre-download an update for an `AVAILABLE` app that is already installed so the server does not need to stay reachable until the user confirms installation.
 
 Install flow:
 
 1. User selects an entry.
 2. The app treats an install/update as needed when the package is missing, the server `version_code` is newer than the installed one, or the `version_code` is the same but the server `artifact_sha256` differs from the installed APK checksum.
 3. If AMAPI SDK custom app install is unavailable, the app checks `REQUEST_INSTALL_PACKAGES` capability and sends the user to Android settings when needed.
-4. `ApkDownloadManager` enqueues a WorkManager unique work named by `release_id + version_code` and records the app-private APK path.
-5. `ApkDownloadWorker` calls `GET /api/releases/:release_id/artifact_url` inside the worker so retries obtain a fresh short-lived URL.
-6. `ApkDownloadWorker` streams the APK with OkHttp to `context.getFilesDir()/apk-downloads/*.apk.part`, resumes with HTTP `Range` when a partial file exists and the server supports it, then renames to `.apk`.
-7. While `ApkDownloadStore` has an active job for that release, `MainActivity` disables the matching install action and displays waiting/running/installing progress.
-8. After download completion, `ApkDownloadWorker` first tries AMAPI SDK custom app install when `InstallCustomAppCommandHelper.getCustomApksStorageDirectory()` is available. It copies the APK into that directory, issues `InstallCustomApp(packageName, packageUri)`, then removes the temporary copy and local download state if the command succeeds.
-9. If AMAPI SDK custom app install is unavailable or command issuing fails, `ApkDownloadWorker` falls back to `ApkInstaller`.
-10. `ApkInstaller.install` streams the downloaded APK into a full-install `PackageInstaller` session and commits it.
-11. `InstallNotificationReceiver` handles success, failure, or pending user action and removes the temporary APK file/state when the install reaches a terminal result.
+4. When policy sync detects a required `FORCE_INSTALLED` app, it starts the APK download as soon as possible. On non-silent PackageInstaller routes this download may stop at a downloaded local APK and wait for user confirmation. When policy sync detects an `AVAILABLE` app that is already installed and needs an update, it also pre-downloads the update but does not auto-install it.
+5. `ApkDownloadManager` enqueues a WorkManager unique work named by `release_id + version_code` and records the app-private APK path.
+6. `ApkDownloadWorker` calls `GET /api/releases/:release_id/artifact_url` inside the worker so retries obtain a fresh short-lived URL.
+7. `ApkDownloadWorker` streams the APK with OkHttp to `context.getFilesDir()/apk-downloads/*.apk.part`, resumes with HTTP `Range` when a partial file exists and the server supports it, then renames to `.apk`.
+8. While `ApkDownloadStore` has an active job for that release, `MainActivity` disables the matching install action and displays waiting/running/installing progress. When a non-silent route pre-download completes, `ApkDownloadStore` keeps a downloaded state so later user confirmation can install from app-private storage without contacting the server again.
+9. After download completion, `ApkDownloadWorker` first tries AMAPI SDK custom app install when `InstallCustomAppCommandHelper.getCustomApksStorageDirectory()` is available and the work was requested as download-and-install. It copies the APK into that directory, issues `InstallCustomApp(packageName, packageUri)`, then removes the temporary copy and local download state if the command succeeds.
+10. If AMAPI SDK custom app install is unavailable or command issuing fails, `ApkDownloadWorker` falls back to `ApkInstaller` only for download-and-install work.
+11. `ApkInstaller.install` streams the downloaded APK into a full-install `PackageInstaller` session and commits it.
+12. `InstallNotificationReceiver` handles success, failure, or pending user action and removes the temporary APK file/state when the install reaches a terminal result.
 
 AMAPI SDK custom app install is attempted only when Android Device Policy exposes the AMAPI custom APK storage directory. That runtime signal is expected only on fully managed devices where the companion app has the required AMAPI policy role/configuration. Non-AMAPI or incomplete-policy devices fall back to the platform confirmation flow.
 
@@ -104,7 +105,7 @@ Stored values:
 - `pending_policy_fetch`
 - `fetched_policy_json`
 
-`ApkDownloadStore` separately stores active APK download work keyed by release/version. These records are temporary scheduler references, not policy sync completion state; they are removed when the worker hits a non-retryable download failure, when the user-visible install reaches a terminal PackageInstaller result, or when cleanup explicitly cancels the job. APK bytes stay under app-private `filesDir/apk-downloads`, with partial downloads kept as `.part` files for retry/resume.
+`ApkDownloadStore` separately stores active and downloaded APK work keyed by release/version. Active records are temporary scheduler references, not policy sync completion state. Downloaded records mean the APK bytes are already in app-private storage and can be handed to the install route later without fetching another artifact URL. Records are removed when the worker hits a non-retryable download failure, when the user-visible install reaches a terminal PackageInstaller result, or when cleanup explicitly cancels the job. APK bytes stay under app-private `filesDir/apk-downloads`, with partial downloads kept as `.part` files for retry/resume.
 
 Default server URL is `http://10.0.2.2:4567`, which works for Android Emulator talking to a host machine server. Physical devices need a reachable server URL configured from Settings, and the server's device-facing artifact URL must also be reachable by that device.
 

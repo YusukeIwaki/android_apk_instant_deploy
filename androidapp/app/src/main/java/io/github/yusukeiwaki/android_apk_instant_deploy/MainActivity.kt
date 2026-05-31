@@ -77,6 +77,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONException
+import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.net.ConnectException
@@ -123,7 +124,17 @@ class MainActivity : ComponentActivity() {
     }
     private val restrictionsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED == intent.action && !store.isRegistered) {
+            if (Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED != intent.action) {
+                return
+            }
+            if (store.isRegistered) {
+                if (handleManagedServerBaseUrlUpdateIfRegistered()) {
+                    syncApiClientFromStore()
+                    displayedPolicySnapshot = null
+                    displayedNotifications = emptyList()
+                    showHome(true)
+                }
+            } else {
                 handleManagedRegistrationIfAvailable()
             }
         }
@@ -163,6 +174,9 @@ class MainActivity : ComponentActivity() {
         }
         if (!store.isRegistered && handleManagedRegistrationIfAvailable()) {
             return
+        }
+        if (store.isRegistered) {
+            handleManagedServerBaseUrlUpdateIfRegistered()
         }
         if (syncApiClientFromStore() && store.isRegistered) {
             displayedPolicySnapshot = null
@@ -379,6 +393,25 @@ class MainActivity : ComponentActivity() {
         } else {
             registerManagedDevice(config, attemptKey)
         }
+        return true
+    }
+
+    private fun handleManagedServerBaseUrlUpdateIfRegistered(): Boolean {
+        if (!store.isRegistered) {
+            return false
+        }
+        val config = managedRegistrationConfig() ?: return false
+        val serverBaseUrl = config.serverBaseUrl
+        if (serverBaseUrl.isEmpty() || !isHttpUrl(serverBaseUrl)) {
+            return false
+        }
+        val previous = store.serverBaseUrl()
+        store.setServerBaseUrl(serverBaseUrl)
+        val current = store.serverBaseUrl()
+        if (current == previous) {
+            return false
+        }
+        registrationLog("managed_server_base_url_updated old=$previous new=$current")
         return true
     }
 
@@ -777,6 +810,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun earlyDownloadEntries(snapshot: ApiClient.PolicySnapshot): List<ApiClient.PolicyEntry> {
+        return snapshot.entries.filter { entry ->
+            if (downloadFor(entry) != null || blockingDownloadFor(entry.releaseId) != null) {
+                return@filter false
+            }
+            val installState = appInstallStateFor(entry)
+            if (!installActionRequired(entry, installState)) {
+                return@filter false
+            }
+            entry.isForceInstalled() || (entry.isAvailable() && installState.installed)
+        }
+    }
+
     private fun fetchNotificationsQuietly() {
         executor.execute {
             try {
@@ -942,11 +988,12 @@ class MainActivity : ComponentActivity() {
         installState: AppInstallState,
         showDownloadStatus: Boolean,
     ): String? {
-        val download = blockingDownloadFor(entry.releaseId)
-        if (showDownloadStatus && download != null) {
+        val actionRequired = installActionRequired(entry, installState)
+        val download = downloadFor(entry)
+        if (showDownloadStatus && actionRequired && download != null) {
             return downloadStatusText(download)
         }
-        if (installActionRequired(entry, installState)) {
+        if (actionRequired) {
             return if (installState.installed && installState.versionCode == entry.versionCode.toLong()) {
                 "内容に更新あり"
             } else {
@@ -1068,6 +1115,12 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        val downloaded = downloadFor(entry)
+        if (downloaded != null && downloaded.isDownloaded) {
+            installDownloadedEntry(entry, downloaded)
+            return
+        }
+
         try {
             ApkDownloadManager().enqueue(this, entry.packageName, entry.releaseId, entry.versionCode)
             Toast.makeText(this, "ダウンロードを開始しました", Toast.LENGTH_LONG).show()
@@ -1076,6 +1129,64 @@ class MainActivity : ComponentActivity() {
         } catch (_: RuntimeException) {
             showOffline()
             Toast.makeText(this, "ダウンロードを開始できませんでした", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun installDownloadedEntry(entry: ApiClient.PolicyEntry, download: ApkDownloadStore.PendingApkDownload) {
+        val apkFile = File(download.filePath)
+        if (!apkFile.isFile || apkFile.length() <= 0) {
+            ApkDownloadManager().cleanup(this, download)
+            installEntry(entry)
+            return
+        }
+
+        try {
+            downloadStore.markInstalling(entry.releaseId, entry.versionCode, apkFile.length())
+            if (canUseAmapiCustomAppInstall()) {
+                executor.execute {
+                    try {
+                        AmapiCustomAppInstaller().install(applicationContext, entry.packageName, apkFile)
+                        mainHandler.post {
+                            ApkDownloadManager().cleanup(this, download)
+                            RequiredAppNotificationReceiver.cancelRequiredInstallNotification(this, entry.packageName, entry.versionCode)
+                            Toast.makeText(this, "インストールを開始しました", Toast.LENGTH_LONG).show()
+                            refreshDownloadStatusViews()
+                        }
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        mainHandler.post { installDownloadedWithPackageInstaller(entry, download, apkFile) }
+                    } catch (_: Exception) {
+                        mainHandler.post { installDownloadedWithPackageInstaller(entry, download, apkFile) }
+                    }
+                }
+                return
+            }
+            installDownloadedWithPackageInstaller(entry, download, apkFile)
+        } catch (_: RuntimeException) {
+            Toast.makeText(this, "インストールを開始できませんでした", Toast.LENGTH_LONG).show()
+            refreshDownloadStatusViews()
+        }
+    }
+
+    private fun installDownloadedWithPackageInstaller(
+        entry: ApiClient.PolicyEntry,
+        download: ApkDownloadStore.PendingApkDownload,
+        apkFile: File,
+    ) {
+        try {
+            downloadStore.markInstalling(entry.releaseId, entry.versionCode, apkFile.length())
+            ApkInstaller().install(this, entry.packageName, apkFile, apkFile.length(), entry.releaseId, entry.versionCode)
+            Toast.makeText(this, "インストール確認を開始しました", Toast.LENGTH_LONG).show()
+            startDownloadStatusRefresh()
+            refreshDownloadStatusViews()
+        } catch (_: IOException) {
+            ApkDownloadManager().cleanup(this, download)
+            Toast.makeText(this, "インストールを開始できませんでした", Toast.LENGTH_LONG).show()
+            refreshDownloadStatusViews()
+        } catch (_: RuntimeException) {
+            ApkDownloadManager().cleanup(this, download)
+            Toast.makeText(this, "インストールを開始できませんでした", Toast.LENGTH_LONG).show()
+            refreshDownloadStatusViews()
         }
     }
 
@@ -1145,6 +1256,11 @@ class MainActivity : ComponentActivity() {
         return if (download != null && download.isBlocking()) download else null
     }
 
+    private fun downloadFor(entry: ApiClient.PolicyEntry): ApkDownloadStore.PendingApkDownload? {
+        val download = downloadStore.find(entry.releaseId, entry.versionCode)
+        return if (download != null && (download.isBlocking() || download.isDownloaded())) download else null
+    }
+
     private fun refreshDownloadStatusViews() {
         downloadRefreshTick += 1
         val activeDownloads = activeDownloadCount()
@@ -1169,6 +1285,7 @@ class MainActivity : ComponentActivity() {
                 if (percent >= 0) "ダウンロード中 $percent%" else "ダウンロード中"
             }
             ApkDownloadStore.STATE_INSTALLING -> "インストール準備中"
+            ApkDownloadStore.STATE_DOWNLOADED -> "ダウンロード済み"
             else -> "ダウンロード処理中"
         }
     }
@@ -1204,11 +1321,6 @@ class MainActivity : ComponentActivity() {
 
     private fun syncRequiredInstallNotifications(snapshot: ApiClient.PolicySnapshot) {
         val entries = requiredInstallEntries(snapshot)
-        if (entries.isEmpty()) {
-            RequiredAppNotificationReceiver.cancelAllRequiredInstallNotifications(this)
-            return
-        }
-
         if (canUseAmapiCustomAppInstall()) {
             RequiredAppNotificationReceiver.cancelAllRequiredInstallNotifications(this)
             var started = false
@@ -1219,10 +1331,34 @@ class MainActivity : ComponentActivity() {
                 } catch (_: RuntimeException) {
                 }
             }
+            earlyDownloadEntries(snapshot).filterNot { it.isForceInstalled() }.forEach { entry ->
+                try {
+                    ApkDownloadManager().enqueueDownloadOnly(this, entry.packageName, entry.releaseId, entry.versionCode)
+                    started = true
+                } catch (_: RuntimeException) {
+                }
+            }
             if (started) {
                 startDownloadStatusRefresh()
                 refreshDownloadStatusViews()
             }
+            return
+        }
+
+        var startedDownload = false
+        earlyDownloadEntries(snapshot).forEach { entry ->
+            try {
+                ApkDownloadManager().enqueueDownloadOnly(this, entry.packageName, entry.releaseId, entry.versionCode)
+                startedDownload = true
+            } catch (_: RuntimeException) {
+            }
+        }
+        if (startedDownload) {
+            startDownloadStatusRefresh()
+        }
+
+        if (entries.isEmpty()) {
+            RequiredAppNotificationReceiver.cancelAllRequiredInstallNotifications(this)
             return
         }
 

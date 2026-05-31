@@ -17,10 +17,18 @@ final class ApkDownloadManager {
     private static final String DOWNLOAD_DIR = "apk-downloads";
 
     ApkDownloadStore.PendingApkDownload enqueue(Context context, String packageName, int releaseId, int versionCode) {
+        return enqueue(context, packageName, releaseId, versionCode, true);
+    }
+
+    ApkDownloadStore.PendingApkDownload enqueueDownloadOnly(Context context, String packageName, int releaseId, int versionCode) {
+        return enqueue(context, packageName, releaseId, versionCode, false);
+    }
+
+    private ApkDownloadStore.PendingApkDownload enqueue(Context context, String packageName, int releaseId, int versionCode, boolean installAfterDownload) {
         Context appContext = context.getApplicationContext();
         ApkDownloadStore store = new ApkDownloadStore(appContext);
         ApkDownloadStore.PendingApkDownload existing = store.find(releaseId, versionCode);
-        if (existing != null && existing.isBlocking()) {
+        if (existing != null && (existing.isBlocking() || (existing.isDownloaded() && !installAfterDownload))) {
             return existing;
         }
 
@@ -33,6 +41,7 @@ final class ApkDownloadManager {
                 .putInt(ApkDownloadWorker.KEY_RELEASE_ID, releaseId)
                 .putInt(ApkDownloadWorker.KEY_VERSION_CODE, versionCode)
                 .putString(ApkDownloadWorker.KEY_FILE_PATH, apkFile.getAbsolutePath())
+                .putBoolean(ApkDownloadWorker.KEY_INSTALL_AFTER_DOWNLOAD, installAfterDownload)
                 .build();
         Constraints constraints = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)

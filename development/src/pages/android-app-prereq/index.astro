@@ -12,7 +12,7 @@ const routeDiagram = `flowchart TD
   ManualReg --> AppReady
   AppReady --> InstallAxis{"AMAPI SDK custom app install の<br/>前提条件をすべて満たすか?"}
   InstallAxis -->|はい| Silent["AMAPI SDK サイレントインストール経路<br/>route = AMAPI_CUSTOM_APP"]
-  InstallAxis -->|いいえ| Ui["PackageInstaller UI 経路<br/>route = PACKAGE_INSTALLER"]`;
+  InstallAxis -->|いいえ| Ui["先取りDL + PackageInstaller UI 経路<br/>route = PACKAGE_INSTALLER"]`;
 
 const axisMatrix = `flowchart LR
   subgraph RegAxis["軸A: 登録経路 (= managedConfigurationを受け取れるか)"]
@@ -21,7 +21,7 @@ const axisMatrix = `flowchart LR
   end
   subgraph InstallAxis["軸B: 配布APKのインストール経路 (= AMAPI custom app install の前提を満たすか)"]
     InstSilent["Fully managed + COMPANION_APP role +<br/>対象APKが installType=CUSTOM で<br/>signingKeyCerts一致<br/>→ AMAPI SDK サイレント (AMAPI_CUSTOM_APP)"]
-    InstUi["上記前提を満たさない<br/>→ PackageInstaller UI + Sticky通知 (PACKAGE_INSTALLER)"]
+    InstUi["上記前提を満たさない<br/>→ 先取りDL + PackageInstaller UI + Sticky通知 (PACKAGE_INSTALLER)"]
   end
   RegAxis -. "独立" .- InstallAxis`;
 
@@ -198,14 +198,14 @@ const sequence = `flowchart TD
             <th scope="row">はい (fully managed)</th>
             <td>いずれかを満たさない (COMPANION_APP role 未付与、対象APKが CUSTOM 未宣言、fingerprint不一致 等)</td>
             <td>managedConfiguration による自動登録 (登録APIは経路Bと共通)</td>
-            <td>PackageInstaller UI + Sticky通知</td>
+            <td>先取りダウンロード + PackageInstaller UI + Sticky通知</td>
             <td><code>PACKAGE_INSTALLER</code></td>
           </tr>
           <tr>
             <th scope="row">いいえ (work profile / 非管理 / personal併用)</th>
             <td>満たせない (fully managed が前提)</td>
             <td>deep link + 表示名入力</td>
-            <td>PackageInstaller UI + Sticky通知</td>
+            <td>先取りダウンロード + PackageInstaller UI + Sticky通知</td>
             <td><code>PACKAGE_INSTALLER</code></td>
           </tr>
         </tbody>
@@ -258,7 +258,7 @@ const sequence = `flowchart TD
       <li><strong>登録APIは共通。</strong> AMAPI経路でも手動経路でも、サーバー側は同じ <code>POST /api/devices</code> で token 検証 → devices / profile / credential / fcm_push_token 作成 → device_registration_tokens 削除を行う。</li>
       <li><strong>表示名は managedConfiguration からも受け取れる。</strong> 端末別の表示名を policy に含めれば利用者入力をスキップできる。含まれない場合はアプリ画面で入力させる経路にフォールバックする。</li>
       <li><strong>secret は短命の一回限り。</strong> managedConfiguration の <code>hidden</code> は管理 UI の表示制御であり、端末側の強固な秘密保管ではない。DeviceRegistrationToken と同じく短い有効期限を設定し、登録成功後はサーバー側で行を削除する。</li>
-      <li><strong>登録成功後は managedConfiguration を無視する。</strong> 端末は <code>devices.identifier</code> と <code>device_auth_token</code> を private storage に持ち、以後の policy 配布や <code>ACTION_APPLICATION_RESTRICTIONS_CHANGED</code> では再登録しない。</li>
+      <li><strong>登録成功後は再登録しないが、<code>server_base_url</code> の変更だけは追従する。</strong> 端末は <code>devices.identifier</code> と <code>device_auth_token</code> を private storage に持ち、以後の policy 配布や <code>ACTION_APPLICATION_RESTRICTIONS_CHANGED</code> で <code>identifier</code> / <code>secret</code> を読み直して再登録することはしない。ただし managedConfiguration の <code>server_base_url</code> が現在値と変われば (サーバー移設・ドメイン変更など)、端末側の <code>server_base_url</code> を上書きしてキャッシュ済み配信設定を破棄し、新しい向き先で再評価する。これは deep link 経路の「サーバーの向き先を変更する」と同じ効果を、管理端末では managedConfiguration の更新で自動的に行うもの。</li>
       <li><strong>policy 配布の遅延を見込む。</strong> Device Policy が policy を pull するまで configuration は届かない。DeviceRegistrationToken の有効期限は QR/deep link 経路より少し長めに設定する。</li>
     </ul>
   </section>
@@ -268,7 +268,7 @@ const sequence = `flowchart TD
     <h2 id="manual">手動インストール経路</h2>
     <p>
       手動経路は、検証端末・AMAPI管理外端末・初期導入前の一時運用で使います。
-      この経路ではアプリの削除抑止や silent install は期待しません。必須アプリのインストールは Sticky 通知から PackageInstaller UI に進むフォールバックを正規ルートにします。
+      この経路ではアプリの削除抑止や silent install は期待しません。ただしオンプレの配信サーバーが常時到達できるとは限らないため、必須アプリやインストール済み任意アプリの更新APKは、Policy取得後に到達できるタイミングで先取りダウンロードします。必須アプリのインストールは、保存済みAPKがあればそれを使って Sticky 通知から PackageInstaller UI に進むフォールバックを正規ルートにします。
       登録は <code>apkdist://register-device</code> custom scheme deep link 経由で、利用者が表示名を入力してから完了します。
     </p>
     <pre class="curl-block"><code>{manualInstall}</code></pre>
@@ -290,7 +290,7 @@ const sequence = `flowchart TD
       <li><strong>secret を長期秘密にしない。</strong> 登録APIと同じく一回限り・短期有効として扱い、登録成功で <code>device_registration_tokens</code> 行は削除する。AMAPI経路でも secret の性質は変えない。</li>
       <li><strong>登録経路 (軸A) と インストール経路 (軸B) を独立に扱う。</strong> AMAPI管理かどうかは軸Aだけを決める。軸Bが <code>AMAPI_CUSTOM_APP</code> になるのは <a href="https://developers.google.com/android/management/manage-custom-apps">Manage custom apps with AMAPI</a> の前提 (fully managed、COMPANION_APP role、対象APKの installType=CUSTOM + signingKeyCerts一致、AMAPI SDK v1.6.0-rc01+、minSdk 21+、所定のFileProvider/queries宣言) をすべて満たすときだけ。1つでも欠けたら軸Bは <code>PACKAGE_INSTALLER</code> に落ちる。</li>
       <li><strong>サイレントインストールは「条件全部入り」で初めて使える。</strong> 条件のうち1つだけ妥協してサイレントを通そうとしない。前提が崩れたら経路Bへフォールバック。</li>
-      <li><strong>手動経路 (軸B = PACKAGE_INSTALLER) はフォールバックUIが正。</strong> 権限不足やユーザー確認が必要な場合は PackageInstaller UI と Sticky 通知で扱う。</li>
+      <li><strong>手動経路 (軸B = PACKAGE_INSTALLER) は先取りDL + フォールバックUIが正。</strong> 権限不足やユーザー確認が必要な場合でも、到達可能なうちにAPK bytesを app-private storage に確保し、PackageInstaller UI と Sticky 通知で利用者確認へ進める。</li>
     </ol>
   </section>
 </BaseLayout>

@@ -102,7 +102,8 @@ const downloadUrlCurl = `curl -X GET https://distribution.example.test/api/relea
 
 # Policy fetch で受け取った install.release.id をそのまま使う。
 # FORCE_INSTALLED で未インストール、要求 version_code が新しい、または同じ version_code で artifact_sha256 が異なる場合だけ取得する。
-# AVAILABLE のアプリは、ユーザーがアプリ内 UI から選んだときだけ取得する。
+# AVAILABLE の未インストールアプリは、ユーザーがアプリ内 UI から選んだときだけ取得する。
+# 既にインストール済みの AVAILABLE に更新がある場合は、端末が更新 APK を先取りダウンロードできる。
 # 応答は短命の presigned URL を返す。
 # 端末は WorkManager の download worker に投入し、OkHttp で app-private files に保存する。
 # 進行中状態はローカルの download state から UI に反映する。`;
@@ -146,12 +147,14 @@ const policyFlow = `flowchart TD
   MaybeSync -->|いいえ| Idle["同期不要"]
   MaybeSync -->|はい| Plan["entry ごとに DOWNLOAD / INSTALL / UNINSTALL を判定"]
   Plan --> DL{"必要な artifact をダウンロード"}
-  DL -->|成功| Apply["インストール / アンインストール実行"]
+  DL -->|成功 + サイレント可| Apply["インストール / アンインストール実行"]
+  DL -->|成功 + ユーザー確認待ち| DownloadedWait["downloaded_artifact_index に保持<br/>INSTALL は利用者確認待ち"]
   DL -->|リカバリ可能な失敗| DLRetry["同じ WorkManager job を retry<br/>次の worker 実行でURL再取得"]
   DL -->|リカバリ不能な失敗| MarkDL["failed_artifacts_blacklist に追記<br/>同じ artifact では再試行しない"]
   Apply -->|成功| MarkOK["installed_package_index を更新"]
   Apply -->|リカバリ可能な失敗| ApplyRetry["何も永続化しない<br/>通知や次回トリガで再試行"]
   Apply -->|リカバリ不能な失敗| MarkAp["failed_artifacts_blacklist に追記<br/>同じ artifact では再試行しない"]
+  DownloadedWait --> AllDone
   MarkOK --> AllDone{"全 work item が terminal?"}
   MarkDL --> AllDone
   MarkAp --> AllDone
@@ -320,7 +323,7 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">端末利用者</th>
             <td>(<code>AMAPI_CUSTOM_APP</code> 経路では介在しない) / (<code>PACKAGE_INSTALLER</code> 経路で) Sticky通知タップ</td>
-            <td>AMAPI custom app install の前提を満たさず自動インストールできない端末で、通知からPackageInstaller UIへ進む。任意アプリ (AVAILABLE) は経路によらずアプリUI内から自分で選んで入れる。</td>
+            <td>AMAPI custom app install の前提を満たさず自動インストールできない端末で、先取り済みAPKまたはその場のDOWNLOADからPackageInstaller UIへ進む。任意アプリ (AVAILABLE) の未導入は経路によらずアプリUI内から自分で選んで入れるが、既に入っているAVAILABLEの更新APKは先取りできる。</td>
             <td>PackageInstaller UI</td>
           </tr>
         </tbody>
@@ -351,7 +354,7 @@ const lifecycle = `stateDiagram-v2
       </div>
       <div>
         <dt>active_download_jobs / downloaded_artifact_index / failed_artifacts_blacklist (端末ローカル)</dt>
-        <dd><code>active_download_jobs</code> は WorkManager unique work を release.id + version_code に紐づける一時的な参照で、同じ artifact の重複ダウンロードを防ぎ、UI に進行中状態を出すためだけに使う。download worker は短命 artifact_url を各 retry で取り直し、OkHttp で app-private files に保存する。worker が非リトライ失敗・キャンセル、またはダウンロード完了後の PackageInstaller 引き渡しが終端した時点で消す。<code>downloaded_artifact_index</code> は再利用できる artifact、<code>failed_artifacts_blacklist</code> は「同じ条件で結果が変わらない」と確定した失敗事実だけを保持する。リカバリ可能な失敗では active_download_jobs を retry 対象の一時参照として残し、次の worker 実行で fetched_policy_snapshot・installed_package_index・failed_artifacts_blacklist から work list を再計算する。</dd>
+        <dd><code>active_download_jobs</code> は WorkManager unique work を release.id + version_code に紐づける一時的な参照で、同じ artifact の重複ダウンロードを防ぎ、UI に進行中状態を出すためだけに使う。download worker は短命 artifact_url を各 retry で取り直し、OkHttp で app-private files に保存する。worker が非リトライ失敗・キャンセル、または PackageInstaller 引き渡しが終端した時点で消す。PACKAGE_INSTALLER 経路でユーザー確認待ちにする場合は、ダウンロード完了時点で <code>downloaded_artifact_index</code> に移し、APK bytes を app-private files に残す。<code>downloaded_artifact_index</code> は再利用できる artifact、<code>failed_artifacts_blacklist</code> は「同じ条件で結果が変わらない」と確定した失敗事実だけを保持する。リカバリ可能な失敗では active_download_jobs を retry 対象の一時参照として残し、次の worker 実行で fetched_policy_snapshot・installed_package_index・failed_artifacts_blacklist から work list を再計算する。</dd>
       </div>
       <div>
         <dt>pending_report_payload (端末ローカル)</dt>
@@ -465,7 +468,7 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">3</span>
         <div>
           <h3 id="step-3">entry ごとに DOWNLOAD と INSTALL を進め、リカバリ可能な失敗はリトライする</h3>
-          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code / artifact_sha256」と「端末上の installed package の versionCode / APK checksum」。同期は永続的な entry 進捗ではなく、毎反復で計算する <strong>work list</strong> として扱います。work list は fetched_policy_snapshot、installed_package_index、active_download_jobs、downloaded_artifact_index、failed_artifacts_blacklist からその場で作り、各 work item を1回進めます。既に同じ release.id + version_code の active_download_jobs がある場合は新しい work を enqueue せず、ローカル download state を UI に反映して待ちます。リカバリ可能な失敗では同じ WorkManager job が artifact URL を取り直して retry します。リカバリ不能な失敗だけ failed_artifacts_blacklist に追記し、以後は同じ artifact では再試行しません。利用者がホームの行をタップするとアプリ詳細画面に入り、状態に応じて「インストール」/「アップデート」/「アンインストール」ボタンが出ます。ダウンロード進行中はボタンを無効化し、本文に「ダウンロード中 NN%」、ボタンに「ダウンロード中」(完了直前は「インストール準備中」) を表示します。</p>
+          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code / artifact_sha256」と「端末上の installed package の versionCode / APK checksum」。オンプレの配信サーバーは常時到達できるとは限らないため、端末は Policy 取得直後の到達可能なタイミングで APK bytes をできるだけ早く確保します。FORCE_INSTALLED は未インストールでも更新でも自動で DOWNLOAD を開始します。AVAILABLE は初回導入までは自動 DOWNLOAD しませんが、既に端末に入っているアプリに更新がある場合は UPDATE 用 artifact を自動 DOWNLOAD します。同期は永続的な entry 進捗ではなく、毎反復で計算する <strong>work list</strong> として扱います。work list は fetched_policy_snapshot、installed_package_index、active_download_jobs、downloaded_artifact_index、failed_artifacts_blacklist からその場で作り、各 work item を1回進めます。既に同じ release.id + version_code の active_download_jobs または downloaded_artifact_index がある場合は新しい DOWNLOAD を enqueue せず、ローカル download state を UI に反映して待ちます。リカバリ可能な失敗では同じ WorkManager job が artifact URL を取り直して retry します。リカバリ不能な失敗だけ failed_artifacts_blacklist に追記し、以後は同じ artifact では再試行しません。利用者がホームの行をタップするとアプリ詳細画面に入り、状態に応じて「インストール」/「アップデート」/「アンインストール」ボタンが出ます。ダウンロード進行中はボタンを無効化し、本文に「ダウンロード中 NN%」、ボタンに「ダウンロード中」(完了直前は「インストール準備中」) を表示します。ダウンロード完了後は「ダウンロード済み」と表示し、利用者の確認操作では保存済みAPKを PackageInstaller / AMAPI custom app install に渡すため、サーバーへ再接続しません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -479,11 +482,11 @@ const lifecycle = `stateDiagram-v2
           <dl class="db-list">
             <div>
               <dt>INSTALL対象</dt>
-              <dd>FORCE_INSTALLED かつ「未インストール」または「インストール済み version_code &lt; Policy install.version_code」または「同じ version_code だが端末上の APK checksum と Policy install.artifact_sha256 が異なる」の entry。</dd>
+              <dd>FORCE_INSTALLED かつ「未インストール」または「インストール済み version_code &lt; Policy install.version_code」または「同じ version_code だが端末上の APK checksum と Policy install.artifact_sha256 が異なる」の entry。PACKAGE_INSTALLER 経路では DOWNLOAD だけ先に完了させ、INSTALL は利用者確認待ちにできる。</dd>
             </div>
             <div>
               <dt>DOWNLOAD進行中の扱い</dt>
-              <dd>同じ release.id + version_code の active_download_jobs がある entry は、ローカル download state をホームの行 (白背景) とアプリ詳細の CTA に反映し、インストール操作を無効化する。利用者が同じ行を何度タップしても、同じ APK を重複して enqueue しない。</dd>
+              <dd>同じ release.id + version_code の active_download_jobs がある entry は、ローカル download state をホームの行 (白背景) とアプリ詳細の CTA に反映し、インストール操作を無効化する。downloaded_artifact_index がある entry は「ダウンロード済み」として表示し、利用者操作時は保存済みAPKを使う。利用者が同じ行を何度タップしても、同じ APK を重複して enqueue しない。</dd>
             </div>
             <div>
               <dt>UNINSTALL対象</dt>
@@ -491,7 +494,7 @@ const lifecycle = `stateDiagram-v2
             </div>
             <div>
               <dt>SHOW対象 (AVAILABLE)</dt>
-              <dd>ホームの一覧 (DevicePolicy 全 entries を 1 リストで表示) に並べるだけで自動インストールしない。利用者が行をタップしてアプリ詳細に入り、「インストール」/「アップデート」/「アンインストール」を押したときに install.release.id を使って artifact URL を取得して動かす。AVAILABLE entry は自動同期の work list には含めず、policy_sync_results にも含めない。device 用の GET /admin/apps は追加しない (admin 用のみ)。</dd>
+              <dd>ホームの一覧 (DevicePolicy 全 entries を 1 リストで表示) に並べる。未インストールの AVAILABLE は自動 DOWNLOAD / INSTALL しない。既に端末にインストール済みで更新が必要な AVAILABLE は、サーバー到達中に artifact だけ自動 DOWNLOAD するが INSTALL は利用者操作まで進めない。AVAILABLE entry は自動インストールの work list には含めず、policy_sync_results にも含めない。device 用の GET /admin/apps は追加しない (admin 用のみ)。</dd>
             </div>
           </dl>
           <h4>リカバリ可能 / 不能の判定</h4>
@@ -526,7 +529,7 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">4</span>
         <div>
           <h3 id="step-4">確定した結果をまとめて報告し、applied_policy_snapshot を更新する</h3>
-          <p>全 work item が terminal になったら、成功した work item と <strong>リカバリ不能な失敗だけ</strong>を一括で POST します。リカバリ可能な失敗で deferred になった work item は報告対象に含めません (=端末がリトライ継続中であることを意味する)。報告本文は送信前に <code>pending_report_payload</code> として保存し、報告が 201 で受理されたら applied_policy_snapshot を更新して payload を破棄します。報告自体が失敗した場合は次の機会に同じペイロードで再送します。FORCE_INSTALLED が PACKAGE_INSTALLER 経路で未達のあいだは、アプリごとに消去不可 (ongoing) の常駐通知を出します。通知本文をタップするとアプリ詳細が開き、通知の「インストール」アクションを押すとその場でダウンロードが始まります (通知に「あとで」等の他アクションは持たせません)。INSTALL が確定 (成功 or リカバリ不能失敗) したら通知を下げます。</p>
+          <p>全 work item が terminal になったら、成功した work item と <strong>リカバリ不能な失敗だけ</strong>を一括で POST します。リカバリ可能な失敗で deferred になった work item は報告対象に含めません (=端末がリトライ継続中であることを意味する)。報告本文は送信前に <code>pending_report_payload</code> として保存し、報告が 201 で受理されたら applied_policy_snapshot を更新して payload を破棄します。報告自体が失敗した場合は次の機会に同じペイロードで再送します。FORCE_INSTALLED が PACKAGE_INSTALLER 経路で未達のあいだは、アプリごとに消去不可 (ongoing) の常駐通知を出します。通知本文をタップするとアプリ詳細が開き、通知の「インストール」アクションを押すと、ダウンロード済みAPKがあれば即座に PackageInstaller UI へ進み、未取得ならその場で DOWNLOAD を開始します (通知に「あとで」等の他アクションは持たせません)。INSTALL が確定 (成功 or リカバリ不能失敗) したら通知を下げます。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -610,7 +613,7 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">active_download_jobs / downloaded_artifact_index / failed_artifacts_blacklist</th>
             <td>端末ローカル</td>
-            <td>WorkManager download worker、DL済み artifact、同じ条件では結果が変わらない恒久失敗を保持する。active_download_jobs は重複 enqueue 防止とUI反映のための一時参照で、非リトライ失敗・キャンセル、または PackageInstaller 引き渡しの終端時に消す。</td>
+            <td>WorkManager download worker、DL済み artifact、同じ条件では結果が変わらない恒久失敗を保持する。active_download_jobs は重複 enqueue 防止とUI反映のための一時参照で、非リトライ失敗・キャンセル、または PackageInstaller 引き渡しの終端時に消す。downloaded_artifact_index はユーザー確認待ちのPackageInstaller経路やAVAILABLE更新で、サーバー再接続なしに後続INSTALLへ進むために残す。</td>
           </tr>
           <tr>
             <th scope="row">applied_policy_snapshot</th>
@@ -700,7 +703,7 @@ const lifecycle = `stateDiagram-v2
             <th scope="row">AMAPI custom app install の前提を満たさず (= 軸B が <code>PACKAGE_INSTALLER</code>) + FORCE_INSTALLED 未達</th>
             <td>(該当なし)</td>
             <td>—</td>
-            <td>Sticky 通知を維持。work item は deferred (= リカバリ可能扱い)。ユーザーが通知から確認画面に進むか、次回起動で再評価。一括報告も applied 更新もしない。前提条件は <a href="/android-app-prereq/#install-axis">Androidアプリ導入の前提 #インストール経路という独立した軸</a> を参照。</td>
+            <td>到達可能なうちにAPKをDOWNLOADして downloaded_artifact_index に残し、Sticky 通知を維持。work item は deferred (= リカバリ可能扱い)。ユーザーが通知から確認画面に進むと、ダウンロード済みAPKがあればサーバー再接続なしでPackageInstaller UIへ進む。未取得ならその場でDOWNLOADを試みる。一括報告も applied 更新もしない。前提条件は <a href="/android-app-prereq/#install-axis">Androidアプリ導入の前提 #インストール経路という独立した軸</a> を参照。</td>
           </tr>
           <tr>
             <th scope="row">INSTALL がリカバリ不能な失敗 (署名不一致 / OS 非互換 / ユーザーが明示拒否)</th>
@@ -743,7 +746,7 @@ const lifecycle = `stateDiagram-v2
       <li><strong>app の hard delete で端末は UNINSTALL 候補になる。</strong> 端末から見ると Policy 不在になるため、<code>installed_by_companion=true</code> の既存インストールは UNINSTALL 候補になる。これは「配布元から全 release が削除されたアプリは配信対象外に戻す」という運用判断として扱う。</li>
       <li><strong>Policy 取得は必要なときだけ。</strong> 起動時に毎回叩かない。FCM 受信 / 手動更新 / 報告未送信 などで立つフラグやキューを見て、必要があるときだけ叩く。</li>
       <li><strong>失敗はフェーズ単位で分類する。</strong> 「リカバリ可能 → DOWNLOAD は同じ active_download_jobs を retry 対象として維持し、INSTALL は同期完了や失敗確定の永続状態を作らず次の work list 再計算でリトライ」「リカバリ不能 → failed_artifacts_blacklist に追記」。新しいエラーが出てきたらまずこの2分類に当てはめる。</li>
-      <li><strong>進行中ダウンロードは release.id + version_code で重複排除する。</strong> active_download_jobs がある間は UI の該当操作を無効化し、ローカル download state を表示する。非リトライ失敗・キャンセル、または PackageInstaller 引き渡しの終端で active_download_jobs を消す。</li>
+      <li><strong>進行中/完了済みダウンロードは release.id + version_code で重複排除する。</strong> active_download_jobs がある間は UI の該当操作を無効化し、ローカル download state を表示する。非リトライ失敗・キャンセル、または PackageInstaller 引き渡しの終端で active_download_jobs を消す。ユーザー確認待ちや AVAILABLE 更新の先取りでは downloaded_artifact_index を残し、後続INSTALLで保存済みAPKを使う。</li>
       <li><strong>サーバー報告はリカバリ不能な失敗だけ。</strong> リカバリ可能な失敗 (一時的) は端末側のリトライで吸収する。サーバー側で「同じエラーが何度も来ている」を観測したくなったら、それはリカバリ可能/不能の判定を見直す合図。</li>
       <li><strong>FCMは「再取得の合図」だけ。</strong> Policy本文をdata payloadに載せない。ユーザー向け通知も出さない。</li>
       <li><strong>fetched / applied / failed_artifacts_blacklist / pending_report_payload を別オブジェクトで持つ。</strong> 「取得済み」「恒久失敗」「未送信報告」「報告まで完了したか」を1つの値に潰さない。work item の途中進捗は永続化しない。</li>
@@ -752,7 +755,7 @@ const lifecycle = `stateDiagram-v2
       <li><strong>installed_by_companion を立てたものだけ削除する。</strong> ユーザーが他経路で入れたアプリは絶対にUNINSTALLしない。</li>
       <li><strong>結果報告はログ。Policy本体を書き換えない。</strong> device_policy_sync_reports は監査・観測用。失敗が観測されたから Policy を変えるようなフィードバックを入れない。</li>
       <li><strong>同期失敗は監視対象にする。</strong> device_policy_sync_reports は監査ログであり、集計側で失敗率・未報告率・FCM送信失敗率をダッシュボード化する。初期アラートは「1時間のリカバリ不能失敗率5%超」「FCM恒久失敗急増」を目安にする。</li>
-      <li><strong>AVAILABLEに自動インストールを足さない。</strong> ユーザー導線が前提で、確定判定にも含めない (常に skip)。</li>
+      <li><strong>AVAILABLEに自動インストールを足さない。</strong> 未インストールのAVAILABLEはユーザー導線が前提で、確定判定にも含めない (常に skip)。ただし既にインストール済みのAVAILABLEに更新がある場合は、オンプレサーバーが到達可能なうちに更新APKだけ先取りダウンロードしてよい。</li>
       <li><strong>admin による PUT は楽観的ロックを入れない。</strong> 同じ admin が冪等に PUT する前提。最後に書いた entries が current_revision になる。並列編集の整合は admin UI 側 (再 GET → 編集 → 再 PUT) で吸収する。</li>
     </ol>
     <p>判断に詰まったら <code>AGENTS.md</code> の "Data Modeling" セクション、および本ページの Data model 表を参照してください。AMAPI管理対象端末・非管理端末、および AMAPI custom app install の前提を満たすかどうかの差は「インストール経路の差 (<code>route</code>: <code>AMAPI_CUSTOM_APP</code> / <code>PACKAGE_INSTALLER</code>)」として <code>policy_sync_results</code> に記録するだけで、Policyのスキーマでは区別しません。AMAPI custom app install の前提条件は <a href="/android-app-prereq/#install-axis">Androidアプリ導入の前提 #インストール経路という独立した軸</a> を参照。</p>
