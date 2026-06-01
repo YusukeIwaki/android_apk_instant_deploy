@@ -114,6 +114,7 @@ class MainActivity : ComponentActivity() {
     private var activeRegistrationRequestKey = ""
     private var registrationDeepLinkInForeground = false
     private var pendingRequiredInstallOpen: RequiredInstallOpen? = null
+    private var recoveredDownloadRevisionId = -1
     private val fcmPolicyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (FcmMessagingService.ACTION_POLICY_UPDATED == intent.action && store.isRegistered) {
@@ -849,6 +850,13 @@ class MainActivity : ComponentActivity() {
         displayedNotifications = notificationsFor(snapshot, displayedNotifications)
         displayedHomeActiveDownloadCount = activeDownloadCount()
         setScreen(ScreenState.PolicyHome(snapshot))
+        val recoverWork = recoveredDownloadRevisionId != snapshot.revisionId
+        if (recoverWork) {
+            recoveredDownloadRevisionId = snapshot.revisionId
+        }
+        if (reconcileDownloadState(snapshot, recoverWork)) {
+            startDownloadStatusRefresh()
+        }
         syncRequiredInstallNotifications(snapshot)
         consumeRequiredInstallOpen(snapshot)
     }
@@ -1261,14 +1269,58 @@ class MainActivity : ComponentActivity() {
         return if (download != null && (download.isBlocking() || download.isDownloaded())) download else null
     }
 
+    private fun reconcileDownloadState(snapshot: ApiClient.PolicySnapshot, recoverWork: Boolean): Boolean {
+        var changed = false
+        snapshot.entries.forEach { entry ->
+            val download = downloadStore.find(entry.releaseId, entry.versionCode) ?: return@forEach
+            val installState = appInstallStateFor(entry)
+            val actionRequired = installActionRequired(entry, installState)
+            val apkFile = File(download.filePath)
+
+            if (!actionRequired) {
+                ApkDownloadManager().cleanup(this, download)
+                changed = true
+                return@forEach
+            }
+
+            if (download.state == ApkDownloadStore.STATE_INSTALLING) {
+                if (apkFile.isFile && apkFile.length() > 0) {
+                    downloadStore.markDownloaded(entry.releaseId, entry.versionCode, apkFile.length())
+                } else {
+                    ApkDownloadManager().cleanup(this, download)
+                }
+                changed = true
+                return@forEach
+            }
+
+            if (download.isDownloaded && (!apkFile.isFile || apkFile.length() <= 0)) {
+                ApkDownloadManager().cleanup(this, download)
+                changed = true
+                return@forEach
+            }
+
+            if (!download.isBlocking() || !recoverWork) {
+                return@forEach
+            }
+
+            try {
+                ApkDownloadManager().recover(this, download, download.installAfterDownload)
+                changed = true
+            } catch (_: RuntimeException) {
+            }
+        }
+        return changed
+    }
+
     private fun refreshDownloadStatusViews() {
         downloadRefreshTick += 1
-        val activeDownloads = activeDownloadCount()
         val snapshot = displayedPolicySnapshot
         if (snapshot != null) {
+            reconcileDownloadState(snapshot, false)
             displayedNotifications = notificationsFor(snapshot, displayedNotifications)
             syncRequiredInstallNotifications(snapshot)
         }
+        val activeDownloads = activeDownloadCount()
         if (showingPolicyHome && snapshot != null && activeDownloads != displayedHomeActiveDownloadCount) {
             showPolicy(snapshot)
         }
@@ -1570,7 +1622,9 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(8.dp))
                 PrimaryButton("はじめる") {
                     requestPostNotifications()
-                    requestInstallPermissionIfNeeded()
+                    if (!canUseAmapiCustomAppInstall()) {
+                        requestInstallPermissionIfNeeded()
+                    }
                     showHome(true)
                 }
             }

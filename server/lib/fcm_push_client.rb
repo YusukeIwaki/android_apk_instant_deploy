@@ -38,7 +38,7 @@ module ApkInstantDeploy
       raise Error, "fcm_push_token_value is required" if @fcm_push_token_value.empty?
 
       credentials = load_credentials
-      access_token = self.class.access_token(credentials, @credentials_path)
+      access_token = self.class.access_token(credentials, credentials_cache_id)
       project_id = URI.encode_www_form_component(credentials.fetch("project_id"))
       uri = URI("https://fcm.googleapis.com/v1/projects/#{project_id}/messages:send")
       post_json(
@@ -62,6 +62,11 @@ module ApkInstantDeploy
         ENV["GOOGLE_APPLICATION_CREDENTIALS"],
         DEFAULT_CREDENTIALS_PATH
       ].find { |path| path && !path.strip.empty? }
+    end
+
+    def self.credentials_content
+      content = ENV["FCM_SERVICE_ACCOUNT_JSON_CONTENT"].to_s
+      content.strip.empty? ? nil : content
     end
 
     def self.access_token(credentials, credentials_path)
@@ -140,12 +145,21 @@ module ApkInstantDeploy
 
     private
 
+    def credentials_cache_id
+      self.class.credentials_content ? "env:FCM_SERVICE_ACCOUNT_JSON_CONTENT" : @credentials_path
+    end
+
     def load_credentials
-      unless @credentials_path && File.file?(@credentials_path)
-        raise NotConfigured, "FCM service account JSON is not configured"
+      raw = self.class.credentials_content
+      unless raw
+        unless @credentials_path && File.file?(@credentials_path)
+          raise NotConfigured, "FCM service account JSON is not configured"
+        end
+
+        raw = File.read(@credentials_path)
       end
 
-      credentials = JSON.parse(File.read(@credentials_path))
+      credentials = JSON.parse(raw)
       %w[project_id client_email private_key].each do |key|
         raise NotConfigured, "FCM service account JSON is missing #{key}" if credentials[key].to_s.empty?
       end

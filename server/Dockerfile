@@ -1,4 +1,4 @@
-FROM ruby:4.0-alpine
+FROM ruby:4.0-slim
 
 WORKDIR /app
 
@@ -14,7 +14,21 @@ ENV BUNDLE_WITHOUT="development:test" \
     PORT="4567" \
     RACK_ENV="production"
 
-RUN apk add --no-cache bash build-base ca-certificates curl mariadb-dev openjdk17-jre unzip \
+# Debian (glibc) base so the Android SDK build-tools binaries (aapt/aapt2),
+# which are linked against glibc + libstdc++, actually execute. On a musl
+# (Alpine) base they fail to exec with ENOENT.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       bash \
+       build-essential \
+       ca-certificates \
+       curl \
+       default-jre-headless \
+       default-libmysqlclient-dev \
+       libstdc++6 \
+       unzip \
+       zlib1g \
+  && rm -rf /var/lib/apt/lists/* \
   && mkdir -p "${ANDROID_HOME}/cmdline-tools/latest" \
   && curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" -o /tmp/android-commandline-tools.zip \
   && unzip -q /tmp/android-commandline-tools.zip -d /tmp/android-commandline-tools \
@@ -30,4 +44,4 @@ COPY . .
 
 EXPOSE 4567
 
-CMD ["bundle", "exec", "rackup", "-o", "0.0.0.0", "-p", "4567", "config.ru"]
+CMD ["bundle", "exec", "rackup", "-o", "::", "-p", "4567", "config.ru"]

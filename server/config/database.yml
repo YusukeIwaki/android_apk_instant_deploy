@@ -1,3 +1,5 @@
+<% ssl_ca = ENV["DATABASE_SSL_CA"].to_s.strip %>
+<% ssl_default_file = ENV["DATABASE_SSL_DEFAULT_FILE"].to_s.strip %>
 default: &default
   adapter: mysql2
   database: <%= ENV.fetch("DATABASE_NAME", "apk_instant_deploy") %>
@@ -6,7 +8,12 @@ default: &default
   password: <%= ENV.fetch("DATABASE_PASSWORD", "") %>
   pool: <%= ENV.fetch("DATABASE_POOL", "5") %>
   port: <%= ENV.fetch("DATABASE_PORT", "3306") %>
-  sslca: <%= ENV["DATABASE_SSL_CA"] %>
+  sslca: <%= ssl_ca unless ssl_ca.empty? %>
+  ssl_mode: <%= ENV.fetch("DATABASE_SSL_MODE", ssl_ca.empty? ? "disabled" : "verify_ca") %>
+<% unless ssl_default_file.empty? %>
+  default_file: <%= ssl_default_file %>
+  default_group: <%= ENV.fetch("DATABASE_SSL_DEFAULT_GROUP", "client") %>
+<% end %>
   username: <%= ENV.fetch("DATABASE_USERNAME", "root") %>
 
 development:

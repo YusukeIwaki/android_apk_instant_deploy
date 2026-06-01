@@ -24,6 +24,21 @@ final class ApkDownloadManager {
         return enqueue(context, packageName, releaseId, versionCode, false);
     }
 
+    ApkDownloadStore.PendingApkDownload recover(Context context, ApkDownloadStore.PendingApkDownload download, boolean installAfterDownload) {
+        Context appContext = context.getApplicationContext();
+        ApkDownloadStore store = new ApkDownloadStore(appContext);
+        String workName = workName(download.releaseId, download.versionCode);
+        File apkFile = new File(download.filePath);
+        if (!installAfterDownload && apkFile.isFile() && apkFile.length() > 0) {
+            store.saveDownloaded(download.packageName, download.releaseId, download.versionCode, workName, apkFile.getAbsolutePath(), apkFile.length());
+            return store.find(download.releaseId, download.versionCode);
+        }
+
+        store.saveEnqueued(download.packageName, download.releaseId, download.versionCode, workName, apkFile.getAbsolutePath(), installAfterDownload);
+        enqueueWork(appContext, download.packageName, download.releaseId, download.versionCode, apkFile, installAfterDownload);
+        return store.find(download.releaseId, download.versionCode);
+    }
+
     private ApkDownloadStore.PendingApkDownload enqueue(Context context, String packageName, int releaseId, int versionCode, boolean installAfterDownload) {
         Context appContext = context.getApplicationContext();
         ApkDownloadStore store = new ApkDownloadStore(appContext);
@@ -34,8 +49,17 @@ final class ApkDownloadManager {
 
         String workName = workName(releaseId, versionCode);
         File apkFile = apkFile(appContext, packageName, releaseId, versionCode);
-        store.saveEnqueued(packageName, releaseId, versionCode, workName, apkFile.getAbsolutePath());
+        if (!installAfterDownload && apkFile.isFile() && apkFile.length() > 0) {
+            store.saveDownloaded(packageName, releaseId, versionCode, workName, apkFile.getAbsolutePath(), apkFile.length());
+            return store.find(releaseId, versionCode);
+        }
 
+        store.saveEnqueued(packageName, releaseId, versionCode, workName, apkFile.getAbsolutePath(), installAfterDownload);
+        enqueueWork(appContext, packageName, releaseId, versionCode, apkFile, installAfterDownload);
+        return store.find(releaseId, versionCode);
+    }
+
+    private void enqueueWork(Context appContext, String packageName, int releaseId, int versionCode, File apkFile, boolean installAfterDownload) {
         Data input = new Data.Builder()
                 .putString(ApkDownloadWorker.KEY_PACKAGE_NAME, packageName)
                 .putInt(ApkDownloadWorker.KEY_RELEASE_ID, releaseId)
@@ -54,10 +78,9 @@ final class ApkDownloadManager {
                 .build();
 
         try {
-            WorkManager.getInstance(appContext).enqueueUniqueWork(workName, ExistingWorkPolicy.KEEP, request);
-            return store.find(releaseId, versionCode);
+            WorkManager.getInstance(appContext).enqueueUniqueWork(workName(releaseId, versionCode), ExistingWorkPolicy.KEEP, request);
         } catch (RuntimeException e) {
-            store.remove(releaseId, versionCode);
+            new ApkDownloadStore(appContext).remove(releaseId, versionCode);
             throw e;
         }
     }

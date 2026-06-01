@@ -545,7 +545,7 @@ const componentBlocks = `flowchart LR
         <tbody>
           <tr><td>Session 開始失敗 (<code>AMAPI_CUSTOM_APP</code> 経路の一時エラー / "in use" / IssueCommand timeout)</td><td>リカバリ可能</td><td>永続化しない (deferred)。次のトリガで再試行。downloaded_artifact_index にあれば DOWNLOAD はスキップ。</td></tr>
           <tr><td><code>PACKAGE_INSTALLER</code> 経路で FORCE_INSTALLED が未達 (= AMAPI custom app install の前提を満たさない場合の通常状態)</td><td>リカバリ可能</td><td>Notification Controller に Sticky 通知を依頼。永続データには触らない。同じキーで何度依頼しても通知は1個に集約される (= ユーザーが拒否した直後に再表示される可能性は許容)。</td></tr>
-          <tr><td>STATUS_FAILURE_BLOCKED / ユーザー1回キャンセル</td><td>リカバリ可能</td><td>通知を維持して次のトリガを待つ。永続化しない。</td></tr>
+          <tr><td>STATUS_FAILURE_BLOCKED / ユーザー1回キャンセル</td><td>リカバリ可能</td><td>通知を維持して次のトリガを待つ。APK bytes が残っていれば downloaded_artifact_index に戻し、次回は保存済みAPKから再開する。</td></tr>
           <tr><td>STATUS_FAILURE_INCOMPATIBLE (minSdk 未達 / abi 不適合)</td><td>リカバリ不能</td><td>blacklist 追記 (code=INCOMPATIBLE_OS)。</td></tr>
           <tr><td>STATUS_FAILURE_CONFLICT (署名不一致)</td><td>リカバリ不能</td><td>blacklist 追記 (code=SIGNATURE_MISMATCH)。管理者に再リリース依頼。</td></tr>
           <tr><td>STATUS_FAILURE_INVALID / VERSION_DOWNGRADE</td><td>リカバリ不能</td><td>blacklist 追記 (code=VERSION_DOWNGRADE)。</td></tr>
@@ -725,9 +725,9 @@ const componentBlocks = `flowchart LR
           <tr><td>Fetch</td><td>5xx / IO / TLS</td><td>pending_policy_fetch=true のまま (他は触らない)</td><td>FCM / 明示起動 / 手動更新 / ネット復帰</td></tr>
           <tr><td>Fetch</td><td>401</td><td>auth=invalid に切替。pending_policy_fetch は維持。</td><td>再登録完了</td></tr>
           <tr><td>Fetch</td><td>400/404 (恒久)</td><td>pending_policy_fetch=false に下げる。</td><td>クライアント更新</td></tr>
-          <tr><td>Download</td><td>artifact_url 期限切れ / 5xx / IO / 部分DL / 容量一時不足</td><td>active_download_jobs を retry 対象として維持</td><td>WorkManager が同じ work を retry。worker は次回実行で artifact_url を取り直し、同じ work item として再現</td></tr>
+          <tr><td>Download</td><td>artifact_url 期限切れ / 5xx / IO / 部分DL / 容量一時不足 / プロセス終了で WorkManager との対応が不明</td><td>active_download_jobs を retry / 起動時復旧対象として維持</td><td>WorkManager が同じ work を retry。アプリ起動時は同じ unique work 名を <code>KEEP</code> で再投入し、worker は次回実行で artifact_url を取り直して同じ work item として再現</td></tr>
           <tr><td>Download</td><td>404 / sha256 不一致</td><td>failed_artifacts_blacklist に追記</td><td>次の fetch で release.id か version_code が変わるまで再試行しない</td></tr>
-          <tr><td>Install</td><td><code>PACKAGE_INSTALLER</code> 経路で必須未達 / 1回キャンセル / <code>AMAPI_CUSTOM_APP</code> 経路のSession一時失敗 / 容量一時不足</td><td>何も書かない (通知は Notification Controller が管理)</td><td>ユーザー操作 / 次のトリガ</td></tr>
+          <tr><td>Install</td><td><code>PACKAGE_INSTALLER</code> 経路で必須未達 / 1回キャンセル / <code>AMAPI_CUSTOM_APP</code> 経路のSession一時失敗 / 容量一時不足</td><td>キャンセル時はAPK bytesが残っていれば downloaded_artifact_index に戻す。その他のリカバリ可能失敗では failed_artifacts_blacklist には書かない (通知は Notification Controller が管理)</td><td>ユーザー操作 / 次のトリガ</td></tr>
           <tr><td>Install</td><td>署名不一致 / 非互換 / VERSION_DOWNGRADE / UNINSTALL 拒否</td><td>failed_artifacts_blacklist に追記、通知は解除</td><td>次の fetch で release.id が変わるまで再試行しない</td></tr>
           <tr><td>Report</td><td>5xx / IO</td><td>pending_report_payload を保持、applied は未更新</td><td>次のトリガ (同 payload を再送)</td></tr>
           <tr><td>Report</td><td>4xx (revision 不存在)</td><td>payload 破棄、applied を fetched で上書き</td><td>—</td></tr>

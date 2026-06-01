@@ -354,7 +354,7 @@ const lifecycle = `stateDiagram-v2
       </div>
       <div>
         <dt>active_download_jobs / downloaded_artifact_index / failed_artifacts_blacklist (端末ローカル)</dt>
-        <dd><code>active_download_jobs</code> は WorkManager unique work を release.id + version_code に紐づける一時的な参照で、同じ artifact の重複ダウンロードを防ぎ、UI に進行中状態を出すためだけに使う。download worker は短命 artifact_url を各 retry で取り直し、OkHttp で app-private files に保存する。worker が非リトライ失敗・キャンセル、または PackageInstaller 引き渡しが終端した時点で消す。PACKAGE_INSTALLER 経路でユーザー確認待ちにする場合は、ダウンロード完了時点で <code>downloaded_artifact_index</code> に移し、APK bytes を app-private files に残す。<code>downloaded_artifact_index</code> は再利用できる artifact、<code>failed_artifacts_blacklist</code> は「同じ条件で結果が変わらない」と確定した失敗事実だけを保持する。リカバリ可能な失敗では active_download_jobs を retry 対象の一時参照として残し、次の worker 実行で fetched_policy_snapshot・installed_package_index・failed_artifacts_blacklist から work list を再計算する。</dd>
+        <dd><code>active_download_jobs</code> は WorkManager unique work を release.id + version_code に紐づける一時的な参照で、同じ artifact の重複ダウンロードを防ぎ、UI に進行中状態を出すためだけに使う。download worker は短命 artifact_url を各 retry で取り直し、OkHttp で app-private files に保存する。worker が非リトライ失敗または明示キャンセルになった時点で消す。active_download_jobs には「DOWNLOAD後にINSTALLへ進めるか」も保存し、アプリ起動時やPolicy表示時に端末の実インストール状態と突き合わせる。必要 version が既に入っていれば stale record を消し、<code>INSTALLING</code> のまま対象アプリが消えていてAPK bytesが残る場合は <code>downloaded_artifact_index</code> に戻す。さらに同じ WorkManager unique work 名を <code>ExistingWorkPolicy.KEEP</code> で再投入して、失われた途中処理だけを復旧する。PACKAGE_INSTALLER 経路でユーザー確認待ちにする場合は、ダウンロード完了時点で <code>downloaded_artifact_index</code> に移し、APK bytes を app-private files に残す。ユーザーがPackageInstaller確認UIをキャンセルした場合も <code>downloaded_artifact_index</code> に戻し、次回は保存済みAPKから再開する。<code>downloaded_artifact_index</code> は再利用できる artifact、<code>failed_artifacts_blacklist</code> は「同じ条件で結果が変わらない」と確定した失敗事実だけを保持する。リカバリ可能な失敗では active_download_jobs を retry 対象の一時参照として残し、次の worker 実行で fetched_policy_snapshot・installed_package_index・failed_artifacts_blacklist から work list を再計算する。</dd>
       </div>
       <div>
         <dt>pending_report_payload (端末ローカル)</dt>
@@ -613,7 +613,7 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">active_download_jobs / downloaded_artifact_index / failed_artifacts_blacklist</th>
             <td>端末ローカル</td>
-            <td>WorkManager download worker、DL済み artifact、同じ条件では結果が変わらない恒久失敗を保持する。active_download_jobs は重複 enqueue 防止とUI反映のための一時参照で、非リトライ失敗・キャンセル、または PackageInstaller 引き渡しの終端時に消す。downloaded_artifact_index はユーザー確認待ちのPackageInstaller経路やAVAILABLE更新で、サーバー再接続なしに後続INSTALLへ進むために残す。</td>
+            <td>WorkManager download worker、DL済み artifact、同じ条件では結果が変わらない恒久失敗を保持する。active_download_jobs は重複 enqueue 防止とUI反映のための一時参照で、起動時の復旧対象でもある。非リトライ失敗・明示キャンセル・インストール成功・リカバリ不能なインストール失敗では消す。downloaded_artifact_index はユーザー確認待ちのPackageInstaller経路、PackageInstaller UI のユーザーキャンセル、AVAILABLE更新で、サーバー再接続なしに後続INSTALLへ進むために残す。</td>
           </tr>
           <tr>
             <th scope="row">applied_policy_snapshot</th>
@@ -745,8 +745,9 @@ const lifecycle = `stateDiagram-v2
       <li><strong>app が消えた package を再アップロードしたら別の app.id になる。</strong> 同じ <code>package_name</code> でも別 id。古い entry は既に CASCADE で消えているので、配信を続けたい場合は admin が新しい app.id で entry を作り直す。</li>
       <li><strong>app の hard delete で端末は UNINSTALL 候補になる。</strong> 端末から見ると Policy 不在になるため、<code>installed_by_companion=true</code> の既存インストールは UNINSTALL 候補になる。これは「配布元から全 release が削除されたアプリは配信対象外に戻す」という運用判断として扱う。</li>
       <li><strong>Policy 取得は必要なときだけ。</strong> 起動時に毎回叩かない。FCM 受信 / 手動更新 / 報告未送信 などで立つフラグやキューを見て、必要があるときだけ叩く。</li>
+      <li><strong>起動時はローカルの途中状態を復旧する。</strong> Policyを表示できる時点で active_download_jobs を走査し、端末の実インストール状態と照合する。必要 version が既に入っていれば stale record を掃除し、<code>INSTALLING</code> のまま対象アプリが消えていてAPK bytesが残る場合は downloaded_artifact_index に戻す。そのうえで対応する WorkManager unique work を <code>KEEP</code> で再投入する。WorkManager側でまだ生きている work は増やさず、プロセス終了などで失われた work だけ再開する。</li>
       <li><strong>失敗はフェーズ単位で分類する。</strong> 「リカバリ可能 → DOWNLOAD は同じ active_download_jobs を retry 対象として維持し、INSTALL は同期完了や失敗確定の永続状態を作らず次の work list 再計算でリトライ」「リカバリ不能 → failed_artifacts_blacklist に追記」。新しいエラーが出てきたらまずこの2分類に当てはめる。</li>
-      <li><strong>進行中/完了済みダウンロードは release.id + version_code で重複排除する。</strong> active_download_jobs がある間は UI の該当操作を無効化し、ローカル download state を表示する。非リトライ失敗・キャンセル、または PackageInstaller 引き渡しの終端で active_download_jobs を消す。ユーザー確認待ちや AVAILABLE 更新の先取りでは downloaded_artifact_index を残し、後続INSTALLで保存済みAPKを使う。</li>
+      <li><strong>進行中/完了済みダウンロードは release.id + version_code で重複排除する。</strong> active_download_jobs がある間は UI の該当操作を無効化し、ローカル download state を表示する。非リトライ失敗・明示キャンセル・インストール成功・リカバリ不能なインストール失敗では active_download_jobs を消す。ユーザー確認待ち、PackageInstaller UI のユーザーキャンセル、AVAILABLE 更新の先取りでは downloaded_artifact_index を残し、後続INSTALLで保存済みAPKを使う。</li>
       <li><strong>サーバー報告はリカバリ不能な失敗だけ。</strong> リカバリ可能な失敗 (一時的) は端末側のリトライで吸収する。サーバー側で「同じエラーが何度も来ている」を観測したくなったら、それはリカバリ可能/不能の判定を見直す合図。</li>
       <li><strong>FCMは「再取得の合図」だけ。</strong> Policy本文をdata payloadに載せない。ユーザー向け通知も出さない。</li>
       <li><strong>fetched / applied / failed_artifacts_blacklist / pending_report_payload を別オブジェクトで持つ。</strong> 「取得済み」「恒久失敗」「未送信報告」「報告まで完了したか」を1つの値に潰さない。work item の途中進捗は永続化しない。</li>
