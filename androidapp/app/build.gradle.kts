@@ -22,8 +22,8 @@ android {
         applicationIdSuffix = ".alpha"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.1.3"
     }
 
     compileOptions {
@@ -34,6 +34,10 @@ android {
     buildFeatures {
         buildConfig = true
         compose = true
+    }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
 
     signingConfigs {
@@ -68,4 +72,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.3.0")
     implementation("com.squareup.okhttp3:logging-interceptor:5.3.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.work:work-testing:2.11.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver3:5.3.0")
+    testImplementation("org.robolectric:robolectric:4.15.1")
 }

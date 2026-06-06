@@ -19,6 +19,7 @@ import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -76,6 +77,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import org.json.JSONException
 import java.io.File
 import java.io.FileInputStream
@@ -157,6 +159,14 @@ class MainActivity : ComponentActivity() {
         downloadStore = ApkDownloadStore(this)
         registerFcmPolicyReceiver()
         registerRestrictionsReceiver()
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    onBack()
+                }
+            },
+        )
         setContent {
             AppTheme {
                 AppScaffold(screenState, downloadRefreshTick)
@@ -216,11 +226,6 @@ class MainActivity : ComponentActivity() {
         unregisterRestrictionsReceiver()
         executor.shutdownNow()
         super.onDestroy()
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        onBack()
     }
 
     private fun handleIntent(intent: Intent) {
@@ -615,11 +620,22 @@ class MainActivity : ComponentActivity() {
 
     private fun showHome(forceFetch: Boolean) {
         setScreen(ScreenState.Loading("確認中", "配信設定を確認しています。", true))
-        if (forceFetch || store.pendingPolicyFetch() || store.fetchedPolicyJson().isEmpty()) {
-            fetchPolicy()
+        val fetchedPolicyJson = store.fetchedPolicyJson()
+        if (forceFetch || store.pendingPolicyFetch() || fetchedPolicyJson.isEmpty()) {
+            if (!forceFetch && store.pendingPolicyFetch() && fetchedPolicyJson.isNotEmpty()) {
+                try {
+                    showPolicy(ApiClient.parsePolicy(fetchedPolicyJson))
+                    fetchPolicy(showLoadingScreen = false, keepCurrentOnFailure = true)
+                    fetchNotificationsQuietly()
+                } catch (_: JSONException) {
+                    fetchPolicy()
+                }
+            } else {
+                fetchPolicy()
+            }
         } else {
             try {
-                showPolicy(ApiClient.parsePolicy(store.fetchedPolicyJson()))
+                showPolicy(ApiClient.parsePolicy(fetchedPolicyJson))
                 fetchNotificationsQuietly()
             } catch (_: JSONException) {
                 fetchPolicy()
@@ -627,8 +643,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun fetchPolicy() {
-        showLoading("配信設定を確認しています")
+    private fun fetchPolicy(showLoadingScreen: Boolean = true, keepCurrentOnFailure: Boolean = false) {
+        if (showLoadingScreen) {
+            showLoading("配信設定を確認しています")
+        }
         executor.execute {
             try {
                 val snapshot = apiClient.fetchPolicy()
@@ -642,14 +660,18 @@ class MainActivity : ComponentActivity() {
                 mainHandler.post {
                     if (e.code == "DEVICE_AUTH_REQUIRED") {
                         showRegisterBlocked("再登録が必要です", "管理者に新しい登録リンクを依頼してください。")
-                    } else {
+                    } else if (!keepCurrentOnFailure) {
                         showOffline()
                     }
                 }
             } catch (_: IOException) {
-                mainHandler.post { showOffline() }
+                if (!keepCurrentOnFailure) {
+                    mainHandler.post { showOffline() }
+                }
             } catch (_: JSONException) {
-                mainHandler.post { showOffline() }
+                if (!keepCurrentOnFailure) {
+                    mainHandler.post { showOffline() }
+                }
             }
         }
     }
@@ -698,12 +720,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         val filter = IntentFilter(FcmMessagingService.ACTION_POLICY_UPDATED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(fcmPolicyReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(fcmPolicyReceiver, filter)
-        }
+        ContextCompat.registerReceiver(this, fcmPolicyReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         fcmPolicyReceiverRegistered = true
     }
 
@@ -720,12 +737,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         val filter = IntentFilter(Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(restrictionsReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(restrictionsReceiver, filter)
-        }
+        ContextCompat.registerReceiver(this, restrictionsReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         restrictionsReceiverRegistered = true
     }
 

@@ -48,7 +48,7 @@ public final class FcmMessagingService extends FirebaseMessagingService {
     }
 
     private void markPolicyFetchPending() {
-        new AppStore(this).setPendingPolicyFetch(true);
+        new PolicySyncManager().markPendingAndEnqueue(this);
         sendBroadcast(new Intent(ACTION_POLICY_UPDATED).setPackage(getPackageName()));
     }
 }
