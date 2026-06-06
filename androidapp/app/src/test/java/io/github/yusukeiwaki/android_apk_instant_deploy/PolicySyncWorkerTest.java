@@ -64,6 +64,7 @@ public final class PolicySyncWorkerTest {
         assertNotNull(download);
         assertEquals("com.example.required", download.packageName);
         assertEquals(ApkDownloadStore.STATE_ENQUEUED, download.state);
+        assertFalse(download.allowPackageInstaller);
 
         List<WorkInfo> workInfos = WorkManager.getInstance(context)
                 .getWorkInfosForUniqueWork(ApkDownloadManager.workName(301, 7))

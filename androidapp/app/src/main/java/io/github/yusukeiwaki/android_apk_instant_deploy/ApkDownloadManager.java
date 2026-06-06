@@ -17,11 +17,15 @@ final class ApkDownloadManager {
     private static final String DOWNLOAD_DIR = "apk-downloads";
 
     ApkDownloadStore.PendingApkDownload enqueue(Context context, String packageName, int releaseId, int versionCode) {
-        return enqueue(context, packageName, releaseId, versionCode, true);
+        return enqueue(context, packageName, releaseId, versionCode, true, true);
+    }
+
+    ApkDownloadStore.PendingApkDownload enqueueManagedInstall(Context context, String packageName, int releaseId, int versionCode) {
+        return enqueue(context, packageName, releaseId, versionCode, true, false);
     }
 
     ApkDownloadStore.PendingApkDownload enqueueDownloadOnly(Context context, String packageName, int releaseId, int versionCode) {
-        return enqueue(context, packageName, releaseId, versionCode, false);
+        return enqueue(context, packageName, releaseId, versionCode, false, false);
     }
 
     ApkDownloadStore.PendingApkDownload recover(Context context, ApkDownloadStore.PendingApkDownload download, boolean installAfterDownload) {
@@ -34,16 +38,17 @@ final class ApkDownloadManager {
             return store.find(download.releaseId, download.versionCode);
         }
 
-        store.saveEnqueued(download.packageName, download.releaseId, download.versionCode, workName, apkFile.getAbsolutePath(), installAfterDownload);
-        enqueueWork(appContext, download.packageName, download.releaseId, download.versionCode, apkFile, installAfterDownload);
+        boolean allowPackageInstaller = installAfterDownload && download.allowPackageInstaller;
+        store.saveEnqueued(download.packageName, download.releaseId, download.versionCode, workName, apkFile.getAbsolutePath(), installAfterDownload, allowPackageInstaller);
+        enqueueWork(appContext, download.packageName, download.releaseId, download.versionCode, apkFile, installAfterDownload, allowPackageInstaller);
         return store.find(download.releaseId, download.versionCode);
     }
 
-    private ApkDownloadStore.PendingApkDownload enqueue(Context context, String packageName, int releaseId, int versionCode, boolean installAfterDownload) {
+    private ApkDownloadStore.PendingApkDownload enqueue(Context context, String packageName, int releaseId, int versionCode, boolean installAfterDownload, boolean allowPackageInstaller) {
         Context appContext = context.getApplicationContext();
         ApkDownloadStore store = new ApkDownloadStore(appContext);
         ApkDownloadStore.PendingApkDownload existing = store.find(releaseId, versionCode);
-        if (existing != null && (existing.isBlocking() || (existing.isDownloaded() && !installAfterDownload))) {
+        if (existing != null && (existing.isBlocking() || existing.isDownloaded())) {
             return existing;
         }
 
@@ -54,18 +59,19 @@ final class ApkDownloadManager {
             return store.find(releaseId, versionCode);
         }
 
-        store.saveEnqueued(packageName, releaseId, versionCode, workName, apkFile.getAbsolutePath(), installAfterDownload);
-        enqueueWork(appContext, packageName, releaseId, versionCode, apkFile, installAfterDownload);
+        store.saveEnqueued(packageName, releaseId, versionCode, workName, apkFile.getAbsolutePath(), installAfterDownload, allowPackageInstaller);
+        enqueueWork(appContext, packageName, releaseId, versionCode, apkFile, installAfterDownload, allowPackageInstaller);
         return store.find(releaseId, versionCode);
     }
 
-    private void enqueueWork(Context appContext, String packageName, int releaseId, int versionCode, File apkFile, boolean installAfterDownload) {
+    private void enqueueWork(Context appContext, String packageName, int releaseId, int versionCode, File apkFile, boolean installAfterDownload, boolean allowPackageInstaller) {
         Data input = new Data.Builder()
                 .putString(ApkDownloadWorker.KEY_PACKAGE_NAME, packageName)
                 .putInt(ApkDownloadWorker.KEY_RELEASE_ID, releaseId)
                 .putInt(ApkDownloadWorker.KEY_VERSION_CODE, versionCode)
                 .putString(ApkDownloadWorker.KEY_FILE_PATH, apkFile.getAbsolutePath())
                 .putBoolean(ApkDownloadWorker.KEY_INSTALL_AFTER_DOWNLOAD, installAfterDownload)
+                .putBoolean(ApkDownloadWorker.KEY_ALLOW_PACKAGE_INSTALLER, allowPackageInstaller)
                 .build();
         Constraints constraints = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)

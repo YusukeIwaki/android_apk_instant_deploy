@@ -384,7 +384,7 @@ const notificationFlow = `flowchart TB
         </div>
         <div class="screen-notes">
           <h3 id="screen-install-notification">通知 — 必須アプリのインストール</h3>
-          <p>サイレントインストール経路 (AMAPI_CUSTOM_APP) が使えず、ユーザー確認 (PACKAGE_INSTALLER) が必要で必須アプリが未達のときだけ出すsticky通知。<strong>「ユーザーが拒否したら静かに引き下がる」設計ではなく、「なるべくインストールしてもらう」設計</strong>。管理者が配信したアプリは業務上必要であり、利用者の拒否で長期間未インストールに留まる状態は管理者にとって想定外となる。次回の同期トリガで条件 (FORCE_INSTALLED 未達 + 経路が <code>PACKAGE_INSTALLER</code>) が変わっていなければ、通知は再度表示される。同じ項目は <code>GET /api/notifications</code> 経由でアプリ内「通知一覧」にも sticky で並ぶ。</p>
+          <p>サイレントインストール経路 (AMAPI_CUSTOM_APP) が使えず、ユーザー確認 (PACKAGE_INSTALLER) が必要で必須アプリが未達のときだけ出すsticky通知。<strong>「ユーザーが拒否したら静かに引き下がる」設計ではなく、「なるべくインストールしてもらう」設計</strong>。管理者が配信したアプリは業務上必要であり、利用者の拒否で長期間未インストールに留まる状態は管理者にとって想定外となる。次回の同期トリガで条件 (FORCE_INSTALLED 未達 + 経路が <code>PACKAGE_INSTALLER</code>) が変わっていなければ、通知は再度表示される。ダウンロード済みAPKが残っていれば再ダウンロードせず、保存済みAPKからPackageInstaller確認を再提示する。同じ項目は <code>GET /api/notifications</code> 経由でアプリ内「通知一覧」にも sticky で並ぶ。</p>
           <dl class="key-value-list screen-meta">
             <div><dt>本文タップ</dt><dd>対象アプリの「アプリ詳細」に着地し、そのまま「インストール」または「アップデート」を押せる状態にする。</dd></div>
             <div><dt>アクション</dt><dd>「インストール」はアプリ画面を開かず処理を進める。</dd></div>
@@ -685,7 +685,7 @@ const notificationFlow = `flowchart TB
       <li><strong>ホームは「ポリシーで指定された全アプリの一覧」。</strong> 必須・任意を行で区別せず、行末の「必須」チップだけで識別する。「今この行に対応が必要か」は通知一覧とOS通知で表す。ホームには状態見出しや件数サマリを持たない。</li>
       <li><strong>デバイス情報・サーバー情報・アプリ情報はホーム下部の List に畳む。</strong> 独立した「設定」画面は持たない。サーバーの向き先はホストだけを表示し、トークンや revision のような内部値は出さない。</li>
       <li><strong>個別アプリの操作はアプリ詳細に閉じる。</strong> 一括操作画面（旧「必要な対応」「エラーと再試行」）は作らず、行タップで詳細に入って 1 アプリずつ進める。アプリ詳細の CTA は Google Play と同じ並び（任意・更新あり = 「アンインストール」セカンダリ + 「アップデート」プライマリ、必須 = 「アンインストール」非表示）。</li>
-      <li><strong>ダウンロード中は同じ操作を無効化する。</strong> WorkManager の unique work とローカル download state を反映し、同じ release の二重ダウンロードを UI から起こせないようにする。詳細画面の CTA も「ダウンロード中」表示に切り替える。</li>
+      <li><strong>ダウンロード中は同じ操作を無効化する。</strong> WorkManager の unique work とローカル download state を反映し、同じ release の二重ダウンロードを UI から起こせないようにする。詳細画面の CTA も「ダウンロード中」表示に切り替える。ダウンロード済みの場合は「ダウンロード待機中」に戻さず、次の操作で保存済みAPKからインストール確認へ進める。</li>
       <li><strong>通知は1集合・2窓口。</strong> 「OS 通知 (sticky)」と「アプリ内 通知一覧 (ベル)」は同じ <code>GET /api/notifications</code> の集合を表示する別窓口。条件が解消したら両方から自動で消える。利用者側の「ミュート」「次から表示しない」は提供しない。</li>
       <li><strong>OS 通知の本文タップはアプリ詳細に着地する。</strong> 「何のアプリに何をすべきか」が 1 タップで作業画面に直結することを優先し、中継のサマリ画面は作らない。</li>
       <li><strong>リカバリ可能な失敗は行動に変換する。</strong> 通信再試行、権限許可のような操作にし、内部エラーコードをそのまま見せない。</li>

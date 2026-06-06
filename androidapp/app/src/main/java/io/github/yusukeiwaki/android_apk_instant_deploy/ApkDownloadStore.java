@@ -19,6 +19,7 @@ final class ApkDownloadStore {
     private static final String KEY_FILE_PATH_PREFIX = "file_path:";
     private static final String KEY_STATE_PREFIX = "state:";
     private static final String KEY_INSTALL_AFTER_DOWNLOAD_PREFIX = "install_after_download:";
+    private static final String KEY_ALLOW_PACKAGE_INSTALLER_PREFIX = "allow_package_installer:";
     private static final String KEY_DOWNLOADED_BYTES_PREFIX = "downloaded_bytes:";
     private static final String KEY_TOTAL_BYTES_PREFIX = "total_bytes:";
     private static final String KEY_UPDATED_AT_PREFIX = "updated_at:";
@@ -30,6 +31,10 @@ final class ApkDownloadStore {
     }
 
     void saveEnqueued(String packageName, int releaseId, int versionCode, String workName, String filePath, boolean installAfterDownload) {
+        saveEnqueued(packageName, releaseId, versionCode, workName, filePath, installAfterDownload, installAfterDownload);
+    }
+
+    void saveEnqueued(String packageName, int releaseId, int versionCode, String workName, String filePath, boolean installAfterDownload, boolean allowPackageInstaller) {
         String key = downloadKey(releaseId, versionCode);
         preferences.edit()
                 .putString(packageNameKey(key), packageName)
@@ -37,6 +42,7 @@ final class ApkDownloadStore {
                 .putString(filePathKey(key), filePath)
                 .putInt(stateKey(key), STATE_ENQUEUED)
                 .putBoolean(installAfterDownloadKey(key), installAfterDownload)
+                .putBoolean(allowPackageInstallerKey(key), allowPackageInstaller)
                 .putLong(downloadedBytesKey(key), 0)
                 .putLong(totalBytesKey(key), -1)
                 .putLong(updatedAtKey(key), System.currentTimeMillis())
@@ -51,6 +57,7 @@ final class ApkDownloadStore {
                 .putString(filePathKey(key), filePath)
                 .putInt(stateKey(key), STATE_DOWNLOADED)
                 .putBoolean(installAfterDownloadKey(key), false)
+                .putBoolean(allowPackageInstallerKey(key), false)
                 .putLong(downloadedBytesKey(key), Math.max(0, sizeBytes))
                 .putLong(totalBytesKey(key), Math.max(0, sizeBytes))
                 .putLong(updatedAtKey(key), System.currentTimeMillis())
@@ -77,7 +84,18 @@ final class ApkDownloadStore {
     }
 
     void markDownloaded(int releaseId, int versionCode, long sizeBytes) {
-        updateProgress(releaseId, versionCode, STATE_DOWNLOADED, sizeBytes, sizeBytes);
+        String key = downloadKey(releaseId, versionCode);
+        if (!preferences.contains(stateKey(key))) {
+            return;
+        }
+        preferences.edit()
+                .putInt(stateKey(key), STATE_DOWNLOADED)
+                .putBoolean(installAfterDownloadKey(key), false)
+                .putBoolean(allowPackageInstallerKey(key), false)
+                .putLong(downloadedBytesKey(key), Math.max(0, sizeBytes))
+                .putLong(totalBytesKey(key), Math.max(0, sizeBytes))
+                .putLong(updatedAtKey(key), System.currentTimeMillis())
+                .commit();
     }
 
     PendingApkDownload find(int releaseId, int versionCode) {
@@ -155,10 +173,11 @@ final class ApkDownloadStore {
             int versionCode = Integer.parseInt(key.substring(separator + 1));
             int state = preferences.getInt(stateKey(key), STATE_ENQUEUED);
             boolean installAfterDownload = preferences.getBoolean(installAfterDownloadKey(key), state == STATE_INSTALLING);
+            boolean allowPackageInstaller = preferences.getBoolean(allowPackageInstallerKey(key), installAfterDownload);
             long downloadedBytes = preferences.getLong(downloadedBytesKey(key), 0);
             long totalBytes = preferences.getLong(totalBytesKey(key), -1);
             long updatedAt = preferences.getLong(updatedAtKey(key), 0);
-            return new PendingApkDownload(packageName, releaseId, versionCode, workName, filePath, state, installAfterDownload, downloadedBytes, totalBytes, updatedAt);
+            return new PendingApkDownload(packageName, releaseId, versionCode, workName, filePath, state, installAfterDownload, allowPackageInstaller, downloadedBytes, totalBytes, updatedAt);
         } catch (NumberFormatException e) {
             return null;
         }
@@ -171,6 +190,7 @@ final class ApkDownloadStore {
                 .remove(filePathKey(key))
                 .remove(stateKey(key))
                 .remove(installAfterDownloadKey(key))
+                .remove(allowPackageInstallerKey(key))
                 .remove(downloadedBytesKey(key))
                 .remove(totalBytesKey(key))
                 .remove(updatedAtKey(key))
@@ -201,6 +221,10 @@ final class ApkDownloadStore {
         return KEY_INSTALL_AFTER_DOWNLOAD_PREFIX + key;
     }
 
+    private String allowPackageInstallerKey(String key) {
+        return KEY_ALLOW_PACKAGE_INSTALLER_PREFIX + key;
+    }
+
     private String downloadedBytesKey(String key) {
         return KEY_DOWNLOADED_BYTES_PREFIX + key;
     }
@@ -221,6 +245,7 @@ final class ApkDownloadStore {
         final String filePath;
         final int state;
         final boolean installAfterDownload;
+        final boolean allowPackageInstaller;
         final long downloadedBytes;
         final long totalBytes;
         final long updatedAt;
@@ -233,6 +258,7 @@ final class ApkDownloadStore {
                 String filePath,
                 int state,
                 boolean installAfterDownload,
+                boolean allowPackageInstaller,
                 long downloadedBytes,
                 long totalBytes,
                 long updatedAt
@@ -244,6 +270,7 @@ final class ApkDownloadStore {
             this.filePath = filePath;
             this.state = state;
             this.installAfterDownload = installAfterDownload;
+            this.allowPackageInstaller = allowPackageInstaller;
             this.downloadedBytes = downloadedBytes;
             this.totalBytes = totalBytes;
             this.updatedAt = updatedAt;

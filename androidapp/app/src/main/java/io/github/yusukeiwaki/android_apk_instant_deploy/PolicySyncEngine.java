@@ -141,7 +141,7 @@ final class PolicySyncEngine {
 
         @Override
         public void startDownloadAndInstall(String packageName, int releaseId, int versionCode) {
-            new ApkDownloadManager().enqueue(context, packageName, releaseId, versionCode);
+            new ApkDownloadManager().enqueueManagedInstall(context, packageName, releaseId, versionCode);
         }
 
         @Override

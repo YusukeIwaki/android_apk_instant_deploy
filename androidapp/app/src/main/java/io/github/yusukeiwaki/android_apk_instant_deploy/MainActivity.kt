@@ -1390,21 +1390,20 @@ class MainActivity : ComponentActivity() {
             var started = false
             entries.forEach { entry ->
                 try {
-                    ApkDownloadManager().enqueue(this, entry.packageName, entry.releaseId, entry.versionCode)
-                    started = true
+                    val download = ApkDownloadManager().enqueueManagedInstall(this, entry.packageName, entry.releaseId, entry.versionCode)
+                    started = started || DownloadProgressRefresh.shouldScheduleFor(download)
                 } catch (_: RuntimeException) {
                 }
             }
             earlyDownloadEntries(snapshot).filterNot { it.isForceInstalled() }.forEach { entry ->
                 try {
-                    ApkDownloadManager().enqueueDownloadOnly(this, entry.packageName, entry.releaseId, entry.versionCode)
-                    started = true
+                    val download = ApkDownloadManager().enqueueDownloadOnly(this, entry.packageName, entry.releaseId, entry.versionCode)
+                    started = started || DownloadProgressRefresh.shouldScheduleFor(download)
                 } catch (_: RuntimeException) {
                 }
             }
             if (started) {
                 startDownloadStatusRefresh()
-                refreshDownloadStatusViews()
             }
             return
         }
@@ -1412,8 +1411,8 @@ class MainActivity : ComponentActivity() {
         var startedDownload = false
         earlyDownloadEntries(snapshot).forEach { entry ->
             try {
-                ApkDownloadManager().enqueueDownloadOnly(this, entry.packageName, entry.releaseId, entry.versionCode)
-                startedDownload = true
+                val download = ApkDownloadManager().enqueueDownloadOnly(this, entry.packageName, entry.releaseId, entry.versionCode)
+                startedDownload = startedDownload || DownloadProgressRefresh.shouldScheduleFor(download)
             } catch (_: RuntimeException) {
             }
         }

@@ -59,7 +59,8 @@ const fcmDataMessage = `{
 }
 
 # notification payload は含めない。
-# 端末はこの受信で pending_policy_fetch フラグを立て、次のオンライン時または起動時に Policy 取得を試みる。
+# 端末はこの受信で pending_policy_fetch フラグを立て、バックグラウンド同期 work を起動する。
+# 通信できる状態ならアプリ画面を開かなくても Policy 取得と必要な APK の先取りダウンロードを試みる。
 # FCM を取りこぼした場合でも、利用者がアプリを明示起動して手動更新すれば復旧できる設計にする。`;
 
 const fetchPolicyCurl = `curl -X GET https://distribution.example.test/api/devices/me/policy \\
@@ -137,7 +138,9 @@ const policyFlow = `flowchart TD
   ServerPolicy --> Push["FCM data message<br/>POLICY_UPDATED"]
   Manual["アプリUIの手動更新"] -.-> Flag["pending_policy_fetch を立てる"]
   Push --> Flag
+  Flag --> BgSync["バックグラウンド同期 work<br/>起動できれば即時実行"]
   Launch["アプリ起動"] --> NeedFetch{"pending_policy_fetch?"}
+  BgSync --> NeedFetch
   NeedFetch -->|はい| Fetch["GET /api/devices/me/policy"]
   NeedFetch -->|いいえ| MaybeSync{"fetched > applied?"}
   Fetch -->|成功| Resolve["サーバーが app_id ごとに<br/>最新リリースを解決して付与"]
@@ -212,9 +215,10 @@ const sequence = `sequenceDiagram
   Api->>Push: POLICY_UPDATED data message を送信
   Push-->>App: data message、通知表示なし
   App->>Local: pending_policy_fetch を立てる
+  App->>App: バックグラウンド同期 work を enqueue
   Note over App,Local: ここで通信できなくても、フラグは残ったまま
 
-  alt 直後に通信可能
+  alt バックグラウンドで直後に通信可能
     App->>Api: GET /api/devices/me/policy
   else 失敗したら次の機会
     Note over App: 起動時 / 手動更新 / 再ネットワーク到達で再試行
@@ -278,7 +282,7 @@ const lifecycle = `stateDiagram-v2
   <p class="lede">
     アプリ配信は、個別の配信ジョブを端末へ投げる処理ではなく、デバイスごとに1つあるDevicePolicyを更新し、端末がその「あるべき状態」に同期する処理です。
     DevicePolicy が指定するのは <strong>app</strong> (どのアプリを必須/任意で入れるか) であって、特定の release バージョンではありません。配信したいリリースは端末が Policy を取得するたびにサーバーが「その app の最新リリース」を解決して entry に付与します。
-    FCM push はユーザー向けの通知ではなく、端末側の <code>pending_policy_fetch</code> フラグを立てる契機にのみ使います。Policy 取得は「フラグが立っているとき」だけ行い、起動の度に毎回叩くわけではありません。
+    FCM push はユーザー向けの通知ではなく、端末側の <code>pending_policy_fetch</code> フラグを立て、バックグラウンド同期を起動する契機に使います。Policy 取得は「フラグが立っているとき」だけ行い、起動の度に毎回叩くわけではありません。
     Fetch / Download / Install のどこで失敗するかで取り扱いを分け、リカバリ可能なエラーは該当フェーズだけリトライし、リカバリ不能なエラーは entry 単位で「失敗」と確定してまとめてサーバーへ報告します。
   </p>
 
@@ -317,7 +321,7 @@ const lifecycle = `stateDiagram-v2
           <tr>
             <th scope="row">コンパニオンアプリ</th>
             <td>FCM受信 / 手動更新 / 再ネットワーク到達 / アプリ起動 (フラグがある時のみ fetch)</td>
-            <td>pending_policy_fetch / fetched_policy_snapshot / installed_package_index / failed_artifacts_blacklist / pending_report_payload / applied_policy_snapshot を管理する。work item の進捗は永続化せず、フェーズ別にリトライ判定し、確定したら一括で結果を報告する。</td>
+            <td>pending_policy_fetch / fetched_policy_snapshot / installed_package_index / failed_artifacts_blacklist / pending_report_payload / applied_policy_snapshot を管理する。FCM受信時はバックグラウンド同期を起動し、画面起動を待たずにPolicy取得と必要なAPKの先取りダウンロードを試みる。work item の完了状態は毎回再計算し、ダウンロードの進行中/完了状態だけローカル download state としてUIへ反映する。</td>
             <td>端末ローカルストア各種, PackageInstaller (route=PACKAGE_INSTALLER) / AMAPI SDK custom app install (route=AMAPI_CUSTOM_APP)</td>
           </tr>
           <tr>
@@ -346,7 +350,7 @@ const lifecycle = `stateDiagram-v2
       </div>
       <div>
         <dt>pending_policy_fetch (端末ローカル)</dt>
-        <dd>boolean。FCM data message を受け取った時、またはユーザーが手動更新を要求した時に true にする。GET /api/devices/me/policy が成功して fetched_policy_snapshot を保存できた瞬間に false に戻す。端末はこのフラグが true のときだけ Policy 取得を試みる (起動するたびに毎回 fetch するわけではない)。FCM を取りこぼした端末は、利用者がアプリを明示起動して手動更新することで復旧する。</dd>
+        <dd>boolean。FCM data message を受け取った時、またはユーザーが手動更新を要求した時に true にする。FCM受信時はバックグラウンド同期 work も起動し、通信できる状態ならアプリ画面を開かなくても Policy 取得を試みる。GET /api/devices/me/policy が成功して fetched_policy_snapshot を保存できた瞬間に false に戻す。端末はこのフラグが true のときだけ Policy 取得を試みる (起動するたびに毎回 fetch するわけではない)。FCM を取りこぼした端末は、利用者がアプリを明示起動して手動更新することで復旧する。</dd>
       </div>
       <div>
         <dt>fetched_policy_snapshot (端末ローカル)</dt>
@@ -354,7 +358,7 @@ const lifecycle = `stateDiagram-v2
       </div>
       <div>
         <dt>active_download_jobs / downloaded_artifact_index / failed_artifacts_blacklist (端末ローカル)</dt>
-        <dd><code>active_download_jobs</code> は WorkManager unique work を release.id + version_code に紐づける一時的な参照で、同じ artifact の重複ダウンロードを防ぎ、UI に進行中状態を出すためだけに使う。download worker は短命 artifact_url を各 retry で取り直し、OkHttp で app-private files に保存する。worker が非リトライ失敗または明示キャンセルになった時点で消す。active_download_jobs には「DOWNLOAD後にINSTALLへ進めるか」も保存し、アプリ起動時やPolicy表示時に端末の実インストール状態と突き合わせる。必要 version が既に入っていれば stale record を消し、<code>INSTALLING</code> のまま対象アプリが消えていてAPK bytesが残る場合は <code>downloaded_artifact_index</code> に戻す。さらに同じ WorkManager unique work 名を <code>ExistingWorkPolicy.KEEP</code> で再投入して、失われた途中処理だけを復旧する。PACKAGE_INSTALLER 経路でユーザー確認待ちにする場合は、ダウンロード完了時点で <code>downloaded_artifact_index</code> に移し、APK bytes を app-private files に残す。ユーザーがPackageInstaller確認UIをキャンセルした場合も <code>downloaded_artifact_index</code> に戻し、次回は保存済みAPKから再開する。<code>downloaded_artifact_index</code> は再利用できる artifact、<code>failed_artifacts_blacklist</code> は「同じ条件で結果が変わらない」と確定した失敗事実だけを保持する。リカバリ可能な失敗では active_download_jobs を retry 対象の一時参照として残し、次の worker 実行で fetched_policy_snapshot・installed_package_index・failed_artifacts_blacklist から work list を再計算する。</dd>
+        <dd><code>active_download_jobs</code> は WorkManager unique work を release.id + version_code に紐づける一時的な参照で、同じ artifact の重複ダウンロードを防ぎ、UI に進行中状態を出すためだけに使う。download worker は短命 artifact_url を各 retry で取り直し、OkHttp で app-private files に保存する。worker が非リトライ失敗または明示キャンセルになった時点で消す。active_download_jobs には「DOWNLOAD後にINSTALLへ進めるか」も保存し、アプリ起動時やPolicy表示時に端末の実インストール状態と突き合わせる。必要 version が既に入っていれば stale record を消し、<code>INSTALLING</code> のまま対象アプリが消えていてAPK bytesが残る場合は <code>downloaded_artifact_index</code> に戻す。さらに同じ WorkManager unique work 名を <code>ExistingWorkPolicy.KEEP</code> で再投入して、失われた途中処理だけを復旧する。PACKAGE_INSTALLER 経路でユーザー確認待ちにする場合は、ダウンロード完了時点で <code>downloaded_artifact_index</code> に移し、APK bytes を app-private files に残す。ユーザーがPackageInstaller確認UIをキャンセルした場合も、Policy が同じ release.id + version_code を指している限り <code>downloaded_artifact_index</code> に戻し、次回は保存済みAPKから再開する。キャンセル時点で Policy が新しい release.id または version_code を指していれば、古いAPKを破棄して新しいDOWNLOADからやり直す。<code>downloaded_artifact_index</code> は再利用できる artifact、<code>failed_artifacts_blacklist</code> は「同じ条件で結果が変わらない」と確定した失敗事実だけを保持する。リカバリ可能な失敗では active_download_jobs を retry 対象の一時参照として残し、次の worker 実行で fetched_policy_snapshot・installed_package_index・failed_artifacts_blacklist から work list を再計算する。</dd>
       </div>
       <div>
         <dt>pending_report_payload (端末ローカル)</dt>
@@ -417,8 +421,8 @@ const lifecycle = `stateDiagram-v2
       <div class="flow-step__header">
         <span class="flow-step__number">2</span>
         <div>
-          <h3 id="step-2">FCM push を契機に pending_policy_fetch を立て、可能なときに Policy を取得する</h3>
-          <p>FCM は data message として Policy 更新だけを届けます。端末はこの受信で <code>pending_policy_fetch</code> フラグを立て、それ以後の最初に Policy API を呼べる機会 (直後に通信できればその場で、ダメなら次のオンライン到達時、再起動時、アプリ明示起動時など) で GET を1回試みます。<strong>起動するたびに無条件で fetch することはしません</strong>。fetch が失敗してもフラグは立ったままにし、次の機会に再試行します。fetch が成功して fetched_policy_snapshot を上書きした瞬間に、フラグを下ろします。FCM が届かなかった端末は自動では気づけないため、利用者がアプリを開いて手動更新したときに復旧できればよい、という前提にします。取得した Policy はホーム画面に「ポリシーで指定されたアプリ」一覧 (全 entries を1リスト) として表示され、FORCE_INSTALLED の行には「必須」チップ、各行にバージョンと状態 (インストール済み / 内容に更新あり / ダウンロード中…) が出ます。ホーム画面を下に引っ張ると <code>pending_policy_fetch</code> を立てて手動で再取得します。</p>
+          <h3 id="step-2">FCM push を契機に pending_policy_fetch を立て、バックグラウンドで Policy を取得する</h3>
+          <p>FCM は data message として Policy 更新だけを届けます。端末はこの受信で <code>pending_policy_fetch</code> フラグを立て、バックグラウンド同期 work を起動します。通信できる状態なら、利用者がアプリを開く前に GET /api/devices/me/policy と必要なAPKの先取りダウンロードを試みます。<strong>起動するたびに無条件で fetch することはしません</strong>。fetch が失敗してもフラグは立ったままにし、次の機会に再試行します。fetch が成功して fetched_policy_snapshot を上書きした瞬間に、フラグを下ろします。FCM が届かなかった端末は自動では気づけないため、利用者がアプリを開いて手動更新したときに復旧できればよい、という前提にします。取得した Policy はホーム画面に「ポリシーで指定されたアプリ」一覧 (全 entries を1リスト) として表示され、FORCE_INSTALLED の行には「必須」チップ、各行にバージョンと状態 (インストール済み / 内容に更新あり / ダウンロード中 / ダウンロード済み…) が出ます。ホーム画面を下に引っ張ると <code>pending_policy_fetch</code> を立てて手動で再取得します。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -436,7 +440,7 @@ const lifecycle = `stateDiagram-v2
           <dl class="db-list">
             <div>
               <dt>pending_policy_fetch</dt>
-              <dd>FCM 受信または手動更新で true。GET 成功 → fetched_policy_snapshot 保存 が完了した瞬間に false。GET 失敗 (タイムアウト、5xx、ネットワーク不到達、認証エラー以外の一時的失敗) では true のまま。</dd>
+              <dd>FCM 受信または手動更新で true。FCM受信時はバックグラウンド同期 work を起動する。GET 成功 → fetched_policy_snapshot 保存 が完了した瞬間に false。GET 失敗 (タイムアウト、5xx、ネットワーク不到達、認証エラー以外の一時的失敗) では true のまま。</dd>
             </div>
             <div>
               <dt>fetched_policy_snapshot</dt>
@@ -468,7 +472,7 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">3</span>
         <div>
           <h3 id="step-3">entry ごとに DOWNLOAD と INSTALL を進め、リカバリ可能な失敗はリトライする</h3>
-          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code / artifact_sha256」と「端末上の installed package の versionCode / APK checksum」。オンプレの配信サーバーは常時到達できるとは限らないため、端末は Policy 取得直後の到達可能なタイミングで APK bytes をできるだけ早く確保します。FORCE_INSTALLED は未インストールでも更新でも自動で DOWNLOAD を開始します。AVAILABLE は初回導入までは自動 DOWNLOAD しませんが、既に端末に入っているアプリに更新がある場合は UPDATE 用 artifact を自動 DOWNLOAD します。同期は永続的な entry 進捗ではなく、毎反復で計算する <strong>work list</strong> として扱います。work list は fetched_policy_snapshot、installed_package_index、active_download_jobs、downloaded_artifact_index、failed_artifacts_blacklist からその場で作り、各 work item を1回進めます。既に同じ release.id + version_code の active_download_jobs または downloaded_artifact_index がある場合は新しい DOWNLOAD を enqueue せず、ローカル download state を UI に反映して待ちます。リカバリ可能な失敗では同じ WorkManager job が artifact URL を取り直して retry します。リカバリ不能な失敗だけ failed_artifacts_blacklist に追記し、以後は同じ artifact では再試行しません。利用者がホームの行をタップするとアプリ詳細画面に入り、状態に応じて「インストール」/「アップデート」/「アンインストール」ボタンが出ます。ダウンロード進行中はボタンを無効化し、本文に「ダウンロード中 NN%」、ボタンに「ダウンロード中」(完了直前は「インストール準備中」) を表示します。ダウンロード完了後は「ダウンロード済み」と表示し、利用者の確認操作では保存済みAPKを PackageInstaller / AMAPI custom app install に渡すため、サーバーへ再接続しません。</p>
+          <p>fetched_policy_snapshot &gt; applied_policy_snapshot のとき同期を試みます。比較するのは「Policy の install.version_code / artifact_sha256」と「端末上の installed package の versionCode / APK checksum」。オンプレの配信サーバーは常時到達できるとは限らないため、端末は Policy 取得直後の到達可能なタイミングで APK bytes をできるだけ早く確保します。FORCE_INSTALLED は未インストールでも更新でも自動で DOWNLOAD を開始します。AVAILABLE は初回導入までは自動 DOWNLOAD しませんが、既に端末に入っているアプリに更新がある場合は UPDATE 用 artifact を自動 DOWNLOAD します。同期は永続的な entry 進捗ではなく、毎反復で計算する <strong>work list</strong> として扱います。work list は fetched_policy_snapshot、installed_package_index、active_download_jobs、downloaded_artifact_index、failed_artifacts_blacklist からその場で作り、各 work item を1回進めます。既に同じ release.id + version_code の active_download_jobs または downloaded_artifact_index がある場合は新しい DOWNLOAD を enqueue せず、ローカル download state を UI に反映して待ちます。リカバリ可能な失敗では同じ WorkManager job が artifact URL を取り直して retry します。リカバリ不能な失敗だけ failed_artifacts_blacklist に追記し、以後は同じ artifact では再試行しません。利用者がホームの行をタップするとアプリ詳細画面に入り、状態に応じて「インストール」/「アップデート」/「アンインストール」ボタンが出ます。ダウンロード進行中はボタンを無効化し、本文に「ダウンロード中 NN%」、ボタンに「ダウンロード中」(完了直前は「インストール準備中」) を表示します。ダウンロード完了後は「ダウンロード済み」と表示し、利用者の確認操作では保存済みAPKを PackageInstaller / AMAPI custom app install に渡すため、サーバーへ再接続しません。ダウンロード済み状態は進行中ではないため、画面の定期更新ループを開始する理由にはしません。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -509,7 +513,7 @@ const lifecycle = `stateDiagram-v2
             </div>
             <div>
               <dt>リカバリ可能 (INSTALL フェーズ)</dt>
-              <dd><code>PACKAGE_INSTALLER</code> 経路で Sticky 通知を維持 (ユーザーが反応すればインストール進行)、PackageInstaller の "in use" 一時エラー、<code>AMAPI_CUSTOM_APP</code> 経路の IssueCommand 一時エラーなど → 何も永続化しない。downloaded_artifact_index に artifact が残っていれば、次の work list 再計算で DOWNLOAD は飛ばして INSTALL から再試行する。</dd>
+              <dd><code>PACKAGE_INSTALLER</code> 経路で Sticky 通知を維持 (ユーザーが反応すればインストール進行)、PackageInstaller の "in use" 一時エラー、<code>AMAPI_CUSTOM_APP</code> 経路の IssueCommand 一時エラーなど → failed_artifacts_blacklist には書かない。PackageInstaller確認UIをキャンセルした場合は、同じ release.id + version_code のままなら downloaded_artifact_index に戻し、次の work list 再計算で DOWNLOAD は飛ばして INSTALL から再試行する。Policy が別 release.id または version_code に進んでいれば、古いAPKを破棄して新しいDOWNLOADからやり直す。</dd>
             </div>
             <div>
               <dt>リカバリ不能 (INSTALL フェーズ)</dt>
@@ -529,7 +533,7 @@ const lifecycle = `stateDiagram-v2
         <span class="flow-step__number">4</span>
         <div>
           <h3 id="step-4">確定した結果をまとめて報告し、applied_policy_snapshot を更新する</h3>
-          <p>全 work item が terminal になったら、成功した work item と <strong>リカバリ不能な失敗だけ</strong>を一括で POST します。リカバリ可能な失敗で deferred になった work item は報告対象に含めません (=端末がリトライ継続中であることを意味する)。報告本文は送信前に <code>pending_report_payload</code> として保存し、報告が 201 で受理されたら applied_policy_snapshot を更新して payload を破棄します。報告自体が失敗した場合は次の機会に同じペイロードで再送します。FORCE_INSTALLED が PACKAGE_INSTALLER 経路で未達のあいだは、アプリごとに消去不可 (ongoing) の常駐通知を出します。通知本文をタップするとアプリ詳細が開き、通知の「インストール」アクションを押すと、ダウンロード済みAPKがあれば即座に PackageInstaller UI へ進み、未取得ならその場で DOWNLOAD を開始します (通知に「あとで」等の他アクションは持たせません)。INSTALL が確定 (成功 or リカバリ不能失敗) したら通知を下げます。</p>
+          <p>全 work item が terminal になったら、成功した work item と <strong>リカバリ不能な失敗だけ</strong>を一括で POST します。リカバリ可能な失敗で deferred になった work item は報告対象に含めません (=端末がリトライ継続中であることを意味する)。報告本文は送信前に <code>pending_report_payload</code> として保存し、報告が 201 で受理されたら applied_policy_snapshot を更新して payload を破棄します。報告自体が失敗した場合は次の機会に同じペイロードで再送します。FORCE_INSTALLED が PACKAGE_INSTALLER 経路で未達のあいだは、アプリごとに消去不可 (ongoing) の常駐通知を出します。通知本文をタップするとアプリ詳細が開き、通知の「インストール」アクションを押すと、ダウンロード済みAPKがあれば即座に PackageInstaller UI へ進み、未取得ならその場で DOWNLOAD を開始します (通知に「あとで」等の他アクションは持たせません)。同じ package_name + version_code の通知は1件に集約し、キャンセル後に再度促す場合も保存済みAPKを再利用してインストール確認だけを再提示します。INSTALL が確定 (成功 or リカバリ不能失敗) したら通知を下げます。</p>
         </div>
       </div>
       <div class="flow-step__grid">
@@ -706,7 +710,13 @@ const lifecycle = `stateDiagram-v2
             <td>到達可能なうちにAPKをDOWNLOADして downloaded_artifact_index に残し、Sticky 通知を維持。work item は deferred (= リカバリ可能扱い)。ユーザーが通知から確認画面に進むと、ダウンロード済みAPKがあればサーバー再接続なしでPackageInstaller UIへ進む。未取得ならその場でDOWNLOADを試みる。一括報告も applied 更新もしない。前提条件は <a href="/android-app-prereq/#install-axis">Androidアプリ導入の前提 #インストール経路という独立した軸</a> を参照。</td>
           </tr>
           <tr>
-            <th scope="row">INSTALL がリカバリ不能な失敗 (署名不一致 / OS 非互換 / ユーザーが明示拒否)</th>
+            <th scope="row">PackageInstaller 確認UIでユーザーがキャンセル</th>
+            <td>(該当なし)</td>
+            <td>—</td>
+            <td>同じ release.id + version_code のままなら downloaded_artifact_index に戻し、Sticky 通知を維持する。次回の通知タップやアプリ詳細操作では保存済みAPKを使い、DOWNLOADはスキップしてPackageInstaller UIを再提示する。キャンセル時点でPolicyが別 release.id または version_code に進んでいれば、古いAPKを破棄して新しいDOWNLOADからやり直す。</td>
+          </tr>
+          <tr>
+            <th scope="row">INSTALL がリカバリ不能な失敗 (署名不一致 / OS 非互換 / VERSION_DOWNGRADE)</th>
             <td>(該当なし、結果報告で表現)</td>
             <td>device_policy_sync_reports に actions[].result=FAILED で記録。Policy本体は変えない。</td>
             <td>failed_artifacts_blacklist に追記 (phase=INSTALL, code=SIGNATURE_MISMATCH など)。一括報告に含める。同じ artifact では再試行しない。管理者に再リリースを依頼する。</td>
@@ -747,9 +757,9 @@ const lifecycle = `stateDiagram-v2
       <li><strong>Policy 取得は必要なときだけ。</strong> 起動時に毎回叩かない。FCM 受信 / 手動更新 / 報告未送信 などで立つフラグやキューを見て、必要があるときだけ叩く。</li>
       <li><strong>起動時はローカルの途中状態を復旧する。</strong> Policyを表示できる時点で active_download_jobs を走査し、端末の実インストール状態と照合する。必要 version が既に入っていれば stale record を掃除し、<code>INSTALLING</code> のまま対象アプリが消えていてAPK bytesが残る場合は downloaded_artifact_index に戻す。そのうえで対応する WorkManager unique work を <code>KEEP</code> で再投入する。WorkManager側でまだ生きている work は増やさず、プロセス終了などで失われた work だけ再開する。</li>
       <li><strong>失敗はフェーズ単位で分類する。</strong> 「リカバリ可能 → DOWNLOAD は同じ active_download_jobs を retry 対象として維持し、INSTALL は同期完了や失敗確定の永続状態を作らず次の work list 再計算でリトライ」「リカバリ不能 → failed_artifacts_blacklist に追記」。新しいエラーが出てきたらまずこの2分類に当てはめる。</li>
-      <li><strong>進行中/完了済みダウンロードは release.id + version_code で重複排除する。</strong> active_download_jobs がある間は UI の該当操作を無効化し、ローカル download state を表示する。非リトライ失敗・明示キャンセル・インストール成功・リカバリ不能なインストール失敗では active_download_jobs を消す。ユーザー確認待ち、PackageInstaller UI のユーザーキャンセル、AVAILABLE 更新の先取りでは downloaded_artifact_index を残し、後続INSTALLで保存済みAPKを使う。</li>
+      <li><strong>進行中/完了済みダウンロードは release.id + version_code で重複排除する。</strong> active_download_jobs がある間は UI の該当操作を無効化し、ローカル download state を表示する。ダウンロード済み状態は進行中ではないので定期更新ループの開始条件にはしない。非リトライ失敗・明示キャンセル・インストール成功・リカバリ不能なインストール失敗では active_download_jobs を消す。ユーザー確認待ち、PackageInstaller UI のユーザーキャンセル、AVAILABLE 更新の先取りでは downloaded_artifact_index を残し、後続INSTALLで保存済みAPKを使う。ただしキャンセル時点でPolicyが別 release.id または version_code に進んでいれば、古いAPKを破棄して新しいDOWNLOADからやり直す。</li>
       <li><strong>サーバー報告はリカバリ不能な失敗だけ。</strong> リカバリ可能な失敗 (一時的) は端末側のリトライで吸収する。サーバー側で「同じエラーが何度も来ている」を観測したくなったら、それはリカバリ可能/不能の判定を見直す合図。</li>
-      <li><strong>FCMは「再取得の合図」だけ。</strong> Policy本文をdata payloadに載せない。ユーザー向け通知も出さない。</li>
+      <li><strong>FCMは「再取得の合図」であり、バックグラウンド同期の起点でもある。</strong> Policy本文をdata payloadに載せない。ユーザー向け通知も出さない。受信した端末はフラグを立て、通信できる状態ならアプリ画面の起動を待たずにPolicy取得と必要なAPKの先取りダウンロードを試みる。</li>
       <li><strong>fetched / applied / failed_artifacts_blacklist / pending_report_payload を別オブジェクトで持つ。</strong> 「取得済み」「恒久失敗」「未送信報告」「報告まで完了したか」を1つの値に潰さない。work item の途中進捗は永続化しない。</li>
       <li><strong>過去revisionは消さない。</strong> Policy変更は新規revision追加で表現する。</li>
       <li><strong>端末側で判断できる事はサーバーに持ち込まない。</strong> install_mode、現在のpackage一覧、権限の有無、フェーズ別エラーの分類は端末が知っている。サーバーはあるべき状態だけ持ち、リトライ・経路選択・通知制御は端末に寄せる。</li>

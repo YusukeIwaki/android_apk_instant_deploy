@@ -25,6 +25,7 @@ public final class ApkDownloadWorker extends Worker {
     static final String KEY_VERSION_CODE = "version_code";
     static final String KEY_FILE_PATH = "file_path";
     static final String KEY_INSTALL_AFTER_DOWNLOAD = "install_after_download";
+    static final String KEY_ALLOW_PACKAGE_INSTALLER = "allow_package_installer";
     static final String PROGRESS_DOWNLOADED_BYTES = "downloaded_bytes";
     static final String PROGRESS_TOTAL_BYTES = "total_bytes";
 
@@ -43,6 +44,7 @@ public final class ApkDownloadWorker extends Worker {
         int versionCode = getInputData().getInt(KEY_VERSION_CODE, -1);
         String filePath = getInputData().getString(KEY_FILE_PATH);
         boolean installAfterDownload = getInputData().getBoolean(KEY_INSTALL_AFTER_DOWNLOAD, true);
+        boolean allowPackageInstaller = getInputData().getBoolean(KEY_ALLOW_PACKAGE_INSTALLER, installAfterDownload);
         if (packageName == null || packageName.isEmpty() || releaseId < 0 || versionCode < 0 || filePath == null || filePath.isEmpty()) {
             return Result.failure();
         }
@@ -82,6 +84,10 @@ public final class ApkDownloadWorker extends Worker {
         try {
             store.markInstalling(releaseId, versionCode, apkFile.length());
             if (tryAmapiCustomAppInstall(context, packageName, apkFile, store, releaseId, versionCode)) {
+                return Result.success();
+            }
+            if (!allowPackageInstaller) {
+                store.markDownloaded(releaseId, versionCode, apkFile.length());
                 return Result.success();
             }
             new ApkInstaller().install(context, packageName, apkFile, apkFile.length(), releaseId, versionCode);

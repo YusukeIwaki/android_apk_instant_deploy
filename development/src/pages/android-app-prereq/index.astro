@@ -166,14 +166,15 @@ const sequence = `flowchart TD
     </p>
     <h3>AMAPI SDK custom app install を使うための前提条件</h3>
     <ol class="usa-list">
-      <li><strong>端末が fully managed device。</strong> 端末プロビジョニング時の enrollment token が <code>allowPersonalUsage: PERSONAL_USAGE_DISALLOWED</code> であること。Work profile やパーソナル併用は対象外。</li>
+      <li><strong>端末が fully managed device で、Android Device Policy が Device Owner。</strong> 端末プロビジョニング時の enrollment token が <code>allowPersonalUsage: PERSONAL_USAGE_DISALLOWED</code> であること。Work profile やパーソナル併用は対象外。端末側の可用性判定でも、Android Device Policy が Device Owner であることを最低条件にする。</li>
       <li><strong>コンパニオンアプリに <code>COMPANION_APP</code> role が付与されている。</strong> AMAPI policy の <code>applications[]</code> 該当要素に <code>{`roles: [{ roleType: "COMPANION_APP" }]`}</code> を設定する (旧 <code>extensionConfig</code> + <code>notificationReceiver</code> は deprecated)。コンパニオンアプリ自身も <code>installType: FORCE_INSTALLED</code> 等で導入されている前提。</li>
       <li><strong>配布対象APKが policy に custom app として宣言されている。</strong> 同じ policy の <code>applications[]</code> に対象パッケージを <code>installType: "CUSTOM"</code> として追加し、<code>signingKeyCerts.signingKeyCertFingerprintSha256</code> に配布対象APKの署名証明書 fingerprint を登録する。fingerprint が一致しないAPKは install を拒否される。</li>
       <li><strong>AMAPI SDK のバージョンとAPI level。</strong> コンパニオンアプリは AMAPI SDK <code>v1.6.0-rc01</code> 以上を組み込み、<code>minSdkVersion</code> は 21 以上。</li>
       <li><strong>コンパニオンアプリのマニフェスト設定。</strong> <code>FileProvider</code> の authority を <code>{'"${applicationId}.AmapiCustomAppProvider"'}</code> として宣言し、<code>&lt;queries&gt;</code> 要素で <code>com.google.android.apps.work.clouddpc</code> (Android Device Policy) を可視化する。</li>
-      <li><strong>APKを所定ディレクトリへ配置してから command を発行する。</strong> <code>LocalCommandClientFactory.create(context)</code> から <code>InstallCustomAppCommandHelper.customApksStorageDirectory</code> を取得し、そこへAPKを置いてから <code>IssueCommandRequest</code> を <code>InstallCustomApp.builder().setPackageName(...).setPackageUri(...)</code> で構成して <code>issueCommand()</code> を呼ぶ。</li>
+      <li><strong>APKを所定ディレクトリへ配置してから command を発行する。</strong> <code>LocalCommandClientFactory.create(context)</code> から <code>InstallCustomAppCommandHelper.customApksStorageDirectory</code> を取得し、そこへAPKを置いてから <code>IssueCommandRequest</code> を <code>InstallCustomApp.builder().setPackageName(...).setPackageUri(...)</code> で構成して <code>issueCommand()</code> を呼ぶ。ただし、この保存先ディレクトリが取得できることだけを AMAPI custom app install 可否の判定には使わない。通常デバイスでもアプリの cacheDir 配下のパスが返り得るため、Device Owner 条件と policy 条件を先に満たす必要がある。</li>
     </ol>
     <p>条件1〜6の<strong>すべて</strong>を満たしたときに限り、コンパニオンアプリは AMAPI SDK 経由で配布APKを silent install できます。1つでも欠けたら経路Bに落とします。</p>
+    <p>特に、通常デバイスでは AMAPI SDK の保存先ディレクトリが取得できても <code>AMAPI_CUSTOM_APP</code> 経路へ入れてはいけません。通常デバイスは常に先取りダウンロード + PackageInstaller UI の <code>PACKAGE_INSTALLER</code> 経路として扱い、ダウンロード済みAPKを保存してユーザー確認だけを再提示します。</p>
     <Mermaid chart={axisMatrix} title="登録経路 (managedConfiguration) と インストール経路 (AMAPI custom app install 前提) は独立した2軸" />
     <div class="table-wrap">
       <table class="usa-table">
@@ -213,6 +214,7 @@ const sequence = `flowchart TD
     </div>
     <ul class="usa-list">
       <li><strong>「AMAPI管理 = サイレントインストール可」ではない。</strong> AMAPI policy が <code>FORCE_INSTALLED</code> でコンパニオンアプリ自身を導入することと、そのコンパニオンアプリが <em>配布APK</em> を silent に install できることは別概念。前者は端末への導入 (軸A)、後者は AMAPI custom app install の前提充足 (軸B) で決まる。</li>
+      <li><strong>AMAPI可否は保存ディレクトリだけで判定しない。</strong> SDK helper がAPK配置用のパスを返しても、それは通常デバイスでも成立し得る。Android Device Policy が Device Owner であり、role / CUSTOM 宣言 / signingKeyCerts などの前提を満たす場合だけ <code>AMAPI_CUSTOM_APP</code> にする。</li>
       <li><strong>AMAPI custom app install の policy設計はAMAPI管理側のスコープ。</strong> どの端末で COMPANION_APP role を付与するか、対象APKの fingerprint をどう policy に流し込むかは AMAPI policy 側の運用責務であり、本配信システムのサーバーは policy を直接書かない。policy 同期 API は将来拡張として扱う。</li>
       <li><strong>route はサーバーへ報告される。</strong> 端末は実際に使ったインストール経路を <code>policy_sync_results.actions[].route</code> に <code>AMAPI_CUSTOM_APP</code> / <code>PACKAGE_INSTALLER</code> として乗せる。サーバー側のあるべき状態 (DevicePolicy) は経路を区別しない。</li>
       <li><strong>UNINSTALL 経路も同じ2分法で扱う。</strong> AMAPI custom app install で入れたAPKは AMAPI 側の uninstall command を、PackageInstaller UI で入れたAPKは標準の uninstall intent / PackageInstaller を使う。route 値は INSTALL と同じ enum (<code>AMAPI_CUSTOM_APP</code> / <code>PACKAGE_INSTALLER</code>)。</li>
@@ -289,6 +291,7 @@ const sequence = `flowchart TD
       <li><strong>managedConfiguration は端末別に発行する。</strong> identifier / secret は一回限り・端末ごとに固有なので、同じ policy を複数端末に当てない。AMAPI policy を端末別に分けるか、enrollment token 単位で分割する。</li>
       <li><strong>secret を長期秘密にしない。</strong> 登録APIと同じく一回限り・短期有効として扱い、登録成功で <code>device_registration_tokens</code> 行は削除する。AMAPI経路でも secret の性質は変えない。</li>
       <li><strong>登録経路 (軸A) と インストール経路 (軸B) を独立に扱う。</strong> AMAPI管理かどうかは軸Aだけを決める。軸Bが <code>AMAPI_CUSTOM_APP</code> になるのは <a href="https://developers.google.com/android/management/manage-custom-apps">Manage custom apps with AMAPI</a> の前提 (fully managed、COMPANION_APP role、対象APKの installType=CUSTOM + signingKeyCerts一致、AMAPI SDK v1.6.0-rc01+、minSdk 21+、所定のFileProvider/queries宣言) をすべて満たすときだけ。1つでも欠けたら軸Bは <code>PACKAGE_INSTALLER</code> に落ちる。</li>
+      <li><strong>通常デバイスではAMAPI保存先ディレクトリの有無を見て分岐しない。</strong> Android Device Policy が Device Owner でない端末は常に <code>PACKAGE_INSTALLER</code> 経路。ダウンロード済みAPKがある場合は再ダウンロードせず、PackageInstaller UI の確認だけを再提示する。</li>
       <li><strong>サイレントインストールは「条件全部入り」で初めて使える。</strong> 条件のうち1つだけ妥協してサイレントを通そうとしない。前提が崩れたら経路Bへフォールバック。</li>
       <li><strong>手動経路 (軸B = PACKAGE_INSTALLER) は先取りDL + フォールバックUIが正。</strong> 権限不足やユーザー確認が必要な場合でも、到達可能なうちにAPK bytesを app-private storage に確保し、PackageInstaller UI と Sticky 通知で利用者確認へ進める。</li>
     </ol>

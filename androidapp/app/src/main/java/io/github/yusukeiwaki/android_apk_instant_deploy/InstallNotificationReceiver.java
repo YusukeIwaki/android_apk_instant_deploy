@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.content.pm.PackageInstaller;
 import android.widget.Toast;
 
+import org.json.JSONException;
+
 import java.io.File;
 
 public final class InstallNotificationReceiver extends BroadcastReceiver {
@@ -69,6 +71,10 @@ public final class InstallNotificationReceiver extends BroadcastReceiver {
             return false;
         }
 
+        if (restartDownloadForUpdatedPolicyIfNeeded(context, intent, download)) {
+            return true;
+        }
+
         File apkFile = new File(download.filePath);
         if (!apkFile.isFile() || apkFile.length() <= 0) {
             return false;
@@ -76,6 +82,35 @@ public final class InstallNotificationReceiver extends BroadcastReceiver {
 
         store.markDownloaded(releaseId, versionCode, apkFile.length());
         return true;
+    }
+
+    private boolean restartDownloadForUpdatedPolicyIfNeeded(Context context, Intent intent, ApkDownloadStore.PendingApkDownload download) {
+        String packageName = intent.getStringExtra(EXTRA_PACKAGE_NAME);
+        if (packageName == null || packageName.isEmpty()) {
+            return false;
+        }
+
+        String fetchedPolicyJson = new AppStore(context).fetchedPolicyJson();
+        if (fetchedPolicyJson.isEmpty()) {
+            return false;
+        }
+
+        try {
+            ApiClient.PolicySnapshot snapshot = ApiClient.parsePolicy(fetchedPolicyJson);
+            for (ApiClient.PolicyEntry entry : snapshot.entries) {
+                if (!packageName.equals(entry.packageName)) {
+                    continue;
+                }
+                if (entry.releaseId == download.releaseId && entry.versionCode == download.versionCode) {
+                    return false;
+                }
+                new ApkDownloadManager().cleanup(context, download);
+                new ApkDownloadManager().enqueueDownloadOnly(context, entry.packageName, entry.releaseId, entry.versionCode);
+                return true;
+            }
+        } catch (JSONException | RuntimeException ignored) {
+        }
+        return false;
     }
 
     private void cleanupDownload(Context context, Intent intent) {

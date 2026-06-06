@@ -1,5 +1,6 @@
 package io.github.yusukeiwaki.android_apk_instant_deploy;
 
+import android.app.admin.DevicePolicyManager;
 import android.content.Context;
 import android.net.Uri;
 
@@ -21,9 +22,13 @@ import java.util.concurrent.ExecutionException;
 
 final class AmapiCustomAppInstaller {
     private static final int BUFFER_SIZE = 64 * 1024;
+    private static final String ANDROID_DEVICE_POLICY_PACKAGE = "com.google.android.apps.work.clouddpc";
 
     boolean isAvailable(Context context) {
         try {
+            if (!isAndroidDevicePolicyDeviceOwner(context)) {
+                return false;
+            }
             File directory = customApksStorageDirectory(context);
             return directory != null;
         } catch (RuntimeException e) {
@@ -72,6 +77,14 @@ final class AmapiCustomAppInstaller {
         return helper.getCustomApksStorageDirectory();
     }
 
+    private boolean isAndroidDevicePolicyDeviceOwner(Context context) {
+        Context appContext = context.getApplicationContext();
+        DevicePolicyManager devicePolicyManager =
+                (DevicePolicyManager) appContext.getSystemService(Context.DEVICE_POLICY_SERVICE);
+        return devicePolicyManager != null &&
+                devicePolicyManager.isDeviceOwnerApp(ANDROID_DEVICE_POLICY_PACKAGE);
+    }
+
     private void ensureCommandAccepted(Command command, boolean install) throws IOException {
         if (command.getState() == Command.State.PENDING) {
             return;
@@ -101,13 +114,4 @@ final class AmapiCustomAppInstaller {
         }
     }
 
-    private void deleteQuietly(File file) {
-        if (file == null || !file.exists()) {
-            return;
-        }
-        try {
-            file.delete();
-        } catch (RuntimeException ignored) {
-        }
-    }
 }
