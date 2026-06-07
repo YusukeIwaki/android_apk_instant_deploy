@@ -23,6 +23,7 @@
             <th>Size</th>
             <th>SHA-256</th>
             <th>Signing cert</th>
+            <th>Created at</th>
             <th></th>
           </tr>
         </thead>
@@ -37,6 +38,7 @@
               <td class="small"><%= artifact.size_bytes %> bytes</td>
               <td><code class="small"><%= h(artifact.sha256[0, 16]) %>…</code></td>
               <td><code class="small"><%= h(artifact.signing_cert_sha256[0, 16]) %>…</code></td>
+              <td class="small"><%= release.created_at&.localtime&.strftime("%Y-%m-%d %H:%M") %></td>
               <td class="text-end">
                 <form method="post" action="/apps/<%= app.id %>/releases/<%= release.id %>/delete" class="d-inline" onsubmit="return confirm('Delete this release?');">
                   <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
